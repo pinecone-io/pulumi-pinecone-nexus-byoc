@@ -72,6 +72,9 @@ class PineconeAzureClusterArgs:
     # features
     public_access_enabled: bool = True
     deletion_protection: bool = True
+    # when True, mint a deployment Pinecone key for Nexus and expose it as a
+    # k8s secret (proposal task 2.2). DB-only deploys leave this False.
+    nexus_enabled: bool = False
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -166,6 +169,26 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             ),
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
         )
+
+        # Nexus deployment key (proposal §3.3, task 2.2): reuse the __SLI__
+        # ApiKey minting pattern to mint one shared deployment key, handed to
+        # Nexus as PINECONE_API_KEY. Gated on nexus_enabled so DB-only deploys
+        # are unaffected.
+        self._nexus_api_key = None
+        if args.nexus_enabled:
+            self._nexus_api_key = ApiKey(
+                f"{config.resource_prefix}-nexus-api-key",
+                ApiKeyArgs(
+                    org_id=self._environment.org_id,
+                    project_name="__SLI__",
+                    key_name=self._cell_name.apply(lambda cn: f"{cn}-nexus-key"),
+                    api_url=args.api_url,
+                    auth0_domain=args.auth0_domain,
+                    auth0_client_id=self._service_account.client_id,
+                    auth0_client_secret=self._service_account.client_secret,
+                ),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._service_account]),
+            )
 
         # phase 2: infrastructure
         self._vnet = VNet(
@@ -289,6 +312,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
             dd_api_key=self._datadog_api_key.api_key,
+            nexus_api_key=(self._nexus_api_key.value if self._nexus_api_key is not None else None),
             control_db=self._database.control_db,
             system_db=self._database.system_db,
             azure_storage_access_key=self._storage.access_key,
@@ -298,11 +322,16 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[
-                    self._aks,
-                    self._cpgw_api_key,
-                    self._api_key,
-                    self._datadog_api_key,
-                    self._database,
+                    r
+                    for r in [
+                        self._aks,
+                        self._cpgw_api_key,
+                        self._api_key,
+                        self._datadog_api_key,
+                        self._nexus_api_key,
+                        self._database,
+                    ]
+                    if r is not None
                 ],
             ),
         )
