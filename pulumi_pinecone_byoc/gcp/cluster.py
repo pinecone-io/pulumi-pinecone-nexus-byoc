@@ -24,7 +24,7 @@ from ..common.providers import (
     ServiceAccount,
     ServiceAccountArgs,
 )
-from ..common.registry import GCP_REGISTRY
+from ..common.registry import GCP_REGISTRY, NEXUS_GCP_REGISTRY
 from ..common.uninstaller import ClusterUninstaller
 from .alloydb import AlloyDB
 from .dns import DNS
@@ -91,6 +91,11 @@ class PineconeGCPClusterArgs:
     # nexus_enabled. If left None, defaults to `api_url` (PoC: inference is the
     # same managed endpoint as index CRUD — proposal §10).
     nexus_inference_base: pulumi.Input[str] | None = None
+    # container registry base URL for the Nexus images. Nexus images live in a
+    # separate Artifact Registry repo (nexus-alpha), NOT the DB `unstable` repo,
+    # so this is independent of the DB registry. Only used when nexus_enabled. If
+    # left None, defaults to NEXUS_GCP_REGISTRY.base_url (nexus-alpha).
+    nexus_image_registry: str | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -395,7 +400,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._gke.k8s_provider,
-                image_registry=GCP_REGISTRY.base_url,
+                # Nexus images live in nexus-alpha, NOT the DB `unstable` repo.
+                image_registry=(args.nexus_image_registry or NEXUS_GCP_REGISTRY.base_url),
                 # coordinated `nexus-version` (task 2.7); fall back to the DB
                 # version so a single combined manifest works until 2.7 lands.
                 nexus_version=args.nexus_version or args.pinecone_version,

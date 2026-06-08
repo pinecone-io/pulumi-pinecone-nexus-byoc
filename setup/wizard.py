@@ -28,6 +28,11 @@ PINECONE_VERSION = "main-94a9e90"
 # to `pinecone-version` so a single combined manifest still works.
 NEXUS_VERSION = PINECONE_VERSION
 
+# Nexus images live in a separate Artifact Registry repo (nexus-alpha), NOT the
+# DB `unstable` repo. The GCP component pulls `nexus_<component>` images from
+# here; DB/pinetools images stay on the unstable registry.
+NEXUS_IMAGE_REGISTRY = "us-east1-docker.pkg.dev/pinecone-artifacts/nexus-alpha"
+
 console = Console()
 
 
@@ -1591,6 +1596,9 @@ class GCPSetupWizard(BaseSetupWizard):
                 "enabled": True,
                 "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                "image_registry": os.environ.get(
+                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_IMAGE_REGISTRY
+                ),
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
@@ -1749,6 +1757,10 @@ class GCPSetupWizard(BaseSetupWizard):
         nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
 
         console.print()
+        console.print("  [dim]Container registry for the Nexus images (nexus-alpha, separate from the DB registry).[/]")
+        image_registry = self._prompt("Enter nexus image registry", NEXUS_IMAGE_REGISTRY)
+
+        console.print()
         console.print("  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]")
         inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
 
@@ -1756,6 +1768,7 @@ class GCPSetupWizard(BaseSetupWizard):
             "enabled": True,
             "byoc_env": byoc_env.strip(),
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
+            "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
         }
 
@@ -1841,6 +1854,7 @@ cluster = PineconeGCPCluster(
         nexus_version=config.get("nexus-version"),
         nexus_byoc_env=config.get("nexus-byoc-env"),
         nexus_inference_base=config.get("nexus-inference-base"),
+        nexus_image_registry=config.get("nexus-image-registry"),
     ),
 )
 
@@ -1898,6 +1912,10 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
             config_content += f"  {project_name}:nexus-enabled: true\n"
             config_content += (
                 f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
+            )
+            config_content += (
+                f"  {project_name}:nexus-image-registry: "
+                f"{nexus.get('image_registry', NEXUS_IMAGE_REGISTRY)}\n"
             )
             if nexus.get("byoc_env"):
                 config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
