@@ -1544,6 +1544,7 @@ class GCPSetupWizard(BaseSetupWizard):
         public_access = self._get_public_access()
         labels = self._get_custom_metadata()
         nexus = self._get_nexus_config()
+        cpgw = self._get_cpgw_config()
 
         if not self._run_preflight_checks(project_id, region, zones, cidr):
             return False
@@ -1565,6 +1566,7 @@ class GCPSetupWizard(BaseSetupWizard):
             public_access,
             labels,
             nexus,
+            cpgw,
         )
 
     def _run_headless(self, output_dir: str) -> bool:
@@ -1606,6 +1608,14 @@ class GCPSetupWizard(BaseSetupWizard):
         else:
             nexus = {"enabled": False}
 
+        # CPGW control-plane target. Optional; written to stack config only when
+        # set, otherwise the dataclass prod defaults apply.
+        cpgw = {}
+        if os.environ.get("PINECONE_API_URL"):
+            cpgw["api_url"] = os.environ["PINECONE_API_URL"]
+        if os.environ.get("PINECONE_GLOBAL_ENV"):
+            cpgw["global_env"] = os.environ["PINECONE_GLOBAL_ENV"]
+
         return self._generate_project(
             output_dir,
             project_name,
@@ -1618,6 +1628,7 @@ class GCPSetupWizard(BaseSetupWizard):
             public_access,
             {},
             nexus,
+            cpgw,
         )
 
     def _validate_gcp_creds(self) -> str | None:
@@ -1772,6 +1783,35 @@ class GCPSetupWizard(BaseSetupWizard):
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
         }
 
+    def _get_cpgw_config(self) -> dict:
+        """Prompt for the CPGW control-plane target (api-url / global-env).
+
+        Both are optional. When left blank the generated project omits the keys
+        and the component falls back to its prod defaults
+        (https://api.pinecone.io / prod), so existing deploys are unchanged.
+        """
+        console.print()
+        console.print(f"  {self._step('Control plane (CPGW)')}")
+        console.print()
+        console.print(
+            "  [dim]Target control plane for CPGW bootstrap. "
+            "Press Enter to use the prod defaults.[/]"
+        )
+
+        api_url = self._prompt("Enter api-url", "https://api.pinecone.io")
+        global_env = self._prompt("Enter global-env", "prod")
+
+        cpgw = {}
+        api_url = api_url.strip()
+        global_env = global_env.strip()
+        # Only record non-default values so the stack config stays minimal and
+        # byte-for-byte identical to today when prod is selected.
+        if api_url and api_url != "https://api.pinecone.io":
+            cpgw["api_url"] = api_url
+        if global_env and global_env != "prod":
+            cpgw["global_env"] = global_env
+        return cpgw
+
     def _run_preflight_checks(
         self, project_id: str, region: str, zones: list[str], cidr: str
     ) -> bool:
@@ -1802,8 +1842,10 @@ class GCPSetupWizard(BaseSetupWizard):
         public_access: bool,
         labels: dict[str, str],
         nexus: dict | None = None,
+        cpgw: dict | None = None,
     ):
         nexus = nexus or {"enabled": False}
+        cpgw = cpgw or {}
         console.print()
 
         if not self._check_pulumi_installed():
@@ -1848,6 +1890,10 @@ cluster = PineconeGCPCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         labels=config.get_object("labels") or {},
+        # CPGW control-plane target. Absent config keys fall back to the prod
+        # defaults so existing deploys are byte-for-byte unchanged.
+        api_url=config.get("api-url") or "https://api.pinecone.io",
+        global_env=config.get("global-env") or "prod",
         # Nexus is opt-in; absent config keys leave it disabled so DB-only
         # deploys are byte-for-byte unaffected.
         nexus_enabled=config.get_bool("nexus-enabled") or False,
@@ -1923,6 +1969,13 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
                 f"  {project_name}:nexus-inference-base: "
                 f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
             )
+
+        # CPGW control-plane target. Written only when explicitly provided so
+        # omitting them keeps the dataclass prod defaults (api.pinecone.io / prod).
+        if cpgw.get("api_url"):
+            config_content += f"  {project_name}:api-url: {cpgw['api_url']}\n"
+        if cpgw.get("global_env"):
+            config_content += f"  {project_name}:global-env: {cpgw['global_env']}\n"
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
