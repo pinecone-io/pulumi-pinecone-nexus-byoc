@@ -8,6 +8,7 @@ from typing import Any
 
 import pulumi
 import pulumi_kubernetes as k8s
+import pulumi_random as random
 
 
 def b64(data: pulumi.Input[str]) -> pulumi.Output[str]:
@@ -135,6 +136,39 @@ class K8sSecrets(pulumi.ComponentResource):
                     # INFERENCE_API_KEY defaults to the same deployment key for
                     # the PoC (proposal §10).
                     "PINECONE_API_KEY": b64(pulumi.Output.secret(nexus_api_key)),
+                },
+                type="Opaque",
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    provider=k8s_provider,
+                    depends_on=[nexus_namespace],
+                ),
+            )
+
+            # The Nexus helm chart only self-mints `nexus-config` when
+            # localRuntime=true. In prod mode (localRuntime=false) the app
+            # pods (api, orchestrator, knowql, file-proxy) expect this secret
+            # to be provided externally, so mint it here. JWT_SECRET is
+            # required; the LLM keys are placeholders for the PoC (LLM
+            # synthesis is out of scope).
+            nexus_jwt_secret = random.RandomPassword(
+                f"{name}-nexus-jwt",
+                length=48,
+                special=False,
+                opts=pulumi.ResourceOptions(parent=self),
+            )
+
+            k8s.core.v1.Secret(
+                f"{name}-nexus-config",
+                metadata=k8s.meta.v1.ObjectMetaArgs(
+                    name="nexus-config",
+                    namespace="nexus",
+                ),
+                data={
+                    "jwt-secret": b64(pulumi.Output.secret(nexus_jwt_secret.result)),
+                    "gemini-api-key": b64(""),
+                    "claude-api-key": b64(""),
+                    "nebius-api-key": b64(""),
                 },
                 type="Opaque",
                 opts=pulumi.ResourceOptions(
