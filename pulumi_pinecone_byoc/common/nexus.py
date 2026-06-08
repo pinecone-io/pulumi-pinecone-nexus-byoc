@@ -104,7 +104,7 @@ class Nexus(pulumi.ComponentResource):
         # ------------------------------------------------------------------
         fdb_values: dict = {
             "image": {
-                "pullSecrets": [_REGCRED],
+                "pullSecrets": [{"name": _REGCRED}],
             },
             # FDB lands on the services pool (mirrors the app chart scheduling).
             "persistence": {
@@ -145,7 +145,7 @@ class Nexus(pulumi.ComponentResource):
             "image": {
                 "registry": image_registry,
                 "tag": nexus_version,
-                "pullSecrets": [_REGCRED],
+                "pullSecrets": [{"name": _REGCRED}],
             },
             # Task pods are launched into nexus-tasks (chart default); regcred is
             # refreshed there too (task 2.3).
@@ -265,7 +265,10 @@ class Nexus(pulumi.ComponentResource):
                     # stack uses (gce-internal); the customer front door rides
                     # the existing LB rather than provisioning a new one.
                     "kubernetes.io/ingress.class": "gce-internal",
-                    "kubernetes.io/ingress.allow-http": "false",
+                    # HTTP is enabled for the PoC: no TLS cert is wired up here,
+                    # and the GCE ingress controller refuses to provision an LB
+                    # when both HTTP and HTTPS are disabled.
+                    "kubernetes.io/ingress.allow-http": "true",
                 },
             ),
             spec=k8s.networking.v1.IngressSpecArgs(
