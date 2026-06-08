@@ -22,6 +22,12 @@ BLUE = "#002BFF"
 
 PINECONE_VERSION = "main-94a9e90"
 
+# Nexus image tag (proposal §10 `nexus-version`). Coordinated with
+# PINECONE_VERSION as a combined release manifest; the wizard writes it only
+# for a "Nexus BYOC" install. When unset in config the GCP component falls back
+# to `pinecone-version` so a single combined manifest still works.
+NEXUS_VERSION = PINECONE_VERSION
+
 console = Console()
 
 
@@ -1500,6 +1506,8 @@ class GCPPreflightChecker:
 class GCPSetupWizard(BaseSetupWizard):
     HEADER_TITLE = "Pinecone BYOC Setup Wizard - GCP"
     HEADER_SUBTITLE = "This wizard will set up everything you need to deploy Pinecone BYOC on GCP."
+    # one more than the base flow: GCP adds a Nexus enablement step (task 2.7).
+    TOTAL_STEPS = 14
     DEFAULT_CIDR = "10.112.0.0/12"
     DELETION_PROTECTION_DESC = "Protect AlloyDB databases and GCS buckets from accidental deletion"
     PRIVATE_ACCESS_DESC = "Private access requires Private Service Connect (more secure)"
@@ -1530,6 +1538,7 @@ class GCPSetupWizard(BaseSetupWizard):
         deletion_protection = self._get_deletion_protection()
         public_access = self._get_public_access()
         labels = self._get_custom_metadata()
+        nexus = self._get_nexus_config()
 
         if not self._run_preflight_checks(project_id, region, zones, cidr):
             return False
@@ -1550,6 +1559,7 @@ class GCPSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             labels,
+            nexus,
         )
 
     def _run_headless(self, output_dir: str) -> bool:
@@ -1575,6 +1585,19 @@ class GCPSetupWizard(BaseSetupWizard):
         public_access = os.environ.get("PINECONE_PUBLIC_ACCESS", "true").lower() == "true"
         project_name = os.environ.get("PINECONE_PROJECT_NAME", "pinecone-byoc")
 
+        # Nexus is opt-in; default off so headless DB-only installs are unchanged.
+        if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
+            nexus = {
+                "enabled": True,
+                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
+                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                "inference_base": os.environ.get(
+                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
+                ),
+            }
+        else:
+            nexus = {"enabled": False}
+
         return self._generate_project(
             output_dir,
             project_name,
@@ -1586,6 +1609,7 @@ class GCPSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             {},
+            nexus,
         )
 
     def _validate_gcp_creds(self) -> str | None:
@@ -1699,6 +1723,42 @@ class GCPSetupWizard(BaseSetupWizard):
         zones = [zone.strip() for zone in zones_input.split(",")]
         return zones
 
+    def _get_nexus_config(self) -> dict:
+        """Prompt for Nexus enablement and inference config (proposal §4.6/§4.7,
+        task 2.7). Default is a DB-only install (nexus_enabled=False) so the
+        generated project is byte-for-byte unchanged unless Nexus is requested.
+
+        For a "Nexus BYOC" install the wizard collects the BYOC env id
+        (PINECONE_BYOC_ENV), the Nexus image tag (nexus-version), and the
+        inference base (INFERENCE_BASE). The inference key is not prompted: it
+        defaults to the minted deployment key per §10.
+        """
+        console.print()
+        console.print(f"  {self._step('Nexus')}")
+        console.print()
+        console.print("  [dim]Deploy Nexus alongside the Pinecone DB stack in the same cluster.[/]")
+
+        response = self._prompt("Enable Nexus? (y/N)", "N")
+        if response.strip().lower() not in ("y", "yes"):
+            return {"enabled": False}
+
+        console.print()
+        console.print("  [dim]The `.byoc` deployment environment id Nexus targets for index CRUD.[/]")
+        byoc_env = self._prompt("Enter PINECONE_BYOC_ENV (or press Enter to use the minted env)", "")
+
+        nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
+
+        console.print()
+        console.print("  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]")
+        inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
+
+        return {
+            "enabled": True,
+            "byoc_env": byoc_env.strip(),
+            "nexus_version": nexus_version.strip() or NEXUS_VERSION,
+            "inference_base": inference_base.strip() or "https://api.pinecone.io",
+        }
+
     def _run_preflight_checks(
         self, project_id: str, region: str, zones: list[str], cidr: str
     ) -> bool:
@@ -1728,7 +1788,9 @@ class GCPSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         labels: dict[str, str],
+        nexus: dict | None = None,
     ):
+        nexus = nexus or {"enabled": False}
         console.print()
 
         if not self._check_pulumi_installed():
@@ -1773,6 +1835,12 @@ cluster = PineconeGCPCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         labels=config.get_object("labels") or {},
+        # Nexus is opt-in; absent config keys leave it disabled so DB-only
+        # deploys are byte-for-byte unaffected.
+        nexus_enabled=config.get_bool("nexus-enabled") or False,
+        nexus_version=config.get("nexus-version"),
+        nexus_byoc_env=config.get("nexus-byoc-env"),
+        nexus_inference_base=config.get("nexus-inference-base"),
     ),
 )
 
@@ -1823,6 +1891,20 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
             config_content += f"  {project_name}:labels:\n"
             for key, value in labels.items():
                 config_content += f'    {key}: "{value}"\n'
+
+        # Nexus BYOC install (task 2.7). Written only when enabled, so DB-only
+        # stacks omit these keys entirely and `nexus_enabled` stays False.
+        if nexus.get("enabled"):
+            config_content += f"  {project_name}:nexus-enabled: true\n"
+            config_content += (
+                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
+            )
+            if nexus.get("byoc_env"):
+                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
+            config_content += (
+                f"  {project_name}:nexus-inference-base: "
+                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
+            )
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:

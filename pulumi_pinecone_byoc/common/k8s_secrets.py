@@ -30,6 +30,7 @@ class K8sSecrets(pulumi.ComponentResource):
         cpgw_api_key: pulumi.Input[str],
         gcps_api_key: pulumi.Input[str] | None = None,
         dd_api_key: pulumi.Input[str] | None = None,
+        nexus_api_key: pulumi.Input[str] | None = None,
         control_db: Any | None = None,
         system_db: Any | None = None,
         azure_storage_access_key: pulumi.Input[str] | None = None,
@@ -101,6 +102,46 @@ class K8sSecrets(pulumi.ComponentResource):
                 },
                 type="Opaque",
                 opts=ns_opts,
+            )
+
+        if nexus_api_key is not None:
+            # Nexus consumes the minted deployment key as PINECONE_API_KEY
+            # (see proposal §3.3 / §10). The secret lands in the `nexus`
+            # namespace (regcred coverage added in task 2.3); the Nexus
+            # component (task 2.4) / helm (task 1.7) reference it by name.
+            nexus_namespace = k8s.core.v1.Namespace(
+                f"{name}-nexus-ns",
+                metadata=k8s.meta.v1.ObjectMetaArgs(
+                    name="nexus",
+                    labels={
+                        "kubernetes.io/metadata.name": "nexus",
+                        "name": "nexus",
+                    },
+                ),
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    provider=k8s_provider,
+                    delete_before_replace=True,
+                ),
+            )
+
+            k8s.core.v1.Secret(
+                f"{name}-nexus-pinecone-api-key",
+                metadata=k8s.meta.v1.ObjectMetaArgs(
+                    name="nexus-pinecone-api-key",
+                    namespace="nexus",
+                ),
+                data={
+                    # INFERENCE_API_KEY defaults to the same deployment key for
+                    # the PoC (proposal §10).
+                    "PINECONE_API_KEY": b64(pulumi.Output.secret(nexus_api_key)),
+                },
+                type="Opaque",
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    provider=k8s_provider,
+                    depends_on=[nexus_namespace],
+                ),
             )
 
         if azure_storage_access_key is not None:

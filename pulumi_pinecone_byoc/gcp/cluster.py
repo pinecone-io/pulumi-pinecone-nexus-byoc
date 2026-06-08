@@ -8,6 +8,7 @@ from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets
 from ..common.naming import cell_name as _cell_name
+from ..common.nexus import Nexus
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     AmpAccess,
@@ -72,6 +73,24 @@ class PineconeGCPClusterArgs:
     # features
     public_access_enabled: bool = True
     deletion_protection: bool = True
+    # when True, enable Nexus alongside the DB stack: add the Nexus `services`/
+    # `jobs` GKE node pools (task 2.1) and mint a deployment Pinecone key exposed
+    # as a k8s secret (task 2.2). DB-only deploys leave this False.
+    nexus_enabled: bool = False
+    # image tag for the Nexus images (proposal §10 `nexus-version`; coordinated
+    # with task 2.7). Only used when nexus_enabled. If left None, falls back to
+    # `pinecone_version` so a combined manifest can pin a single coordinated tag
+    # (the proposal §0/§7 end-state is a single combined manifest pinning both
+    # pinecone-version + nexus-version as one coordinated release).
+    nexus_version: str | None = None
+    # the `.byoc` deployment environment id surfaced to Nexus as
+    # PINECONE_BYOC_ENV / chart `deployment.environment`. Only used when
+    # nexus_enabled. If left None, the minted environment's env_name is used.
+    nexus_byoc_env: pulumi.Input[str] | None = None
+    # managed inference base for embed/rerank (INFERENCE_BASE). Only used when
+    # nexus_enabled. If left None, defaults to `api_url` (PoC: inference is the
+    # same managed endpoint as index CRUD — proposal §10).
+    nexus_inference_base: pulumi.Input[str] | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -164,6 +183,26 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
         )
 
+        # Nexus deployment key (proposal §3.3, task 2.2): reuse the __SLI__
+        # ApiKey minting pattern to mint one shared deployment key, handed to
+        # Nexus as PINECONE_API_KEY. Gated on nexus_enabled so DB-only deploys
+        # are unaffected.
+        self._nexus_api_key = None
+        if args.nexus_enabled:
+            self._nexus_api_key = ApiKey(
+                f"{config.resource_prefix}-nexus-api-key",
+                ApiKeyArgs(
+                    org_id=self._environment.org_id,
+                    project_name="__SLI__",
+                    key_name=self._cell_name.apply(lambda cn: f"{cn}-nexus-key"),
+                    api_url=args.api_url,
+                    auth0_domain=args.auth0_domain,
+                    auth0_client_id=self._service_account.client_id,
+                    auth0_client_secret=self._service_account.client_secret,
+                ),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._service_account]),
+            )
+
         self._vpc = VPC(
             f"{config.resource_prefix}-vpc",
             config,
@@ -237,6 +276,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
             dd_api_key=self._datadog_api_key.api_key,
+            nexus_api_key=(self._nexus_api_key.value if self._nexus_api_key is not None else None),
             control_db=self._alloydb.control_db,
             system_db=self._alloydb.system_db,
             storage_integration_credentials=(
@@ -247,11 +287,16 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[
-                    self._gke,
-                    self._cpgw_api_key,
-                    self._api_key,
-                    self._datadog_api_key,
-                    self._alloydb,
+                    r
+                    for r in [
+                        self._gke,
+                        self._cpgw_api_key,
+                        self._api_key,
+                        self._datadog_api_key,
+                        self._nexus_api_key,
+                        self._alloydb,
+                    ]
+                    if r is not None
                 ],
             ),
         )
@@ -340,6 +385,41 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gke, self._k8s_configmaps]),
         )
 
+        # Nexus stack (proposal §4, tasks 2.4-2.6). Installed AFTER the DB
+        # stack: depends_on the Pinetools install (DB platform bootstrap), the
+        # k8s secrets (minted Pinecone key in the `nexus` namespace) and the
+        # regcred refresher (image pull auth in nexus/nexus-tasks). Gated on
+        # nexus_enabled so DB-only deploys are byte-for-byte unaffected.
+        self._nexus = None
+        if args.nexus_enabled:
+            self._nexus = Nexus(
+                f"{config.resource_prefix}-nexus",
+                k8s_provider=self._gke.k8s_provider,
+                image_registry=GCP_REGISTRY.base_url,
+                # coordinated `nexus-version` (task 2.7); fall back to the DB
+                # version so a single combined manifest works until 2.7 lands.
+                nexus_version=args.nexus_version or args.pinecone_version,
+                # managed control-plane base; index CRUD + inference stay managed.
+                pinecone_api_base=args.api_url,
+                # the `.byoc` deployment env id (chart `deployment.environment`);
+                # default to the minted environment's name when unset (task 2.7).
+                byoc_env=args.nexus_byoc_env or self._environment.env_name,
+                # managed inference base (INFERENCE_BASE); the component defaults
+                # it to pinecone_api_base when None (PoC: same managed endpoint).
+                inference_base=args.nexus_inference_base,
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    depends_on=[
+                        self._gke,
+                        self._k8s_secrets,
+                        self._k8s_configmaps,
+                        self._gcr_refresher,
+                        self._pinetools,
+                        self._nlb,
+                    ],
+                ),
+            )
+
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
             kubeconfig=self._gke.kubeconfig,
@@ -420,6 +500,14 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 ),
             ]
 
+        # Nexus schedules onto dedicated `services`/`jobs` pools (labels + taints
+        # matching the chart). Added only when Nexus is enabled so DB-only deploys
+        # are unaffected. See gke.nexus_node_pools.
+        if args.nexus_enabled:
+            from .gke import nexus_node_pools
+
+            node_pools.extend(nexus_node_pools())
+
         control_db_cpu = 2
         system_db_cpu = 2
 
@@ -433,6 +521,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             kubernetes_version=args.kubernetes_version,
             parent_zone_name=args.parent_dns_zone_name,
             node_pools=node_pools,
+            nexus_enabled=args.nexus_enabled,
             database=AlloyDBConfig(
                 control_db=AlloyDBInstanceConfig(
                     name="control-db",
@@ -493,3 +582,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
     @property
     def psc_service_attachment(self) -> pulumi.Output[str]:
         return self._nlb.service_attachment.self_link
+
+    @property
+    def nexus(self) -> Nexus | None:
+        return self._nexus
