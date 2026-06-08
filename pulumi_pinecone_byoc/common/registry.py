@@ -27,6 +27,14 @@ GCP_REGISTRY = ContainerRegistry(
     type="gcr",
 )
 
+# Nexus images live in a separate Artifact Registry repo (nexus-alpha), NOT the
+# DB `unstable` repo. The Nexus component pulls `nexus_<component>` images from
+# here while the DB/pinetools images stay on GCP_REGISTRY (unstable).
+NEXUS_GCP_REGISTRY = ContainerRegistry(
+    base_url="us-east1-docker.pkg.dev/pinecone-artifacts/nexus-alpha",
+    type="gcr",
+)
+
 AZURE_REGISTRY = ContainerRegistry(
     base_url="pinecone.azurecr.io/unstable/pinecone/v4",
     type="acr",
