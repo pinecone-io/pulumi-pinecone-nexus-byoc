@@ -73,6 +73,12 @@ class PineconeAzureClusterArgs:
     # features
     public_access_enabled: bool = True
     deletion_protection: bool = True
+    # when True, provision the Azure AD Application + ServicePrincipal (and the
+    # subscription-scoped Storage Blob Data Reader role) that the data-importer
+    # uses for cross-account blob reads. Requires the deploying identity to hold
+    # the Entra directory permission to create a ServicePrincipal. Defaults to
+    # False; DB + Nexus ingest->query does not need it.
+    storage_integration_enabled: bool = False
     # when True, enable Nexus alongside the DB stack: add the Nexus `services`/
     # `jobs` AKS node pools, mint a deployment Pinecone key exposed as a k8s
     # secret (task 2.2), and install the Nexus Helm stack. DB-only deploys leave
@@ -289,40 +295,50 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             ),
         )
 
-        # storage integration: Azure AD app for data-importer blob access
-        storage_integration_app = azuread.Application(
-            f"{config.resource_prefix}-storage-integration-app",
-            display_name=self._cell_name.apply(lambda cn: f"{cn}-storage-integration"),
-            opts=child_opts,
-        )
-        storage_integration_sp = azuread.ServicePrincipal(
-            f"{config.resource_prefix}-storage-integration-sp",
-            client_id=storage_integration_app.client_id,
-            opts=child_opts,
-        )
-        storage_integration_password = azuread.ServicePrincipalPassword(
-            f"{config.resource_prefix}-storage-integration-password",
-            service_principal_id=storage_integration_sp.id,
-            opts=child_opts,
-        )
-        # Storage Blob Data Reader at subscription scope so the data-importer
-        # can read from any storage account the customer points their import URI at.
-        STORAGE_BLOB_DATA_READER_ROLE = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
-        azure_native.authorization.RoleAssignment(
-            f"{config.resource_prefix}-storage-integration-role",
-            principal_id=storage_integration_sp.object_id,
-            principal_type="ServicePrincipal",
-            role_definition_id=pulumi.Output.from_input(config.subscription_id).apply(
-                lambda sid: (
-                    f"/subscriptions/{sid}/providers/Microsoft.Authorization"
-                    f"/roleDefinitions/{STORAGE_BLOB_DATA_READER_ROLE}"
-                )
-            ),
-            scope=pulumi.Output.from_input(config.subscription_id).apply(
-                lambda sid: f"/subscriptions/{sid}"
-            ),
-            opts=child_opts,
-        )
+        # storage integration: Azure AD app for data-importer blob access.
+        # Gated on storage_integration_enabled (default False): creating the
+        # ServicePrincipal needs an Entra directory permission the deploying
+        # identity may lack, and DB + Nexus ingest->query does not need it.
+        # When disabled, the credentials are set to None and downstream
+        # consumers (k8s secret / configmap entries) omit them.
+        storage_integration_app_client_id: pulumi.Input[str] | None = None
+        storage_integration_password_value: pulumi.Input[str] | None = None
+        if args.storage_integration_enabled:
+            storage_integration_app = azuread.Application(
+                f"{config.resource_prefix}-storage-integration-app",
+                display_name=self._cell_name.apply(lambda cn: f"{cn}-storage-integration"),
+                opts=child_opts,
+            )
+            storage_integration_sp = azuread.ServicePrincipal(
+                f"{config.resource_prefix}-storage-integration-sp",
+                client_id=storage_integration_app.client_id,
+                opts=child_opts,
+            )
+            storage_integration_password = azuread.ServicePrincipalPassword(
+                f"{config.resource_prefix}-storage-integration-password",
+                service_principal_id=storage_integration_sp.id,
+                opts=child_opts,
+            )
+            # Storage Blob Data Reader at subscription scope so the data-importer
+            # can read from any storage account the customer points their import URI at.
+            STORAGE_BLOB_DATA_READER_ROLE = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
+            azure_native.authorization.RoleAssignment(
+                f"{config.resource_prefix}-storage-integration-role",
+                principal_id=storage_integration_sp.object_id,
+                principal_type="ServicePrincipal",
+                role_definition_id=pulumi.Output.from_input(config.subscription_id).apply(
+                    lambda sid: (
+                        f"/subscriptions/{sid}/providers/Microsoft.Authorization"
+                        f"/roleDefinitions/{STORAGE_BLOB_DATA_READER_ROLE}"
+                    )
+                ),
+                scope=pulumi.Output.from_input(config.subscription_id).apply(
+                    lambda sid: f"/subscriptions/{sid}"
+                ),
+                opts=child_opts,
+            )
+            storage_integration_app_client_id = storage_integration_app.client_id
+            storage_integration_password_value = storage_integration_password.value
 
         # phase 4: k8s configuration
         self._k8s_secrets = K8sSecrets(
@@ -335,9 +351,11 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             control_db=self._database.control_db,
             system_db=self._database.system_db,
             azure_storage_access_key=self._storage.access_key,
-            storage_integration_credentials={
-                "client-secret": storage_integration_password.value,
-            },
+            storage_integration_credentials=(
+                {"client-secret": storage_integration_password_value}
+                if storage_integration_password_value is not None
+                else None
+            ),
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[
@@ -411,8 +429,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             "aws_amp_remote_write_url": self._amp_access.amp_remote_write_endpoint,
             "aws_amp_sigv4_role_arn": self._amp_access.pinecone_role_arn,
             "aws_amp_ingest_role_arn": "",
-            "azure_storage_integration_tenant_id": tenant_id,
-            "azure_storage_integration_client_id": storage_integration_app.client_id,
+            # None when storage integration is disabled; the configmap component
+            # omits None-valued entries.
+            "azure_storage_integration_tenant_id": (
+                tenant_id if storage_integration_app_client_id is not None else None
+            ),
+            "azure_storage_integration_client_id": storage_integration_app_client_id,
         }
 
         self._k8s_configmaps = K8sConfigMaps(
