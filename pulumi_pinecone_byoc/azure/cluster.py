@@ -10,6 +10,7 @@ from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets
 from ..common.naming import cell_name as _cell_name
+from ..common.nexus import Nexus
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     AmpAccess,
@@ -25,7 +26,7 @@ from ..common.providers import (
     ServiceAccount,
     ServiceAccountArgs,
 )
-from ..common.registry import AZURE_REGISTRY
+from ..common.registry import AZURE_REGISTRY, NEXUS_AZURE_REGISTRY
 from ..common.uninstaller import ClusterUninstaller
 from .aks import AKS
 from .database import Database
@@ -72,9 +73,27 @@ class PineconeAzureClusterArgs:
     # features
     public_access_enabled: bool = True
     deletion_protection: bool = True
-    # when True, mint a deployment Pinecone key for Nexus and expose it as a
-    # k8s secret (proposal task 2.2). DB-only deploys leave this False.
+    # when True, enable Nexus alongside the DB stack: add the Nexus `services`/
+    # `jobs` AKS node pools, mint a deployment Pinecone key exposed as a k8s
+    # secret (task 2.2), and install the Nexus Helm stack. DB-only deploys leave
+    # this False. Mirrors PineconeGCPClusterArgs.
     nexus_enabled: bool = False
+    # image tag for the Nexus images (proposal §10 `nexus-version`). Only used
+    # when nexus_enabled. If left None, falls back to `pinecone_version`.
+    nexus_version: str | None = None
+    # the `.byoc` deployment environment id surfaced to Nexus as
+    # PINECONE_BYOC_ENV / chart `deployment.environment`. Only used when
+    # nexus_enabled. If left None, the minted environment's env_name is used.
+    nexus_byoc_env: pulumi.Input[str] | None = None
+    # managed inference base for embed/rerank (INFERENCE_BASE). Only used when
+    # nexus_enabled. If left None, defaults to `api_url` (PoC: inference is the
+    # same managed endpoint as index CRUD).
+    nexus_inference_base: pulumi.Input[str] | None = None
+    # container registry base URL for the Nexus images. Nexus images live in
+    # their own ACR repo (`nexus`), co-located on the DB registry host but
+    # distinct from the DB `unstable` repo. Only used when nexus_enabled. If left
+    # None, defaults to NEXUS_AZURE_REGISTRY.base_url.
+    nexus_image_registry: str | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -429,6 +448,48 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._aks, self._k8s_configmaps]),
         )
 
+        # Nexus stack (proposal §4, tasks 2.4-2.6). Installed AFTER the DB
+        # stack: depends_on the Pinetools install (DB platform bootstrap), the
+        # k8s secrets (minted Pinecone key in the `nexus` namespace) and the
+        # regcred refresher (image pull auth in nexus/nexus-tasks). Gated on
+        # nexus_enabled so DB-only deploys are byte-for-byte unaffected. Mirrors
+        # gcp/cluster.py, with Azure-specific storage class (managed-csi) and no
+        # gce-internal ingress class (AKS exposes the gloo gateway directly).
+        self._nexus = None
+        if args.nexus_enabled:
+            self._nexus = Nexus(
+                f"{config.resource_prefix}-nexus",
+                k8s_provider=self._aks.k8s_provider,
+                # Nexus images live in the `nexus` repo, co-located on the DB host.
+                image_registry=(args.nexus_image_registry or NEXUS_AZURE_REGISTRY.base_url),
+                # coordinated `nexus-version`; fall back to the DB version.
+                nexus_version=args.nexus_version or args.pinecone_version,
+                # managed control-plane base; index CRUD + inference stay managed.
+                pinecone_api_base=args.api_url,
+                # the `.byoc` deployment env id (chart `deployment.environment`);
+                # default to the minted environment's name when unset.
+                byoc_env=args.nexus_byoc_env or self._environment.env_name,
+                # managed inference base (INFERENCE_BASE); the component defaults
+                # it to pinecone_api_base when None (PoC: same managed endpoint).
+                inference_base=args.nexus_inference_base,
+                # AKS default dynamic storage class for Nexus PVCs.
+                storage_class="managed-csi",
+                # AKS has no gce-internal ingress class; the gloo gateway is
+                # exposed directly (azure/nlb.py), so omit the annotation.
+                ingress_class=None,
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    depends_on=[
+                        self._aks,
+                        self._k8s_secrets,
+                        self._k8s_configmaps,
+                        self._acr_refresher,
+                        self._pinetools,
+                        self._nlb,
+                    ],
+                ),
+            )
+
         # phase 5: cleanup
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
@@ -511,6 +572,14 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 ),
             ]
 
+        # Nexus schedules onto dedicated `services`/`jobs` pools (labels + taints
+        # matching the chart). Added only when Nexus is enabled so DB-only deploys
+        # are unaffected. Mirrors gcp/cluster.py. See aks.nexus_node_pools.
+        if args.nexus_enabled:
+            from .aks import nexus_node_pools
+
+            node_pools.extend(nexus_node_pools())
+
         return AzureConfig(
             region=args.region,
             global_env=args.global_env,
@@ -554,6 +623,10 @@ class PineconeAzureCluster(pulumi.ComponentResource):
     @property
     def dns(self) -> DNS:
         return self._dns
+
+    @property
+    def nexus(self) -> Nexus | None:
+        return self._nexus
 
     @property
     def private_link_service_name(self) -> pulumi.Output[str]:

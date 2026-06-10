@@ -32,6 +32,9 @@ NEXUS_VERSION = PINECONE_VERSION
 # the DB registry host; DB/pinetools images stay in the `unstable` repo.
 NEXUS_IMAGE_REGISTRY = "us-docker.pkg.dev/pinecone-artifacts/nexus"
 
+# Azure analogue: Nexus images in the `nexus` repo co-located on the ACR host.
+NEXUS_AZURE_IMAGE_REGISTRY = "pinecone.azurecr.io/nexus"
+
 console = Console()
 
 
@@ -2594,6 +2597,32 @@ class AzureSetupWizard(BaseSetupWizard):
         public_access = os.environ.get("PINECONE_PUBLIC_ACCESS", "true").lower() == "true"
         project_name = os.environ.get("PINECONE_PROJECT_NAME", "pinecone-byoc")
 
+        # Nexus is opt-in; default off so headless DB-only installs are unchanged.
+        # Uses the SAME env var names as the GCP wizard, except the image registry
+        # defaults to the Azure ACR `nexus` repo.
+        if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
+            nexus = {
+                "enabled": True,
+                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
+                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                "image_registry": os.environ.get(
+                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_AZURE_IMAGE_REGISTRY
+                ),
+                "inference_base": os.environ.get(
+                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
+                ),
+            }
+        else:
+            nexus = {"enabled": False}
+
+        # CPGW control-plane target. Optional; written to stack config only when
+        # set, otherwise the dataclass prod defaults apply.
+        cpgw = {}
+        if os.environ.get("PINECONE_API_URL"):
+            cpgw["api_url"] = os.environ["PINECONE_API_URL"]
+        if os.environ.get("PINECONE_GLOBAL_ENV"):
+            cpgw["global_env"] = os.environ["PINECONE_GLOBAL_ENV"]
+
         return self._generate_project(
             output_dir,
             project_name,
@@ -2605,6 +2634,8 @@ class AzureSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             {},
+            nexus,
+            cpgw,
         )
 
     def _validate_azure_creds(self) -> str | None:
@@ -2753,7 +2784,11 @@ class AzureSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         tags: dict[str, str],
+        nexus: dict | None = None,
+        cpgw: dict | None = None,
     ):
+        nexus = nexus or {"enabled": False}
+        cpgw = cpgw or {}
         console.print()
 
         if not self._check_pulumi_installed():
@@ -2795,6 +2830,17 @@ cluster = PineconeAzureCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         tags=config.get_object("tags"),
+        # CPGW control-plane target. Absent config keys fall back to the prod
+        # defaults so existing deploys are byte-for-byte unchanged.
+        api_url=config.get("api-url") or "https://api.pinecone.io",
+        global_env=config.get("global-env") or "prod",
+        # Nexus is opt-in; absent config keys leave it disabled so DB-only
+        # deploys are byte-for-byte unaffected.
+        nexus_enabled=config.get_bool("nexus-enabled") or False,
+        nexus_version=config.get("nexus-version"),
+        nexus_byoc_env=config.get("nexus-byoc-env"),
+        nexus_inference_base=config.get("nexus-inference-base"),
+        nexus_image_registry=config.get("nexus-image-registry"),
     ),
 )
 
@@ -2844,6 +2890,32 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
             config_content += f"  {project_name}:tags:\n"
             for key, value in tags.items():
                 config_content += f'    {key}: "{value}"\n'
+
+        # Nexus BYOC install. Written only when enabled, so DB-only stacks omit
+        # these keys entirely and `nexus_enabled` stays False. Mirrors the GCP
+        # wizard.
+        if nexus.get("enabled"):
+            config_content += f"  {project_name}:nexus-enabled: true\n"
+            config_content += (
+                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
+            )
+            config_content += (
+                f"  {project_name}:nexus-image-registry: "
+                f"{nexus.get('image_registry', NEXUS_AZURE_IMAGE_REGISTRY)}\n"
+            )
+            if nexus.get("byoc_env"):
+                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
+            config_content += (
+                f"  {project_name}:nexus-inference-base: "
+                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
+            )
+
+        # CPGW control-plane target. Written only when explicitly provided so
+        # omitting them keeps the dataclass prod defaults (api.pinecone.io / prod).
+        if cpgw.get("api_url"):
+            config_content += f"  {project_name}:api-url: {cpgw['api_url']}\n"
+        if cpgw.get("global_env"):
+            config_content += f"  {project_name}:global-env: {cpgw['global_env']}\n"
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:

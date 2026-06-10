@@ -51,8 +51,17 @@ _PINECONE_KEY_SECRET_KEY = "PINECONE_API_KEY"
 # the GKE default), so the PoC reuses GKE's built-in dynamic SSD class. RWX
 # (Filestore/NFS) is intentionally left unconfigured for the PoC — see the
 # module-level note and proposal §11. Override via `storage_class` if a cluster
-# default differs.
+# default differs (Azure/AKS passes `managed-csi`).
 _DEFAULT_STORAGE_CLASS = "premium-rwo"
+
+# Ingress class for the Nexus gateway Ingress. On GKE the DB stack uses the
+# internal GCE ingress controller, so the Nexus front door rides the same
+# `gce-internal` class. On AKS there is no equivalent ingress-class annotation
+# (gcp/nlb.py vs azure/nlb.py: the Azure path exposes the gloo gateway directly
+# via LoadBalancer Services with no `kubernetes.io/ingress.class`), so the Azure
+# caller passes `ingress_class=None` to omit the annotation entirely. Defaults to
+# the GCP value so GCP behavior is unchanged.
+_DEFAULT_INGRESS_CLASS = "gce-internal"
 
 
 class Nexus(pulumi.ComponentResource):
@@ -66,6 +75,7 @@ class Nexus(pulumi.ComponentResource):
         byoc_env: pulumi.Input[str],
         inference_base: pulumi.Input[str] | None = None,
         storage_class: str = _DEFAULT_STORAGE_CLASS,
+        ingress_class: str | None = _DEFAULT_INGRESS_CLASS,
         nfs_server: pulumi.Input[str] | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
@@ -85,7 +95,13 @@ class Nexus(pulumi.ComponentResource):
                 in-cluster host the control plane returns for this env.
             inference_base: managed inference base (INFERENCE_BASE). Defaults to
                 `pinecone_api_base` (PoC: inference is the same managed endpoint).
-            storage_class: StorageClass for Nexus PVCs (task 2.5).
+            storage_class: StorageClass for Nexus PVCs (task 2.5). Defaults to the
+                GKE `premium-rwo` class; AKS passes `managed-csi`.
+            ingress_class: value for the gateway Ingress
+                `kubernetes.io/ingress.class` annotation. Defaults to
+                `gce-internal` (GKE). Pass `None` to omit the annotation entirely
+                (AKS, where the gloo gateway is exposed directly with no ingress
+                class).
             nfs_server: optional pre-provisioned Filestore/NFS server IP for RWX
                 (proposal §11 infra ask). Left unset for the PoC.
         """
@@ -227,6 +243,7 @@ class Nexus(pulumi.ComponentResource):
         self.gateway_ingress = self._attach_gateway_to_lb(
             name,
             k8s_provider,
+            ingress_class,
         )
 
         self.register_outputs(
@@ -241,35 +258,43 @@ class Nexus(pulumi.ComponentResource):
         self,
         name: str,
         k8s_provider: pulumi.ProviderResource,
+        ingress_class: str | None = _DEFAULT_INGRESS_CLASS,
     ) -> k8s.networking.v1.Ingress:
         """Expose the Nexus gateway through the existing customer LB.
 
-        The existing internal/external LB (gcp/nlb.py) terminates TLS for the
-        cluster wildcard hosts and points at the `gateway-proxy` Service in
-        gloo-system. The Nexus gateway runs as a ClusterIP Service in the
-        `nexus` namespace; this Ingress object adds a route on the same gce /
-        gce-internal ingress class so customer traffic to the Nexus host lands
-        on the Nexus gateway. The DB data plane routing is left as-is and stays
-        internal-only.
+        The existing internal/external LB (gcp/nlb.py, azure/nlb.py) terminates
+        TLS for the cluster wildcard hosts and points at the `gateway-proxy`
+        Service in gloo-system. The Nexus gateway runs as a ClusterIP Service in
+        the `nexus` namespace; this Ingress object adds a route so customer
+        traffic to the Nexus host lands on the Nexus gateway. The DB data plane
+        routing is left as-is and stays internal-only.
+
+        On GKE the route attaches to the internal GCE ingress controller via the
+        `gce-internal` ingress class. On AKS there is no equivalent class
+        annotation (the gloo gateway is exposed directly by LoadBalancer
+        Services), so `ingress_class=None` omits the annotation entirely.
 
         Kept minimal for the PoC: a single Ingress in the nexus namespace
         backed by the nexus gateway ClusterIP Service on port 80.
         """
+        annotations = {
+            # HTTP is enabled for the PoC: no TLS cert is wired up here, and the
+            # GCE ingress controller refuses to provision an LB when both HTTP
+            # and HTTPS are disabled.
+            "kubernetes.io/ingress.allow-http": "true",
+        }
+        if ingress_class is not None:
+            # Attach to the same internal ingress controller the DB stack uses
+            # (GKE: gce-internal); the customer front door rides the existing LB
+            # rather than provisioning a new one. Omitted on AKS.
+            annotations["kubernetes.io/ingress.class"] = ingress_class
+
         return k8s.networking.v1.Ingress(
             f"{name}-gateway-ingress",
             metadata=k8s.meta.v1.ObjectMetaArgs(
                 name="nexus-gateway",
                 namespace=_NEXUS_NAMESPACE,
-                annotations={
-                    # Attach to the same internal ingress controller the DB
-                    # stack uses (gce-internal); the customer front door rides
-                    # the existing LB rather than provisioning a new one.
-                    "kubernetes.io/ingress.class": "gce-internal",
-                    # HTTP is enabled for the PoC: no TLS cert is wired up here,
-                    # and the GCE ingress controller refuses to provision an LB
-                    # when both HTTP and HTTPS are disabled.
-                    "kubernetes.io/ingress.allow-http": "true",
-                },
+                annotations=annotations,
             ),
             spec=k8s.networking.v1.IngressSpecArgs(
                 default_backend=k8s.networking.v1.IngressBackendArgs(
