@@ -28,10 +28,9 @@ PINECONE_VERSION = "main-94a9e90"
 # to `pinecone-version` so a single combined manifest still works.
 NEXUS_VERSION = PINECONE_VERSION
 
-# Nexus images live in a separate Artifact Registry repo (nexus-alpha), NOT the
-# DB `unstable` repo. The GCP component pulls `nexus_<component>` images from
-# here; DB/pinetools images stay on the unstable registry.
-NEXUS_IMAGE_REGISTRY = "us-east1-docker.pkg.dev/pinecone-artifacts/nexus-alpha"
+# Nexus images live in their own Artifact Registry repo (`nexus`), co-located on
+# the DB registry host; DB/pinetools images stay in the `unstable` repo.
+NEXUS_IMAGE_REGISTRY = "us-docker.pkg.dev/pinecone-artifacts/nexus"
 
 console = Console()
 
@@ -1768,7 +1767,7 @@ class GCPSetupWizard(BaseSetupWizard):
         nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
 
         console.print()
-        console.print("  [dim]Container registry for the Nexus images (nexus-alpha, separate from the DB registry).[/]")
+        console.print("  [dim]Container registry for the Nexus images (the `nexus` repo, co-located on the DB registry host).[/]")
         image_registry = self._prompt("Enter nexus image registry", NEXUS_IMAGE_REGISTRY)
 
         console.print()
