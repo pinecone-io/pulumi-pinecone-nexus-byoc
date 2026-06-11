@@ -2292,7 +2292,7 @@ class AzurePreflightChecker:
 
     def _check_vm_skus(self):
         vm_skus = [
-            "Standard_D4s_v5",
+            "Standard_D4s_v4",
             "Standard_L2aos_v4",
             "Standard_L2s_v4",
             "Standard_L4s_v4",
@@ -2372,7 +2372,7 @@ class AzurePreflightChecker:
 
             data = json.loads(result.stdout)
             required_skus = [
-                "Standard_D4s_v5",
+                "Standard_D4s_v4",
                 "Standard_L2aos_v4",
                 "Standard_L2s_v4",
                 "Standard_L4s_v4",
@@ -2710,7 +2710,7 @@ class AzureSetupWizard(BaseSetupWizard):
             if result.returncode == 0:
                 data = _json.loads(result.stdout)
                 required_skus = [
-                    "Standard_D4s_v5",
+                    "Standard_D4s_v4",
                     "Standard_L2aos_v4",
                     "Standard_L2s_v4",
                     "Standard_L4s_v4",

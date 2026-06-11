@@ -49,7 +49,7 @@ def nexus_node_pools() -> list[NodePoolConfig]:
     return [
         NodePoolConfig(
             name="nexus-services",
-            vm_size="Standard_D4s_v5",
+            vm_size="Standard_D4s_v4",
             min_size=1,
             max_size=10,
             disk_size_gb=100,
@@ -58,7 +58,7 @@ def nexus_node_pools() -> list[NodePoolConfig]:
         ),
         NodePoolConfig(
             name="nexus-jobs",
-            vm_size="Standard_D4s_v5",
+            vm_size="Standard_D4s_v4",
             min_size=1,
             max_size=10,
             disk_size_gb=100,
@@ -248,7 +248,7 @@ class AKS(pulumi.ComponentResource):
         np_config: NodePoolConfig | None,
         subnet_id: pulumi.Input[str],
     ) -> containerservice.ManagedClusterAgentPoolProfileArgs:
-        vm_size = np_config.vm_size if np_config else "Standard_D4s_v5"
+        vm_size = np_config.vm_size if np_config else "Standard_D4s_v4"
         min_count = np_config.min_size if np_config else 1
         max_count = np_config.max_size if np_config else 10
         disk_size_gb = np_config.disk_size_gb if np_config else 100
