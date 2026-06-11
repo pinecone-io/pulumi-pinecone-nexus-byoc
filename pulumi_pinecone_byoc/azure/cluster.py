@@ -100,6 +100,12 @@ class PineconeAzureClusterArgs:
     # distinct from the DB `unstable` repo. Only used when nexus_enabled. If left
     # None, defaults to NEXUS_AZURE_REGISTRY.base_url.
     nexus_image_registry: str | None = None
+    # Gemini synthesis key surfaced to Nexus as PINECONE_MODELS__GEMINI_API_KEY
+    # via the `nexus-config` Secret. Only used when nexus_enabled.
+    nexus_gemini_api_key: pulumi.Input[str] | None = None
+    # BYOC single-tenant project id surfaced to Nexus as
+    # PINECONE_PINECONE__BYOC_PROJECT_ID. Only used when nexus_enabled.
+    nexus_byoc_project_id: pulumi.Input[str] = "byoc-poc"
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -194,26 +200,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             ),
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
         )
-
-        # Nexus deployment key (proposal §3.3, task 2.2): reuse the __SLI__
-        # ApiKey minting pattern to mint one shared deployment key, handed to
-        # Nexus as PINECONE_API_KEY. Gated on nexus_enabled so DB-only deploys
-        # are unaffected.
-        self._nexus_api_key = None
-        if args.nexus_enabled:
-            self._nexus_api_key = ApiKey(
-                f"{config.resource_prefix}-nexus-api-key",
-                ApiKeyArgs(
-                    org_id=self._environment.org_id,
-                    project_name="__SLI__",
-                    key_name=self._cell_name.apply(lambda cn: f"{cn}-nexus-key"),
-                    api_url=args.api_url,
-                    auth0_domain=args.auth0_domain,
-                    auth0_client_id=self._service_account.client_id,
-                    auth0_client_secret=self._service_account.client_secret,
-                ),
-                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._service_account]),
-            )
 
         # phase 2: infrastructure
         self._vnet = VNet(
@@ -347,7 +333,11 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
             dd_api_key=self._datadog_api_key.api_key,
-            nexus_api_key=(self._nexus_api_key.value if self._nexus_api_key is not None else None),
+            # Nexus consumes the deploy's own Pinecone control-plane key as
+            # PINECONE_PINECONE__API_KEY (#510 native index-create egress). Only
+            # passed when nexus_enabled so DB-only deploys skip the nexus secrets.
+            nexus_api_key=(args.pinecone_api_key if args.nexus_enabled else None),
+            nexus_gemini_api_key=(args.nexus_gemini_api_key if args.nexus_enabled else None),
             control_db=self._database.control_db,
             system_db=self._database.system_db,
             azure_storage_access_key=self._storage.access_key,
@@ -365,7 +355,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                         self._cpgw_api_key,
                         self._api_key,
                         self._datadog_api_key,
-                        self._nexus_api_key,
                         self._database,
                     ]
                     if r is not None
@@ -488,11 +477,17 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 nexus_version=args.nexus_version or args.pinecone_version,
                 # managed control-plane base; index CRUD + inference stay managed.
                 pinecone_api_base=args.api_url,
-                # the `.byoc` deployment env id (chart `deployment.environment`);
-                # default to the minted environment's name when unset.
+                # the `.byoc` env id surfaced as PINECONE_ENVIRONMENT; drives
+                # #510 placement. Default to the minted env name when unset.
                 byoc_env=args.nexus_byoc_env or self._environment.env_name,
-                # managed inference base (INFERENCE_BASE); the component defaults
-                # it to pinecone_api_base when None (PoC: same managed endpoint).
+                # #510 control-plane index placement target.
+                cloud="azure",
+                region=args.region,
+                # preprod omits the x-environment preprod header.
+                pinecone_prod=args.global_env == "prod",
+                # BYOC single-tenant project id (PINECONE_PINECONE__BYOC_PROJECT_ID).
+                byoc_project_id=args.nexus_byoc_project_id,
+                # managed inference base; the component defaults it when None.
                 inference_base=args.nexus_inference_base,
                 # AKS default dynamic storage class for Nexus PVCs.
                 storage_class="managed-csi",
@@ -649,6 +644,19 @@ class PineconeAzureCluster(pulumi.ComponentResource):
     @property
     def nexus(self) -> Nexus | None:
         return self._nexus
+
+    @property
+    def nexus_byoc_project_id(self) -> pulumi.Input[str] | None:
+        """The BYOC single-tenant project id Nexus runs under (#510), or None
+        on DB-only deploys. Operator logs in scoped to this project."""
+        return self._nexus.byoc_project_id if self._nexus is not None else None
+
+    @property
+    def nexus_byoc_session_credential(self) -> pulumi.Output[str] | None:
+        """The seeded BYOC login credential (#670) the operator uses to
+        authenticate against the deployed Nexus, or None on DB-only deploys.
+        Marked secret."""
+        return self._k8s_secrets.byoc_session_credential
 
     @property
     def private_link_service_name(self) -> pulumi.Output[str]:

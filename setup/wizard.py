@@ -1606,6 +1606,7 @@ class GCPSetupWizard(BaseSetupWizard):
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
+                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
             }
         else:
             nexus = {"enabled": False}
@@ -1777,12 +1778,23 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print("  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]")
         inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
 
+        console.print()
+        console.print("  [dim]BYOC single-tenant project id (PINECONE_PINECONE__BYOC_PROJECT_ID).[/]")
+        byoc_project_id = self._prompt("Enter BYOC project id", "byoc-poc")
+
+        console.print()
+        console.print(
+            "  [dim]The Gemini synthesis key is a secret; set it after the project is"
+            " created:[/]\n  [dim]pulumi config set --secret nexus-gemini-api-key <key>[/]"
+        )
+
         return {
             "enabled": True,
             "byoc_env": byoc_env.strip(),
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
             "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
+            "byoc_project_id": byoc_project_id.strip() or "byoc-poc",
         }
 
     def _get_cpgw_config(self) -> dict:
@@ -1903,6 +1915,8 @@ cluster = PineconeGCPCluster(
         nexus_byoc_env=config.get("nexus-byoc-env"),
         nexus_inference_base=config.get("nexus-inference-base"),
         nexus_image_registry=config.get("nexus-image-registry"),
+        nexus_gemini_api_key=config.get_secret("nexus-gemini-api-key"),
+        nexus_byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
     ),
 )
 
@@ -1911,6 +1925,11 @@ update_kubeconfig_command = cluster.name.apply(
 )
 pulumi.export("environment", cluster.environment.env_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
+if config.get_bool("nexus-enabled"):
+    # #670 seeded login: the operator authenticates against the deployed Nexus
+    # with this credential, scoped to the BYOC project id below.
+    pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
+    pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("psc_service_attachment", cluster.psc_service_attachment)
 '''
@@ -1967,10 +1986,16 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
             )
             if nexus.get("byoc_env"):
                 config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
+            if nexus.get("byoc_project_id"):
+                config_content += (
+                    f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
+                )
             config_content += (
                 f"  {project_name}:nexus-inference-base: "
                 f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
             )
+            # nexus-gemini-api-key is a secret; set it out-of-band:
+            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
 
         # CPGW control-plane target. Written only when explicitly provided so
         # omitting them keeps the dataclass prod defaults (api.pinecone.io / prod).
@@ -2611,6 +2636,7 @@ class AzureSetupWizard(BaseSetupWizard):
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
+                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
             }
         else:
             nexus = {"enabled": False}
@@ -2841,6 +2867,8 @@ cluster = PineconeAzureCluster(
         nexus_byoc_env=config.get("nexus-byoc-env"),
         nexus_inference_base=config.get("nexus-inference-base"),
         nexus_image_registry=config.get("nexus-image-registry"),
+        nexus_gemini_api_key=config.get_secret("nexus-gemini-api-key"),
+        nexus_byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
     ),
 )
 
@@ -2850,6 +2878,11 @@ update_kubeconfig_command = cluster.name.apply(
 )
 pulumi.export("environment", cluster.environment.env_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
+if config.get_bool("nexus-enabled"):
+    # #670 seeded login: the operator authenticates against the deployed Nexus
+    # with this credential, scoped to the BYOC project id below.
+    pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
+    pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("private_link_service_name", cluster.private_link_service_name)
     pulumi.export("private_link_service_resource_group", cluster.private_link_service_resource_group)
@@ -2905,10 +2938,16 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
             )
             if nexus.get("byoc_env"):
                 config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
+            if nexus.get("byoc_project_id"):
+                config_content += (
+                    f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
+                )
             config_content += (
                 f"  {project_name}:nexus-inference-base: "
                 f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
             )
+            # nexus-gemini-api-key is a secret; set it out-of-band:
+            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
 
         # CPGW control-plane target. Written only when explicitly provided so
         # omitting them keeps the dataclass prod defaults (api.pinecone.io / prod).

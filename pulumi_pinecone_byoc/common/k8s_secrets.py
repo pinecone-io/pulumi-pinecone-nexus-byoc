@@ -23,6 +23,10 @@ def postgres_url(host: str, port: int, username: str, password: str, db_name: st
 
 class K8sSecrets(pulumi.ComponentResource):
     cpgw_api_key: pulumi.Output[str]
+    # Generated when nexus_api_key is provided; the seeded BYOC login credential
+    # (#670) surfaced to the operator so they can authenticate against the
+    # deployed Nexus. None on DB-only deploys.
+    byoc_session_credential: pulumi.Output[str] | None
 
     def __init__(
         self,
@@ -32,6 +36,7 @@ class K8sSecrets(pulumi.ComponentResource):
         gcps_api_key: pulumi.Input[str] | None = None,
         dd_api_key: pulumi.Input[str] | None = None,
         nexus_api_key: pulumi.Input[str] | None = None,
+        nexus_gemini_api_key: pulumi.Input[str] | None = None,
         control_db: Any | None = None,
         system_db: Any | None = None,
         azure_storage_access_key: pulumi.Input[str] | None = None,
@@ -41,6 +46,7 @@ class K8sSecrets(pulumi.ComponentResource):
         super().__init__("pinecone:byoc:K8sSecrets", name, None, opts)
 
         self.cpgw_api_key = pulumi.Output.secret(cpgw_api_key)
+        self.byoc_session_credential = None
 
         self.namespace = k8s.core.v1.Namespace(
             f"{name}-external-secrets-ns",
@@ -106,10 +112,6 @@ class K8sSecrets(pulumi.ComponentResource):
             )
 
         if nexus_api_key is not None:
-            # Nexus consumes the minted deployment key as PINECONE_API_KEY
-            # (see proposal §3.3 / §10). The secret lands in the `nexus`
-            # namespace (regcred coverage added in task 2.3); the Nexus
-            # component (task 2.4) / helm (task 1.7) reference it by name.
             nexus_namespace = k8s.core.v1.Namespace(
                 f"{name}-nexus-ns",
                 metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -126,36 +128,29 @@ class K8sSecrets(pulumi.ComponentResource):
                 ),
             )
 
-            k8s.core.v1.Secret(
-                f"{name}-nexus-pinecone-api-key",
-                metadata=k8s.meta.v1.ObjectMetaArgs(
-                    name="nexus-pinecone-api-key",
-                    namespace="nexus",
-                ),
-                data={
-                    # INFERENCE_API_KEY defaults to the same deployment key for
-                    # the PoC (proposal §10).
-                    "PINECONE_API_KEY": b64(pulumi.Output.secret(nexus_api_key)),
-                },
-                type="Opaque",
-                opts=pulumi.ResourceOptions(
-                    parent=self,
-                    provider=k8s_provider,
-                    depends_on=[nexus_namespace],
-                ),
-            )
-
             # The Nexus helm chart only self-mints `nexus-config` when
             # localRuntime=true. In prod mode (localRuntime=false) the app
             # pods (api, orchestrator, knowql, file-proxy) expect this secret
-            # to be provided externally, so mint it here. JWT_SECRET is
-            # required; the LLM keys are placeholders for the PoC (LLM
-            # synthesis is out of scope).
+            # to be provided externally, so mint it here.
             nexus_jwt_secret = random.RandomPassword(
                 f"{name}-nexus-jwt",
                 length=48,
                 special=False,
                 opts=pulumi.ResourceOptions(parent=self),
+            )
+
+            # #670 seeded-credential login: the high-entropy key the deployed
+            # Nexus accepts as PINECONE_PINECONE__BYOC_SESSION_CREDENTIAL. Held
+            # in `nexus-config` and surfaced as a (secret) component output so
+            # the operator can retrieve it to authenticate.
+            byoc_session_credential = random.RandomPassword(
+                f"{name}-nexus-byoc-session-credential",
+                length=32,
+                special=False,
+                opts=pulumi.ResourceOptions(parent=self),
+            )
+            self.byoc_session_credential = pulumi.Output.secret(
+                byoc_session_credential.result
             )
 
             k8s.core.v1.Secret(
@@ -166,9 +161,20 @@ class K8sSecrets(pulumi.ComponentResource):
                 ),
                 data={
                     "jwt-secret": b64(pulumi.Output.secret(nexus_jwt_secret.result)),
-                    "gemini-api-key": b64(""),
+                    # Gemini synthesis key (PINECONE_MODELS__GEMINI_API_KEY).
+                    "gemini-api-key": b64(
+                        pulumi.Output.secret(nexus_gemini_api_key)
+                        if nexus_gemini_api_key is not None
+                        else ""
+                    ),
                     "claude-api-key": b64(""),
                     "nebius-api-key": b64(""),
+                    # Cluster control-plane key (PINECONE_PINECONE__API_KEY) used
+                    # for #510 native index-create egress to the control plane.
+                    "pinecone-api-key": b64(pulumi.Output.secret(nexus_api_key)),
+                    # #670 seeded BYOC login credential
+                    # (PINECONE_PINECONE__BYOC_SESSION_CREDENTIAL).
+                    "byoc-session-credential": b64(self.byoc_session_credential),
                 },
                 type="Opaque",
                 opts=pulumi.ResourceOptions(
@@ -211,6 +217,7 @@ class K8sSecrets(pulumi.ComponentResource):
             {
                 "cpgw_api_key": self.cpgw_api_key,
                 "namespace": self.namespace.metadata.name,
+                "byoc_session_credential": self.byoc_session_credential,
             }
         )
 
