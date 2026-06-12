@@ -1888,10 +1888,12 @@ class GCPSetupWizard(BaseSetupWizard):
 
 import pulumi
 from pulumi_pinecone_byoc.gcp import PineconeGCPCluster, PineconeGCPClusterArgs
+from pulumi_pinecone_byoc.common.nexus import NexusConfig
 
 config = pulumi.Config()
 gcp_config = pulumi.Config("gcp")
 
+_nexus_enabled = config.get_bool("nexus-enabled")
 cluster = PineconeGCPCluster(
     "pinecone-byoc",
     PineconeGCPClusterArgs(
@@ -1904,30 +1906,25 @@ cluster = PineconeGCPCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         labels=config.get_object("labels") or {},
-        # CPGW control-plane target. Absent config keys fall back to the prod
-        # defaults so existing deploys are byte-for-byte unchanged.
         api_url=config.get("api-url") or "https://api.pinecone.io",
         global_env=config.get("global-env") or "prod",
-        # Nexus is opt-in; absent config keys leave it disabled so DB-only
-        # deploys are byte-for-byte unaffected.
-        nexus_enabled=config.get_bool("nexus-enabled") or False,
-        nexus_version=config.get("nexus-version"),
-        nexus_byoc_env=config.get("nexus-byoc-env"),
-        nexus_inference_base=config.get("nexus-inference-base"),
-        nexus_image_registry=config.get("nexus-image-registry"),
-        nexus_gemini_api_key=config.get_secret("nexus-gemini-api-key"),
-        nexus_byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
+        nexus=NexusConfig(
+            version=config.get("nexus-version"),
+            byoc_env=config.get("nexus-byoc-env"),
+            image_registry=config.get("nexus-image-registry"),
+            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
+            byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
+            storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+        ) if _nexus_enabled else None,
     ),
 )
 
 update_kubeconfig_command = cluster.name.apply(
-    lambda name: f"gcloud container clusters get-credentials {name} --region {config.require('region')} --project {gcp_config.require('project')}"
+    lambda name: f"gcloud container clusters get-credentials {name} --region {config.require(\'region\')} --project {gcp_config.require(\'project\')}"
 )
 pulumi.export("environment", cluster.environment.env_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
-if config.get_bool("nexus-enabled"):
-    # #670 seeded login: the operator authenticates against the deployed Nexus
-    # with this credential, scoped to the BYOC project id below.
+if _nexus_enabled:
     pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
     pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:
@@ -2841,9 +2838,11 @@ class AzureSetupWizard(BaseSetupWizard):
 
 import pulumi
 from pulumi_pinecone_byoc.azure import PineconeAzureCluster, PineconeAzureClusterArgs
+from pulumi_pinecone_byoc.common.nexus import NexusConfig
 
 config = pulumi.Config()
 
+_nexus_enabled = config.get_bool("nexus-enabled")
 cluster = PineconeAzureCluster(
     "pinecone-byoc",
     PineconeAzureClusterArgs(
@@ -2856,31 +2855,26 @@ cluster = PineconeAzureCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         tags=config.get_object("tags"),
-        # CPGW control-plane target. Absent config keys fall back to the prod
-        # defaults so existing deploys are byte-for-byte unchanged.
         api_url=config.get("api-url") or "https://api.pinecone.io",
         global_env=config.get("global-env") or "prod",
-        # Nexus is opt-in; absent config keys leave it disabled so DB-only
-        # deploys are byte-for-byte unaffected.
-        nexus_enabled=config.get_bool("nexus-enabled") or False,
-        nexus_version=config.get("nexus-version"),
-        nexus_byoc_env=config.get("nexus-byoc-env"),
-        nexus_inference_base=config.get("nexus-inference-base"),
-        nexus_image_registry=config.get("nexus-image-registry"),
-        nexus_gemini_api_key=config.get_secret("nexus-gemini-api-key"),
-        nexus_byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
+        nexus=NexusConfig(
+            version=config.get("nexus-version"),
+            byoc_env=config.get("nexus-byoc-env"),
+            image_registry=config.get("nexus-image-registry"),
+            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
+            byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
+            storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+        ) if _nexus_enabled else None,
     ),
 )
 
 region = config.require("region")
 update_kubeconfig_command = cluster.name.apply(
-    lambda name: f"az aks get-credentials --resource-group {name.removeprefix('cluster-')}-{region}-rg --name {name}"
+    lambda name: f"az aks get-credentials --resource-group {name.removeprefix(\'cluster-\')}-{region}-rg --name {name}"
 )
 pulumi.export("environment", cluster.environment.env_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
-if config.get_bool("nexus-enabled"):
-    # #670 seeded login: the operator authenticates against the deployed Nexus
-    # with this credential, scoped to the BYOC project id below.
+if _nexus_enabled:
     pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
     pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:

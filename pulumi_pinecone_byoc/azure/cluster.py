@@ -8,9 +8,9 @@ import pulumi_azuread as azuread
 
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
-from ..common.k8s_secrets import K8sSecrets
+from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
-from ..common.nexus import Nexus
+from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     AmpAccess,
@@ -34,6 +34,7 @@ from .dns import DNS
 from .k8s_addons import K8sAddons
 from .nlb import InternalLoadBalancer
 from .pulumi_operator import PulumiOperator
+from .nexus_storage import NexusBlobContainers
 from .storage import BlobStorage
 from .vnet import VNet
 
@@ -79,33 +80,8 @@ class PineconeAzureClusterArgs:
     # the Entra directory permission to create a ServicePrincipal. Defaults to
     # False; DB + Nexus ingest->query does not need it.
     storage_integration_enabled: bool = False
-    # when True, enable Nexus alongside the DB stack: add the Nexus `services`/
-    # `jobs` AKS node pools, mint a deployment Pinecone key exposed as a k8s
-    # secret (task 2.2), and install the Nexus Helm stack. DB-only deploys leave
-    # this False. Mirrors PineconeGCPClusterArgs.
-    nexus_enabled: bool = False
-    # image tag for the Nexus images (proposal §10 `nexus-version`). Only used
-    # when nexus_enabled. If left None, falls back to `pinecone_version`.
-    nexus_version: str | None = None
-    # the `.byoc` deployment environment id surfaced to Nexus as
-    # PINECONE_BYOC_ENV / chart `deployment.environment`. Only used when
-    # nexus_enabled. If left None, the minted environment's env_name is used.
-    nexus_byoc_env: pulumi.Input[str] | None = None
-    # managed inference base for embed/rerank (INFERENCE_BASE). Only used when
-    # nexus_enabled. If left None, defaults to `api_url` (PoC: inference is the
-    # same managed endpoint as index CRUD).
-    nexus_inference_base: pulumi.Input[str] | None = None
-    # container registry base URL for the Nexus images. Nexus images live in
-    # their own ACR repo (`nexus`), co-located on the DB registry host but
-    # distinct from the DB `unstable` repo. Only used when nexus_enabled. If left
-    # None, defaults to NEXUS_AZURE_REGISTRY.base_url.
-    nexus_image_registry: str | None = None
-    # Gemini synthesis key surfaced to Nexus as PINECONE_MODELS__GEMINI_API_KEY
-    # via the `nexus-config` Secret. Only used when nexus_enabled.
-    nexus_gemini_api_key: pulumi.Input[str] | None = None
-    # BYOC single-tenant project id surfaced to Nexus as
-    # PINECONE_PINECONE__BYOC_PROJECT_ID. Only used when nexus_enabled.
-    nexus_byoc_project_id: pulumi.Input[str] = "byoc-poc"
+    # Set to a NexusConfig to deploy Nexus alongside the DB stack. None = DB-only.
+    nexus: NexusConfig | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -141,7 +117,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
         client_config = azure_native.authorization.get_client_config()
         tenant_id = client_config.tenant_id
 
-        # phase 1: authentication
         self._environment = Environment(
             f"{config.resource_prefix}-environment",
             EnvironmentArgs(
@@ -201,7 +176,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
         )
 
-        # phase 2: infrastructure
         self._vnet = VNet(
             f"{config.resource_prefix}-vnet",
             config,
@@ -236,7 +210,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vnet]),
         )
 
-        # phase 3: dns & networking
         self._subdomain = self._environment.env_name
 
         self._dns = DNS(
@@ -281,12 +254,9 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             ),
         )
 
-        # storage integration: Azure AD app for data-importer blob access.
-        # Gated on storage_integration_enabled (default False): creating the
-        # ServicePrincipal needs an Entra directory permission the deploying
-        # identity may lack, and DB + Nexus ingest->query does not need it.
-        # When disabled, the credentials are set to None and downstream
-        # consumers (k8s secret / configmap entries) omit them.
+        # Storage integration: Azure AD app for data-importer blob access.
+        # Gated on storage_integration_enabled (default False) — requires Entra
+        # directory permission the deploying identity may lack.
         storage_integration_app_client_id: pulumi.Input[str] | None = None
         storage_integration_password_value: pulumi.Input[str] | None = None
         if args.storage_integration_enabled:
@@ -326,18 +296,16 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             storage_integration_app_client_id = storage_integration_app.client_id
             storage_integration_password_value = storage_integration_password.value
 
-        # phase 4: k8s configuration
         self._k8s_secrets = K8sSecrets(
             f"{config.resource_prefix}-k8s-secrets",
             k8s_provider=self._aks.k8s_provider,
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
             dd_api_key=self._datadog_api_key.api_key,
-            # Nexus consumes the deploy's own Pinecone control-plane key as
-            # PINECONE_PINECONE__API_KEY (#510 native index-create egress). Only
-            # passed when nexus_enabled so DB-only deploys skip the nexus secrets.
-            nexus_api_key=(args.pinecone_api_key if args.nexus_enabled else None),
-            nexus_gemini_api_key=(args.nexus_gemini_api_key if args.nexus_enabled else None),
+            nexus=NexusSecretConfig(
+                api_key=args.pinecone_api_key,
+                gemini_api_key=args.nexus.gemini_api_key,
+            ) if args.nexus is not None else None,
             control_db=self._database.control_db,
             system_db=self._database.system_db,
             azure_storage_access_key=self._storage.access_key,
@@ -459,55 +427,56 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._aks, self._k8s_configmaps]),
         )
 
-        # Nexus stack (proposal §4, tasks 2.4-2.6). Installed AFTER the DB
-        # stack: depends_on the Pinetools install (DB platform bootstrap), the
-        # k8s secrets (minted Pinecone key in the `nexus` namespace) and the
-        # regcred refresher (image pull auth in nexus/nexus-tasks). Gated on
-        # nexus_enabled so DB-only deploys are byte-for-byte unaffected. Mirrors
-        # gcp/cluster.py, with Azure-specific storage class (managed-csi) and no
-        # gce-internal ingress class (AKS exposes the gloo gateway directly).
+        # Install Nexus after the DB stack is ready.
         self._nexus = None
-        if args.nexus_enabled:
+        self._nexus_containers = None
+        if args.nexus is not None:
+            nx = args.nexus
+            blob_storage = None
+            if nx.storage_bucket_prefix is not None:
+                self._nexus_containers = NexusBlobContainers(
+                    f"{config.resource_prefix}-nexus-containers",
+                    prefix=nx.storage_bucket_prefix,
+                    storage_account_name=self._storage.storage_account.name,
+                    resource_group_name=self._vnet.resource_group_name,
+                    opts=pulumi.ResourceOptions(parent=self, depends_on=[self._storage]),
+                )
+                blob_storage = NexusBlobStorage(
+                    source=self._nexus_containers.source,
+                    knowledge=self._nexus_containers.knowledge,
+                    archive=self._nexus_containers.archive,
+                )
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._aks.k8s_provider,
-                # Nexus images live in the `nexus` repo, co-located on the DB host.
-                image_registry=(args.nexus_image_registry or NEXUS_AZURE_REGISTRY.base_url),
-                # coordinated `nexus-version`; fall back to the DB version.
-                nexus_version=args.nexus_version or args.pinecone_version,
-                # managed control-plane base; index CRUD + inference stay managed.
-                pinecone_api_base=args.api_url,
-                # the `.byoc` env id surfaced as PINECONE_ENVIRONMENT; drives
-                # #510 placement. Default to the minted env name when unset.
-                byoc_env=args.nexus_byoc_env or self._environment.env_name,
-                # #510 control-plane index placement target.
+                image_registry=(nx.image_registry or NEXUS_AZURE_REGISTRY.base_url),
+                nexus_version=nx.version or args.pinecone_version,
+                byoc_env=nx.byoc_env or self._environment.env_name,
                 cloud="azure",
                 region=args.region,
-                # preprod omits the x-environment preprod header.
                 pinecone_prod=args.global_env == "prod",
-                # BYOC single-tenant project id (PINECONE_PINECONE__BYOC_PROJECT_ID).
-                byoc_project_id=args.nexus_byoc_project_id,
-                # managed inference base; the component defaults it when None.
-                inference_base=args.nexus_inference_base,
-                # AKS default dynamic storage class for Nexus PVCs.
+                byoc_project_id=nx.byoc_project_id,
                 storage_class="managed-csi",
-                # AKS has no gce-internal ingress class; the gloo gateway is
-                # exposed directly (azure/nlb.py), so omit the annotation.
                 ingress_class=None,
+                blob_storage=blob_storage,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
-                        self._aks,
-                        self._k8s_secrets,
-                        self._k8s_configmaps,
-                        self._acr_refresher,
-                        self._pinetools,
-                        self._nlb,
+                        r
+                        for r in [
+                            self._aks,
+                            self._k8s_secrets,
+                            self._k8s_configmaps,
+                            self._acr_refresher,
+                            self._pinetools,
+                            self._nlb,
+                            self._nexus_containers,
+                        ]
+                        if r is not None
                     ],
                 ),
             )
 
-        # phase 5: cleanup
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
             kubeconfig=self._aks.kubeconfig,
@@ -589,10 +558,8 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 ),
             ]
 
-        # Nexus schedules onto dedicated `services`/`jobs` pools (labels + taints
-        # matching the chart). Added only when Nexus is enabled so DB-only deploys
-        # are unaffected. Mirrors gcp/cluster.py. See aks.nexus_node_pools.
-        if args.nexus_enabled:
+        # Add Nexus node pools when enabled; DB-only deploys are unaffected.
+        if args.nexus is not None:
             from .aks import nexus_node_pools
 
             node_pools.extend(nexus_node_pools())
@@ -647,15 +614,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
 
     @property
     def nexus_byoc_project_id(self) -> pulumi.Input[str] | None:
-        """The BYOC single-tenant project id Nexus runs under (#510), or None
-        on DB-only deploys. Operator logs in scoped to this project."""
+        """The BYOC single-tenant project id Nexus runs under, or None on DB-only deploys."""
         return self._nexus.byoc_project_id if self._nexus is not None else None
 
     @property
     def nexus_byoc_session_credential(self) -> pulumi.Output[str] | None:
-        """The seeded BYOC login credential (#670) the operator uses to
-        authenticate against the deployed Nexus, or None on DB-only deploys.
-        Marked secret."""
+        """The seeded BYOC login credential, or None on DB-only deploys. Marked secret."""
         return self._k8s_secrets.byoc_session_credential
 
     @property
