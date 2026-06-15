@@ -117,6 +117,9 @@ class Nexus(pulumi.ComponentResource):
                 "knowledge": blob_storage.knowledge,
                 "archive": blob_storage.archive,
             }
+            if blob_storage.account_name is not None:
+                # Chart reads config.storage.azure.account (nested), not .account.
+                storage_cfg["azure"] = {"account": blob_storage.account_name}
         else:
             storage_cfg = {"backend": "fs"}
 
@@ -243,3 +246,6 @@ class NexusBlobStorage:
     source: pulumi.Input[str]
     knowledge: pulumi.Input[str]
     archive: pulumi.Input[str]
+    # Azure storage account name. Set on Azure (chart emits AZURE_STORAGE_ACCOUNT);
+    # GCS leaves None.
+    account_name: pulumi.Input[str] | None = None

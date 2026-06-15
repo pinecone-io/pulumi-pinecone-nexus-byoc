@@ -32,6 +32,7 @@ class NexusSecretConfig:
 
     api_key: pulumi.Input[str]
     gemini_api_key: pulumi.Input[str] | None = None
+    azure_storage_access_key: pulumi.Input[str] | None = None
 
 
 class K8sSecrets(pulumi.ComponentResource):
@@ -173,6 +174,11 @@ class K8sSecrets(pulumi.ComponentResource):
                     "nebius-api-key": b64(""),
                     "pinecone-api-key": b64(pulumi.Output.secret(nexus.api_key)),
                     "byoc-session-credential": b64(self.byoc_session_credential),
+                    "azure-storage-access-key": b64(
+                        pulumi.Output.secret(nexus.azure_storage_access_key)
+                        if nexus.azure_storage_access_key is not None
+                        else ""
+                    ),
                 },
                 type="Opaque",
                 opts=pulumi.ResourceOptions(

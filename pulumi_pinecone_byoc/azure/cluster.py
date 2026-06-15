@@ -305,6 +305,11 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             nexus=NexusSecretConfig(
                 api_key=args.pinecone_api_key,
                 gemini_api_key=args.nexus.gemini_api_key,
+                azure_storage_access_key=(
+                    self._storage.access_key
+                    if args.nexus.storage_bucket_prefix is not None
+                    else None
+                ),
             ) if args.nexus is not None else None,
             control_db=self._database.control_db,
             system_db=self._database.system_db,
@@ -445,6 +450,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                     source=self._nexus_containers.source,
                     knowledge=self._nexus_containers.knowledge,
                     archive=self._nexus_containers.archive,
+                    account_name=self._storage.account_name,
                 )
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
