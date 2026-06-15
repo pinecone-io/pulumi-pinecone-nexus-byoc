@@ -417,7 +417,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 "metric": _HEADLESS_METRIC,
                 "vector_type": _HEADLESS_VECTOR_TYPE,
                 "index_mode": _HEADLESS_INDEX_MODE,
-                # `drn` omitted -> shared-pool routing (no ProvisionedPool CR for v0)
+                # shared-pool routing (no ProvisionedPool CR for v0). The `drn` key
+                # is present-but-empty rather than omitted: the headless values
+                # template (_shared.values.yaml.gotmpl) reads `$drn.pool_id` with
+                # strict map access, which errors on a missing key; an empty pool_id
+                # is falsy so the DRN env block stays unset -> shared pool.
+                "drn": {"pool_id": ""},
             }
 
         pulumi_outputs = {
