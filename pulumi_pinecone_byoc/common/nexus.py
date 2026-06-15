@@ -48,6 +48,16 @@ class NexusConfig:
     inference_base: pulumi.Input[str] | None = None  # falls back to api_url
     byoc_project_id: pulumi.Input[str] = _DEFAULT_BYOC_PROJECT_ID
     storage_bucket_prefix: str | None = None  # None = fs backend, set = provision blob
+    # Headless wiring (set by the cluster when db-headless is on). When all set,
+    # the orchestrator/create-side bind to the single static index served by the
+    # headless DB instead of calling the control plane.
+    #   docs_api_url    -> config.byocDocsApiUrl  (PINECONE_TASKS__DOCS_API_URL)
+    #   db_index_id     -> config.byocDbIndexId   (PINECONE_TASKS__DB_INDEX_ID)
+    #                      and config.staticIndexId (PINECONE_PINECONE__STATIC_INDEX_ID)
+    #   static_index_host -> config.staticIndexHost (PINECONE_PINECONE__STATIC_INDEX_HOST)
+    docs_api_url: pulumi.Input[str] | None = None
+    db_index_id: pulumi.Input[str] | None = None
+    static_index_host: pulumi.Input[str] | None = None
 
 
 class Nexus(pulumi.ComponentResource):
@@ -65,6 +75,9 @@ class Nexus(pulumi.ComponentResource):
         storage_class: str = _DEFAULT_STORAGE_CLASS,
         ingress_class: str | None = _DEFAULT_INGRESS_CLASS,
         blob_storage: "NexusBlobStorage | None" = None,
+        docs_api_url: pulumi.Input[str] | None = None,
+        db_index_id: pulumi.Input[str] | None = None,
+        static_index_host: pulumi.Input[str] | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
@@ -156,6 +169,19 @@ class Nexus(pulumi.ComponentResource):
                 },
             },
         }
+
+        # Headless wiring. When the DB is headless (single static index, no
+        # control plane), point the orchestrator's keyless data path and the
+        # create-side static-index bind at the co-located DB. The chart gates
+        # each on truthiness, so leaving any None is a no-op.
+        if docs_api_url is not None:
+            app_values["config"]["byocDocsApiUrl"] = docs_api_url
+            app_values["config"]["staticIndexHost"] = (
+                static_index_host if static_index_host is not None else docs_api_url
+            )
+        if db_index_id is not None:
+            app_values["config"]["byocDbIndexId"] = db_index_id
+            app_values["config"]["staticIndexId"] = db_index_id
 
         self.app_release = Release(
             f"{name}-app",

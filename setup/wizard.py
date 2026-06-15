@@ -2634,6 +2634,10 @@ class AzureSetupWizard(BaseSetupWizard):
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
                 "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
+                # Headless DB: single static index, no control plane. Opt-in.
+                "db_headless": os.environ.get("PINECONE_DB_HEADLESS", "false").lower()
+                == "true",
+                "static_index_id": os.environ.get("PINECONE_STATIC_INDEX_ID", ""),
             }
         else:
             nexus = {"enabled": False}
@@ -2857,6 +2861,10 @@ cluster = PineconeAzureCluster(
         tags=config.get_object("tags"),
         api_url=config.get("api-url") or "https://api.pinecone.io",
         global_env=config.get("global-env") or "prod",
+        # Headless DB: single static index, no control plane. Off by default so
+        # full-DB deploys are unaffected. Only takes effect alongside Nexus.
+        headless_enabled=config.get_bool("db-headless") or False,
+        static_index_id=config.get("nexus-static-index-id"),
         nexus=NexusConfig(
             version=config.get("nexus-version"),
             byoc_env=config.get("nexus-byoc-env"),
@@ -2940,6 +2948,15 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
                 f"  {project_name}:nexus-inference-base: "
                 f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
             )
+            # Headless DB: single static index, no control plane. Written only
+            # when enabled so full-DB stacks are unaffected.
+            if nexus.get("db_headless"):
+                config_content += f"  {project_name}:db-headless: true\n"
+                if nexus.get("static_index_id"):
+                    config_content += (
+                        f"  {project_name}:nexus-static-index-id: "
+                        f"{nexus['static_index_id']}\n"
+                    )
             # nexus-gemini-api-key is a secret; set it out-of-band:
             #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
 

@@ -23,6 +23,7 @@ class K8sConfigMaps(pulumi.ComponentResource):
         region: pulumi.Input[str],
         public_access_enabled: pulumi.Input[bool],
         pulumi_outputs: dict[str, pulumi.Input],
+        headless: dict[str, pulumi.Input] | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
         super().__init__("pinecone:byoc:K8sConfigMaps", name, None, opts)
@@ -81,11 +82,28 @@ class K8sConfigMaps(pulumi.ComponentResource):
             ),
         )
 
-        outputs_json = pulumi.Output.all(
-            **{k: pulumi.Output.from_input(v) for k, v in pulumi_outputs.items()}
-        ).apply(
-            lambda outputs: json.dumps({k: v for k, v in dict(outputs).items() if v is not None})
-        )
+        # Resolve the top-level pulumi outputs and (optionally) the nested
+        # headless block together, so a headless block whose fields are
+        # Outputs (e.g. a generated index_id) lands as a nested JSON object
+        # under the `headless` key. pinetools renders the db helmfile from this
+        # ConfigMap merged under `values.config`; the db side gates headless on
+        # `config.headless.enabled` and emits PINECONE_HEADLESS__* from the block.
+        resolve_inputs: dict[str, pulumi.Input] = {
+            k: pulumi.Output.from_input(v) for k, v in pulumi_outputs.items()
+        }
+        if headless is not None:
+            resolve_inputs["__headless__"] = pulumi.Output.all(
+                **{k: pulumi.Output.from_input(v) for k, v in headless.items()}
+            ).apply(lambda h: {k: v for k, v in dict(h).items() if v is not None})
+
+        def _build_outputs_json(outputs: dict) -> str:
+            data = {k: v for k, v in dict(outputs).items() if v is not None}
+            headless_block = data.pop("__headless__", None)
+            if headless_block:
+                data["headless"] = headless_block
+            return json.dumps(data)
+
+        outputs_json = pulumi.Output.all(**resolve_inputs).apply(_build_outputs_json)
 
         k8s.core.v1.ConfigMap(
             f"{name}-pc-pulumi-outputs-config",

@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import pulumi
 import pulumi_azure_native as azure_native
 import pulumi_azuread as azuread
+import pulumi_random as random
 
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
@@ -37,6 +38,21 @@ from .pulumi_operator import PulumiOperator
 from .nexus_storage import NexusBlobContainers
 from .storage import BlobStorage
 from .vnet import VNet
+
+# In-cluster URL for the DB's documents/* REST listener (svc-docs-api) in a
+# headless deploy. Source: nexus chart values.yaml comment + db-3
+# svc-docs-api/service.values.yaml (name=docs-api, ns=pc-docs-api, port=3001,
+# http). Used for both Nexus byocDocsApiUrl/staticIndexHost and is the basis for
+# the headless block's `host` (which wants a bare hostname, no scheme/port).
+_HEADLESS_DOCS_API_HOST = "docs-api.pc-docs-api.svc.cluster.local"
+_HEADLESS_DOCS_API_PORT = 3001
+_HEADLESS_DOCS_API_URL = f"http://{_HEADLESS_DOCS_API_HOST}:{_HEADLESS_DOCS_API_PORT}"
+# Fixed headless static-index attributes (single static index, no control plane).
+_HEADLESS_INDEX_NAME = "nexus-static"
+_HEADLESS_DIMENSION = 1024
+_HEADLESS_METRIC = "cosine"
+_HEADLESS_VECTOR_TYPE = "dense"
+_HEADLESS_INDEX_MODE = "slab"
 
 
 @dataclass
@@ -82,6 +98,18 @@ class PineconeAzureClusterArgs:
     storage_integration_enabled: bool = False
     # Set to a NexusConfig to deploy Nexus alongside the DB stack. None = DB-only.
     nexus: NexusConfig | None = None
+
+    # Headless DB: deploy a HEADLESS Pinecone DB (single static index, no control
+    # plane) and point Nexus at it. False = unchanged full DB. When True, a
+    # `headless` block is injected into the pc-pulumi-outputs/config ConfigMap and
+    # the Nexus static-index wiring is set. No effect unless `nexus` is also set.
+    headless_enabled: bool = False
+    # The single static index id, shared by the headless DB block and the Nexus
+    # config. None -> generated deterministically (random.RandomUuid). Set via the
+    # `nexus-static-index-id` config key to pin it.
+    static_index_id: pulumi.Input[str] | None = None
+    # The headless static index's project id. Defaults to the Nexus BYOC project id.
+    static_index_project_id: pulumi.Input[str] | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -359,6 +387,39 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
         )
 
+        # Headless DB: resolve the single shared static index id and assemble the
+        # `headless` block injected into pc-pulumi-outputs/config. The same
+        # index id flows to the Nexus static-index wiring below.
+        self._static_index_id: pulumi.Input[str] | None = None
+        headless_block: dict[str, pulumi.Input] | None = None
+        if args.headless_enabled:
+            if args.static_index_id is not None:
+                self._static_index_id = args.static_index_id
+            else:
+                self._static_index_uuid = random.RandomUuid(
+                    f"{config.resource_prefix}-static-index-id",
+                    opts=child_opts,
+                )
+                self._static_index_id = self._static_index_uuid.result
+            static_project_id = (
+                args.static_index_project_id
+                if args.static_index_project_id is not None
+                else (args.nexus.byoc_project_id if args.nexus is not None else "byoc-poc")
+            )
+            headless_block = {
+                "enabled": True,
+                "index_id": self._static_index_id,
+                "project_id": static_project_id,
+                "index_name": _HEADLESS_INDEX_NAME,
+                # bare hostname for the db index-metadata store (no scheme/port)
+                "host": _HEADLESS_DOCS_API_HOST,
+                "dimension": _HEADLESS_DIMENSION,
+                "metric": _HEADLESS_METRIC,
+                "vector_type": _HEADLESS_VECTOR_TYPE,
+                "index_mode": _HEADLESS_INDEX_MODE,
+                # `drn` omitted -> shared-pool routing (no ProvisionedPool CR for v0)
+            }
+
         pulumi_outputs = {
             "cell_name": self._cell_name,
             "org_name": self._environment.org_name,
@@ -410,6 +471,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             region=config.region,
             public_access_enabled=args.public_access_enabled,
             pulumi_outputs=pulumi_outputs,
+            headless=headless_block,
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[self._aks, self._dns, self._storage, self._database],
@@ -465,6 +527,11 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 storage_class="managed-csi",
                 ingress_class=None,
                 blob_storage=blob_storage,
+                # Headless: point Nexus at the co-located headless DB's single
+                # static index (keyless data path + create-side static bind).
+                docs_api_url=(_HEADLESS_DOCS_API_URL if args.headless_enabled else None),
+                db_index_id=(self._static_index_id if args.headless_enabled else None),
+                static_index_host=(_HEADLESS_DOCS_API_URL if args.headless_enabled else None),
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
