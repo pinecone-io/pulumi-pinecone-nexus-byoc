@@ -868,7 +868,7 @@ class AWSSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "us-east-1")
         azs_str = os.environ.get("PINECONE_AZS", f"{region}a,{region}b")
-        azs = [az.strip() for az in azs_str.split(",")]
+        azs = [az.strip() for az in azs_str.split(",") if az.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
@@ -1586,7 +1586,7 @@ class GCPSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "us-central1")
         zones_str = os.environ.get("PINECONE_AZS", f"{region}-a,{region}-b")
-        zones = [z.strip() for z in zones_str.split(",")]
+        zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
@@ -1607,6 +1607,10 @@ class GCPSetupWizard(BaseSetupWizard):
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
                 "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
+                # Opt-in blob backend: unset = fs (PVC); set = provision GCS buckets.
+                "storage_bucket_prefix": os.environ.get(
+                    "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
+                ),
             }
         else:
             nexus = {"enabled": False}
@@ -1991,6 +1995,11 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
                 f"  {project_name}:nexus-inference-base: "
                 f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
             )
+            if nexus.get("storage_bucket_prefix"):
+                config_content += (
+                    f"  {project_name}:nexus-storage-bucket-prefix: "
+                    f"{nexus['storage_bucket_prefix']}\n"
+                )
             # nexus-gemini-api-key is a secret; set it out-of-band:
             #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
 
@@ -2611,7 +2620,7 @@ class AzureSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "eastus")
         zones_str = os.environ.get("PINECONE_AZS", "1,2")
-        zones = [z.strip() for z in zones_str.split(",")]
+        zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
@@ -2634,6 +2643,10 @@ class AzureSetupWizard(BaseSetupWizard):
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
                 "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
+                # Opt-in blob backend: unset = fs (PVC); set = provision blob containers.
+                "storage_bucket_prefix": os.environ.get(
+                    "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
+                ),
                 # Headless DB: single static index, no control plane. Opt-in.
                 "db_headless": os.environ.get("PINECONE_DB_HEADLESS", "false").lower()
                 == "true",
@@ -2948,6 +2961,11 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
                 f"  {project_name}:nexus-inference-base: "
                 f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
             )
+            if nexus.get("storage_bucket_prefix"):
+                config_content += (
+                    f"  {project_name}:nexus-storage-bucket-prefix: "
+                    f"{nexus['storage_bucket_prefix']}\n"
+                )
             # Headless DB: single static index, no control plane. Written only
             # when enabled so full-DB stacks are unaffected.
             if nexus.get("db_headless"):
