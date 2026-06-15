@@ -202,6 +202,12 @@ class Nexus(pulumi.ComponentResource):
         annotations: dict = {"kubernetes.io/ingress.allow-http": "true"}
         if ingress_class is not None:
             annotations["kubernetes.io/ingress.class"] = ingress_class
+        else:
+            # AKS: no controller serves this class-less Ingress (the gateway is
+            # exposed via the cluster LB / Gloo gateway-proxy), so its
+            # .status.loadBalancer is never populated. Skip Pulumi's readiness
+            # await so `pulumi up` doesn't hang waiting for an LB address.
+            annotations["pulumi.com/skipAwait"] = "true"
 
         return k8s.networking.v1.Ingress(
             f"{name}-gateway-ingress",
