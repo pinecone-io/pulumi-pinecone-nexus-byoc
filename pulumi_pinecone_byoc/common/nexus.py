@@ -1,64 +1,53 @@
-"""Nexus deployment component (proposal §4.1 / §4.4 / §4.5, tasks 2.4-2.6).
+"""Nexus deployment component.
 
-Installs the vendored Nexus Helm releases into the BYOC cluster *after* the
-Pinecone DB stack is up. Parallel in spirit to `Pinetools`: a single
-`pulumi.ComponentResource` that owns the cluster-side install and is wired into
-`gcp/cluster.py` gated on `nexus_enabled` so DB-only deploys are unaffected.
+Installs the vendored Nexus Helm releases into the BYOC cluster after the
+Pinecone DB stack is up. Two releases are installed in order:
 
-Two releases are installed, in order:
-  1. `nexus-fdb` — FoundationDB for Nexus (`b"nx"` keyspace). The app release
-     references its resources by name (`nexus-fdb-cluster` ConfigMap,
-     `nexus-fdb-headless` Service), so it must come first.
-  2. `nexus` — the app services (api, orchestrator, knowql, file-proxy,
-     console, gateway). depends_on the fdb release *and* the DB stack so the
-     in-cluster data plane / control-plane bootstrap (Pinetools) is ready.
+  1. ``nexus-fdb`` — FoundationDB for Nexus. The app release references its
+     resources by name, so it must come first.
+  2. ``nexus`` — the app services (api, orchestrator, knowql, file-proxy,
+     console, gateway). Depends on the fdb release and the DB stack bootstrap.
 
-Charts are the vendored copies at `<repo>/nexus/deploy/helm/{nexus,nexus-fdb}`.
+Charts are the vendored copies at ``<repo>/nexus/deploy/helm/{nexus,nexus-fdb}``.
 """
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import pulumi
 import pulumi_kubernetes as k8s
 from pulumi_kubernetes.helm.v3 import Release, ReleaseArgs
 
-# Repo-root-relative path to the vendored Nexus charts. This module lives at
-# `<repo>/pulumi_pinecone_byoc/common/nexus.py`, so the repo root is two
-# package levels up from the package dir.
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _NEXUS_CHART = str(_REPO_ROOT / "nexus" / "deploy" / "helm" / "nexus")
 _NEXUS_FDB_CHART = str(_REPO_ROOT / "nexus" / "deploy" / "helm" / "nexus-fdb")
 
-# Namespaces the secrets/cred-refresher already provision for Nexus
-# (common/k8s_secrets.py mints `nexus-config` here; cred_refresher.py
-# materializes `regcred` in both `nexus` and `nexus-tasks`).
 _NEXUS_NAMESPACE = "nexus"
 _NEXUS_TASKS_NAMESPACE = "nexus-tasks"
-
-# regcred image pull secret name, brokered into the nexus namespaces by
-# RegistryCredentialRefresher (task 2.3).
 _REGCRED = "regcred"
 
-# Default BYOC single-tenant project id surfaced to Nexus as
-# PINECONE_PINECONE__BYOC_PROJECT_ID (chart `config.byocProjectId`).
 _DEFAULT_BYOC_PROJECT_ID = "byoc-poc"
-
-# StorageClass the PoC uses for Nexus PVCs (FDB data + tasks/source/knowledge/
-# contexts). The DB side does not provision a custom StorageClass (it relies on
-# the GKE default), so the PoC reuses GKE's built-in dynamic SSD class. RWX
-# (Filestore/NFS) is intentionally left unconfigured for the PoC — see the
-# module-level note and proposal §11. Override via `storage_class` if a cluster
-# default differs (Azure/AKS passes `managed-csi`).
 _DEFAULT_STORAGE_CLASS = "premium-rwo"
-
-# Ingress class for the Nexus gateway Ingress. On GKE the DB stack uses the
-# internal GCE ingress controller, so the Nexus front door rides the same
-# `gce-internal` class. On AKS there is no equivalent ingress-class annotation
-# (gcp/nlb.py vs azure/nlb.py: the Azure path exposes the gloo gateway directly
-# via LoadBalancer Services with no `kubernetes.io/ingress.class`), so the Azure
-# caller passes `ingress_class=None` to omit the annotation entirely. Defaults to
-# the GCP value so GCP behavior is unchanged.
+# GKE uses gce-internal; AKS passes None (gateway exposed directly via LoadBalancer).
 _DEFAULT_INGRESS_CLASS = "gce-internal"
+
+@dataclass
+class NexusConfig:
+    """Nexus enablement settings. Pass to cluster args to deploy Nexus alongside the DB stack.
+
+    Storage defaults to the local filesystem backend (``fs``). Set
+    ``storage_bucket_prefix`` to a string prefix and the cluster will provision
+    three buckets/containers (``{prefix}-source``, ``{prefix}-knowledge``,
+    ``{prefix}-archive``) and switch Nexus to the blob backend.
+    """
+
+    version: str | None = None  # falls back to pinecone_version
+    byoc_env: pulumi.Input[str] | None = None  # falls back to minted env name
+    image_registry: str | None = None  # falls back to cloud-specific default
+    gemini_api_key: pulumi.Input[str] | None = None
+    inference_base: pulumi.Input[str] | None = None  # falls back to api_url
+    byoc_project_id: pulumi.Input[str] = _DEFAULT_BYOC_PROJECT_ID
+    storage_bucket_prefix: str | None = None  # None = fs backend, set = provision blob
 
 
 class Nexus(pulumi.ComponentResource):
@@ -68,53 +57,31 @@ class Nexus(pulumi.ComponentResource):
         k8s_provider: pulumi.ProviderResource,
         image_registry: str,
         nexus_version: pulumi.Input[str],
-        pinecone_api_base: pulumi.Input[str],
         byoc_env: pulumi.Input[str],
         cloud: pulumi.Input[str],
         region: pulumi.Input[str],
         pinecone_prod: bool,
         byoc_project_id: pulumi.Input[str] = _DEFAULT_BYOC_PROJECT_ID,
-        inference_base: pulumi.Input[str] | None = None,
         storage_class: str = _DEFAULT_STORAGE_CLASS,
         ingress_class: str | None = _DEFAULT_INGRESS_CLASS,
-        nfs_server: pulumi.Input[str] | None = None,
+        blob_storage: "NexusBlobStorage | None" = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
 
         Args:
-            image_registry: BYOC container registry base URL (common/registry.py
-                GCP_REGISTRY.base_url). Nexus images live under
-                `<registry>/nexus_<component>:<nexus_version>` (chart appends the
-                per-component repository + tag).
-            nexus_version: image tag for the Nexus images (proposal §10
-                `nexus-version`; coordinated with task 2.7).
-            pinecone_api_base: managed control-plane base (PINECONE_API_BASE,
-                e.g. https://api.pinecone.io). Index CRUD stays managed.
-            byoc_env: the `.byoc` deployment environment id surfaced as
-                PINECONE_ENVIRONMENT (chart `config.environment`). Drives #510
-                native control-plane index placement (placement.environment).
-            cloud: cloud provider for control-plane index placement
-                (PINECONE_CLOUD__PROVIDER, chart `config.cloud.provider`), e.g.
-                "azure"/"gcp".
-            region: deploy region for control-plane index placement
-                (PINECONE_CLOUD__REGION, chart `config.cloud.region`).
-            pinecone_prod: whether this is a prod deploy. False on preprod omits
-                the x-environment preprod header (PINECONE_PINECONE__PROD, chart
-                `config.pineconeProd`).
-            byoc_project_id: BYOC single-tenant project id
-                (PINECONE_PINECONE__BYOC_PROJECT_ID, chart `config.byocProjectId`).
-            inference_base: managed inference base. Defaults to
-                `pinecone_api_base` (PoC: inference is the same managed endpoint).
-            storage_class: StorageClass for Nexus PVCs (task 2.5). Defaults to the
-                GKE `premium-rwo` class; AKS passes `managed-csi`.
-            ingress_class: value for the gateway Ingress
-                `kubernetes.io/ingress.class` annotation. Defaults to
-                `gce-internal` (GKE). Pass `None` to omit the annotation entirely
-                (AKS, where the gloo gateway is exposed directly with no ingress
-                class).
-            nfs_server: optional pre-provisioned Filestore/NFS server IP for RWX
-                (proposal §11 infra ask). Left unset for the PoC.
+            image_registry: Container registry base URL for Nexus images.
+            nexus_version: Image tag for Nexus images.
+            byoc_env: The ``.byoc`` deployment environment id.
+            cloud: Cloud provider for index placement (``"azure"``/``"gcp"``).
+            region: Deploy region for index placement.
+            pinecone_prod: False on preprod omits the preprod header.
+            byoc_project_id: BYOC single-tenant project id.
+            storage_class: StorageClass for Nexus PVCs. Defaults to GKE ``premium-rwo``.
+            ingress_class: Gateway Ingress class annotation. Pass ``None`` to omit (AKS).
+            blob_storage: Provisioned blob bucket/container names. When set, switches
+                the storage backend to ``blob`` and passes the names into the helm chart.
+                Leave ``None`` to use the local filesystem backend (``fs``).
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
 
@@ -123,15 +90,10 @@ class Nexus(pulumi.ComponentResource):
 
         provider_opts = pulumi.ResourceOptions(parent=self, provider=k8s_provider)
 
-        # ------------------------------------------------------------------
-        # 1. nexus-fdb release (must precede the app release; the app chart
-        #    references nexus-fdb-cluster / nexus-fdb-headless by name).
-        # ------------------------------------------------------------------
         fdb_values: dict = {
             "image": {
                 "pullSecrets": [{"name": _REGCRED}],
             },
-            # FDB lands on the services pool (mirrors the app chart scheduling).
             "persistence": {
                 "storageClass": storage_class,
             },
@@ -148,23 +110,17 @@ class Nexus(pulumi.ComponentResource):
             opts=provider_opts,
         )
 
-        # ------------------------------------------------------------------
-        # 2. nexus app release. depends_on the fdb release; the DB-stack
-        #    ordering is enforced by the caller (gcp/cluster.py passes the
-        #    Pinetools install as a dependency via opts.depends_on).
-        # ------------------------------------------------------------------
-        persistence: dict = {
-            "storageClass": storage_class,
-        }
-        if nfs_server is not None:
-            # RWX path: chart mounts a pre-provisioned Filestore share. Left
-            # unset for the PoC (RWO per-component PVCs) unless a server is
-            # provisioned out-of-band (proposal §11).
-            persistence["nfs"] = {"server": nfs_server}
+        if blob_storage is not None:
+            storage_cfg: dict = {
+                "backend": "blob",
+                "source": blob_storage.source,
+                "knowledge": blob_storage.knowledge,
+                "archive": blob_storage.archive,
+            }
+        else:
+            storage_cfg = {"backend": "fs"}
 
         app_values: dict = {
-            # dev/prod expect externally managed secrets (Pulumi); this is not
-            # a local-runtime install.
             "env": "prod",
             "localRuntime": False,
             "image": {
@@ -172,42 +128,24 @@ class Nexus(pulumi.ComponentResource):
                 "tag": nexus_version,
                 "pullSecrets": [{"name": _REGCRED}],
             },
-            # Task pods are launched into nexus-tasks (chart default); regcred is
-            # refreshed there too (task 2.3).
             "orchestrator": {
                 "taskNamespace": _NEXUS_TASKS_NAMESPACE,
             },
-            # Storage (task 2.5).
-            "persistence": persistence,
-            # BYOC config surface. These keys match the vendored chart's
-            # `config` block (nexus/deploy/helm/nexus/values.yaml), threaded
-            # into the api/orchestrator/knowql env by the `nexus.envSettings`
-            # helper. The cluster control-plane key, BYOC session credential,
-            # and gemini key arrive via the externally-minted `nexus-config`
-            # Secret (common/k8s_secrets.py), referenced by secretKeyRef in the
-            # chart — they are NOT set here.
+            "persistence": {
+                "storageClass": storage_class,
+            },
             "config": {
-                # PINECONE_PINECONE__DEPLOYMENT_MODE — BYOC index-create mode.
                 "deploymentMode": "byoc",
-                # PINECONE_ENVIRONMENT — the registered `.byoc` env; drives #510
-                # control-plane index placement.
                 "environment": byoc_env,
-                # PINECONE_CLOUD__{PROVIDER,REGION} — #510 placement target.
                 "cloud": {
                     "provider": cloud,
                     "region": region,
                 },
-                # PINECONE_PINECONE__PROD — preprod omits the preprod header.
                 "pineconeProd": pinecone_prod,
-                # PINECONE_PINECONE__BYOC_PROJECT_ID — single-tenant project id.
                 "byocProjectId": byoc_project_id,
+                "storage": storage_cfg,
             },
-            # Ingress (task 2.6): the Nexus gateway is the customer front door
-            # exposed through the EXISTING ingress/LB (gcp/nlb.py routes
-            # *.pinecone.io -> the `gateway-proxy` Service in gloo-system). The
-            # Nexus gateway attaches to that same LB rather than allocating its
-            # own cloud LB, so it stays a ClusterIP and the DB data plane is
-            # never exposed. See `attach_gateway_to_lb` for the routing glue.
+            # Gateway runs as ClusterIP; exposed via the existing ingress/LB.
             "gateway": {
                 "service": {
                     "type": "ClusterIP",
@@ -231,12 +169,6 @@ class Nexus(pulumi.ComponentResource):
             ),
         )
 
-        # ------------------------------------------------------------------
-        # 3. Ingress glue (task 2.6). Route the existing gloo ingress at a
-        #    nexus host to the Nexus gateway Service. The DB data plane keeps
-        #    its own routing (gateway-proxy in gloo-system) untouched and
-        #    internal-only; we only ADD a path for the Nexus front door.
-        # ------------------------------------------------------------------
         self.gateway_ingress = self._attach_gateway_to_lb(
             name,
             k8s_provider,
@@ -258,33 +190,14 @@ class Nexus(pulumi.ComponentResource):
         k8s_provider: pulumi.ProviderResource,
         ingress_class: str | None = _DEFAULT_INGRESS_CLASS,
     ) -> k8s.networking.v1.Ingress:
-        """Expose the Nexus gateway through the existing customer LB.
+        """Expose the Nexus gateway through the existing cluster LB.
 
-        The existing internal/external LB (gcp/nlb.py, azure/nlb.py) terminates
-        TLS for the cluster wildcard hosts and points at the `gateway-proxy`
-        Service in gloo-system. The Nexus gateway runs as a ClusterIP Service in
-        the `nexus` namespace; this Ingress object adds a route so customer
-        traffic to the Nexus host lands on the Nexus gateway. The DB data plane
-        routing is left as-is and stays internal-only.
-
-        On GKE the route attaches to the internal GCE ingress controller via the
-        `gce-internal` ingress class. On AKS there is no equivalent class
-        annotation (the gloo gateway is exposed directly by LoadBalancer
-        Services), so `ingress_class=None` omits the annotation entirely.
-
-        Kept minimal for the PoC: a single Ingress in the nexus namespace
-        backed by the nexus gateway ClusterIP Service on port 80.
+        On GKE attaches via the ``gce-internal`` ingress class. On AKS
+        ``ingress_class=None`` omits the annotation (gateway exposed directly
+        via LoadBalancer Services).
         """
-        annotations = {
-            # HTTP is enabled for the PoC: no TLS cert is wired up here, and the
-            # GCE ingress controller refuses to provision an LB when both HTTP
-            # and HTTPS are disabled.
-            "kubernetes.io/ingress.allow-http": "true",
-        }
+        annotations: dict = {"kubernetes.io/ingress.allow-http": "true"}
         if ingress_class is not None:
-            # Attach to the same internal ingress controller the DB stack uses
-            # (GKE: gce-internal); the customer front door rides the existing LB
-            # rather than provisioning a new one. Omitted on AKS.
             annotations["kubernetes.io/ingress.class"] = ingress_class
 
         return k8s.networking.v1.Ingress(
@@ -316,3 +229,17 @@ class Nexus(pulumi.ComponentResource):
     @property
     def byoc_project_id(self) -> pulumi.Input[str]:
         return self._byoc_project_id
+
+
+@dataclass
+class NexusBlobStorage:
+    """Provisioned blob storage bucket/container names for Nexus.
+
+    Set all three to switch the Nexus storage backend to ``blob``.
+    Produced by cloud-specific provisioning (``NexusGCSBuckets`` on GCP,
+    ``NexusBlobContainers`` on Azure) and passed into the ``Nexus`` component.
+    """
+
+    source: pulumi.Input[str]
+    knowledge: pulumi.Input[str]
+    archive: pulumi.Input[str]

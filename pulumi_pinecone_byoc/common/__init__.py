@@ -11,7 +11,8 @@ from .api import (
 )
 from .cred_refresher import RegistryCredentialRefresher
 from .k8s_configmaps import K8sConfigMaps
-from .k8s_secrets import K8sSecrets
+from .k8s_secrets import K8sSecrets, NexusSecretConfig
+from .nexus import Nexus, NexusBlobStorage, NexusConfig
 from .naming import DNS_CNAMES, cell_name
 from .pinetools import Pinetools
 from .providers import (
@@ -57,11 +58,15 @@ __all__ = [
     "DatadogApiKeyProvider",
     "K8sConfigMaps",
     "K8sSecrets",
+    "NexusSecretConfig",
     "cell_name",
     "DNS_CNAMES",
     "RegistryCredentialRefresher",
     "Pinetools",
     "ClusterUninstaller",
+    "Nexus",
+    "NexusBlobStorage",
+    "NexusConfig",
     "ContainerRegistry",
     "AWS_REGISTRY",
     "GCP_REGISTRY",
