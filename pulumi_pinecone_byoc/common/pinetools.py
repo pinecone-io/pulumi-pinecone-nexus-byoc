@@ -168,7 +168,17 @@ class Pinetools(pulumi.ComponentResource):
         job_name = version_output.apply(_job_name)
         install_job = k8s.batch.v1.Job(
             f"{name}-install-job",
-            metadata=k8s.meta.v1.ObjectMetaArgs(name=job_name, namespace=namespace),
+            metadata=k8s.meta.v1.ObjectMetaArgs(
+                name=job_name,
+                namespace=namespace,
+                # Don't block the stack on the install Job's `cluster check`. On
+                # headless Azure BYOC, gloo `auth` and `metrics-proxy` crashloop on
+                # a GCP Cloud Spanner (exDB) dependency that isn't reachable here,
+                # so `cluster check` never passes even though the data-plane serving
+                # path is healthy. Awaiting it would wedge a full `up` (and gate the
+                # Nexus release) on services outside the serving path.
+                annotations={"pulumi.com/skipAwait": "true"},
+            ),
             spec=make_install_job_spec(init_containers=[wait_for_regcred_container]),
             opts=pulumi.ResourceOptions(
                 parent=self,
