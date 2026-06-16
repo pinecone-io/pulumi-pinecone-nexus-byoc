@@ -53,6 +53,7 @@ _HEADLESS_DIMENSION = 1024
 _HEADLESS_METRIC = "cosine"
 _HEADLESS_VECTOR_TYPE = "dense"
 _HEADLESS_INDEX_MODE = "slab"
+_HEADLESS_DRN_POOL_ID = "nexus-static-pool"
 
 
 @dataclass
@@ -417,12 +418,18 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 "metric": _HEADLESS_METRIC,
                 "vector_type": _HEADLESS_VECTOR_TYPE,
                 "index_mode": _HEADLESS_INDEX_MODE,
-                # shared-pool routing (no ProvisionedPool CR for v0). The `drn` key
-                # is present-but-empty rather than omitted: the headless values
-                # template (_shared.values.yaml.gotmpl) reads `$drn.pool_id` with
-                # strict map access, which errors on a missing key; an empty pool_id
-                # is falsy so the DRN env block stays unset -> shared pool.
-                "drn": {"pool_id": ""},
+                # DRN (dedicated read-node) pool. BYOC headless is DRN-only: byoc.toml
+                # sets shared_pool_watcher=none (NoOpPhysicalAssigner -> NoAvailablePeers),
+                # and the read pool "never falls back to the shared pool" in headless. A
+                # populated drn block stamps WorkerPool::Provisioned/Ready, makes
+                # provisioned_capacity() non-empty, and renders the ProvisionedPool CR the
+                # provisioned-operator reconciles into executor pods that serve the index.
+                "drn": {
+                    "pool_id": _HEADLESS_DRN_POOL_ID,
+                    "tier": "b1",
+                    "shards": 1,
+                    "replicas": 1,
+                },
             }
 
         pulumi_outputs = {
