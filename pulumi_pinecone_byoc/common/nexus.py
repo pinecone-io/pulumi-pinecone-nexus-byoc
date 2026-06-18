@@ -11,6 +11,8 @@ Pinecone DB stack is up. Two releases are installed in order:
 Charts are the vendored copies at ``<repo>/nexus/deploy/helm/{nexus,nexus-fdb}``.
 """
 
+import hashlib
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -31,6 +33,53 @@ _DEFAULT_STORAGE_CLASS = "premium-rwo"
 # GKE uses gce-internal; AKS passes None (gateway exposed directly via LoadBalancer).
 _DEFAULT_INGRESS_CLASS = "gce-internal"
 
+# Inference-proxy routing overlay. The customer's model config is layered onto
+# the proxy's baked default.toml as the `byoc` cascade profile. These names are
+# the contract with the Nexus chart (deploy/helm/nexus/values.yaml,
+# templates/services/inference-proxy.yaml): the ConfigMap holds a `byoc.toml`
+# key, and `byoc` is appended to the chart's default configProfiles.
+_INFERENCE_BYOC_CONFIGMAP = "nexus-inference-proxy-byoc-config"
+_INFERENCE_BYOC_PROFILE = "byoc"
+# Fallback base profile when nothing upstream has set configProfiles (mirrors
+# the chart default in deploy/helm/nexus/values.yaml). byoc is appended to this
+# so the overlay layers on top of whatever base profiles are already selected.
+_CHART_BASE_CONFIG_PROFILE = "development"
+# Surfaces whose model entries carry an api_key_ref to project as a pod env var.
+_PROVIDER_KEY_SURFACES = ("llm_models", "embedding_models", "rerank_models")
+
+# Clean-slate sentinel prepended to the customer's routing TOML. It makes the
+# proxy drop its baked routing table (catalog + profiles, incl. the dev/prod
+# claude tier overrides) before this layer applies, so the customer's config is
+# authoritative rather than a deep-merge onto the shipped default. Injected here
+# so the operator-facing TOML stays purely about models -- it never has to know
+# about the cascade. See nexus-inference-proxy settings (_ResettableRoutingTomlSource).
+_RESET_SENTINEL_HEADER = (
+    "# Managed by Pinecone BYOC: start from a clean routing table (drop the\n"
+    "# proxy's built-in model catalog/tiers) before applying the config below.\n"
+    "reset_inference_proxy_config = true\n\n"
+)
+
+
+def derive_api_key_refs(inference_models_toml: str) -> list[str]:
+    """Distinct ``api_key_ref`` values across the overlay's model catalog.
+
+    Pinecone-style models carry no ``api_key_ref`` (the caller supplies the key
+    per request via the ``Api-Key`` header), so they're skipped. The sorted
+    result drives both the ``nexus-config`` Secret keys the deploy provisions
+    and the chart's ``inference-proxy.providerKeyRefs`` projection list, so the
+    two never drift -- both come from this one parse of the TOML.
+    """
+    parsed = tomllib.loads(inference_models_toml)
+    refs: set[str] = set()
+    for surface in _PROVIDER_KEY_SURFACES:
+        for model in parsed.get(surface, {}).values():
+            if not isinstance(model, dict) or model.get("api_style") == "pinecone":
+                continue
+            ref = model.get("api_key_ref")
+            if isinstance(ref, str) and ref:
+                refs.add(ref)
+    return sorted(refs)
+
 @dataclass
 class NexusConfig:
     """Nexus enablement settings. Pass to cluster args to deploy Nexus alongside the DB stack.
@@ -48,6 +97,13 @@ class NexusConfig:
     inference_base: pulumi.Input[str] | None = None  # falls back to api_url
     byoc_project_id: pulumi.Input[str] = _DEFAULT_BYOC_PROJECT_ID
     storage_bucket_prefix: str | None = None  # None = fs backend, set = provision blob
+    # Inference-proxy model routing. When set, the proxy loads this TOML as the
+    # `byoc` config overlay (model catalog + the default profile's tiers) on top
+    # of its baked default. ``provider_keys`` maps each ``api_key_ref`` in the
+    # TOML to its secret value (e.g. {"gemini-api-key": <secret>}); the wizard
+    # collects it via ``pulumi config --secret nexus-provider-keys.<ref>``.
+    inference_models_toml: str | None = None
+    provider_keys: pulumi.Input[dict] | None = None
 
 
 class Nexus(pulumi.ComponentResource):
@@ -66,6 +122,7 @@ class Nexus(pulumi.ComponentResource):
         ingress_class: str | None = _DEFAULT_INGRESS_CLASS,
         blob_storage: "NexusBlobStorage | None" = None,
         cpgw_api_url: pulumi.Input[str] | None = None,
+        inference_models_toml: str | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
@@ -89,6 +146,10 @@ class Nexus(pulumi.ComponentResource):
                 Must be paired with the ``cpgw-api-key`` entry in the
                 ``nexus-config`` secret — setting one without the other makes
                 Nexus panic at startup (partial CPGW config).
+            inference_models_toml: BYOC inference-proxy routing overlay. When set, a
+                ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
+                pointed at it (``byoc`` appended to configProfiles); leave ``None`` to
+                run the proxy on its baked default routing table.
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
 
@@ -173,6 +234,48 @@ class Nexus(pulumi.ComponentResource):
         if cpgw_api_url is not None:
             app_values["config"]["cpgwApiUrl"] = cpgw_api_url
 
+        # BYOC inference-proxy routing overlay. Ship the customer's model config
+        # as a ConfigMap mounted as the `byoc` cascade profile. The TOML sets
+        # reset_inference_proxy_config = true, so the proxy drops the baked
+        # routing table (catalog + profiles) before this layer applies -- the
+        # customer's config is authoritative, not a deep-merge onto the shipped
+        # default (which also clears the dev/prod claude tier overrides). The
+        # configChecksum (a hash of the TOML) rolls the proxy pod when the
+        # overlay changes -- the subPath mount doesn't live-update.
+        # providerKeyRefs is derived from the same TOML so the projected env
+        # vars match the catalog's api_key_refs.
+        app_release_depends_on = [self.fdb_release]
+        if inference_models_toml is not None:
+            # Prepend the clean-slate sentinel here so the operator-facing TOML
+            # never carries cascade plumbing. derive_api_key_refs ignores the
+            # bool; the checksum hashes the final content so edits roll the pod.
+            byoc_toml = _RESET_SENTINEL_HEADER + inference_models_toml
+            self.inference_config = k8s.core.v1.ConfigMap(
+                f"{name}-inference-proxy-byoc-config",
+                metadata=k8s.meta.v1.ObjectMetaArgs(
+                    name=_INFERENCE_BYOC_CONFIGMAP,
+                    namespace=_NEXUS_NAMESPACE,
+                ),
+                data={"byoc.toml": byoc_toml},
+                opts=provider_opts,
+            )
+            app_release_depends_on.append(self.inference_config)
+            checksum = hashlib.sha256(byoc_toml.encode("utf-8")).hexdigest()
+            # Append byoc as the last (highest-precedence) profile, idempotently:
+            # keep whatever base profiles are already selected and only add byoc
+            # if absent. Nothing sets configProfiles upstream today, so this falls
+            # back to the chart's default base.
+            existing = app_values.get("configProfiles", _CHART_BASE_CONFIG_PROFILE)
+            profiles = [p.strip() for p in existing.split(",") if p.strip()]
+            if _INFERENCE_BYOC_PROFILE not in profiles:
+                profiles.append(_INFERENCE_BYOC_PROFILE)
+            app_values["configProfiles"] = ",".join(profiles)
+            app_values["inference-proxy"] = {
+                "byocConfigMap": _INFERENCE_BYOC_CONFIGMAP,
+                "configChecksum": f"sha256-{checksum[:16]}",
+                "providerKeyRefs": derive_api_key_refs(inference_models_toml),
+            }
+
         self.app_release = Release(
             f"{name}-app",
             ReleaseArgs(
@@ -184,7 +287,7 @@ class Nexus(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(
                 parent=self,
                 provider=k8s_provider,
-                depends_on=[self.fdb_release],
+                depends_on=app_release_depends_on,
             ),
         )
 
