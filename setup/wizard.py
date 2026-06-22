@@ -2878,6 +2878,7 @@ cluster = PineconeAzureCluster(
         # full-DB deploys are unaffected. Only takes effect alongside Nexus.
         headless_enabled=config.get_bool("db-headless") or False,
         static_index_id=config.get("nexus-static-index-id"),
+        static_index_schema=config.get("static-index-schema"),
         nexus=NexusConfig(
             version=config.get("nexus-version"),
             byoc_env=config.get("nexus-byoc-env"),

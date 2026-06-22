@@ -111,6 +111,11 @@ class PineconeAzureClusterArgs:
     static_index_id: pulumi.Input[str] | None = None
     # The headless static index's project id. Defaults to the Nexus BYOC project id.
     static_index_project_id: pulumi.Input[str] | None = None
+    # Optional explicit IndexSchemaDef for the headless index, as a tagged JSON string,
+    # e.g. '{"version":"v1","fields":{...}}'. When set, injected into the headless block
+    # as `schema` → PINECONE_HEADLESS__SCHEMA on the DB side. When None (default) the DB
+    # applies its dense default schema; omit unless you need a custom field layout (e.g. FTS).
+    static_index_schema: str | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -431,6 +436,10 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                     "replicas": 1,
                 },
             }
+            # Inject schema only when explicitly set; absent = DB uses dense default.
+            # Maps to PINECONE_HEADLESS__SCHEMA on the DB side via the pinetools gotmpl.
+            if args.static_index_schema is not None:
+                headless_block["schema"] = args.static_index_schema
 
         pulumi_outputs = {
             "cell_name": self._cell_name,
