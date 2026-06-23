@@ -8,7 +8,7 @@ from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
-from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig
+from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     AmpAccess,
@@ -242,6 +242,12 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             nexus=NexusSecretConfig(
                 api_key=args.pinecone_api_key,
                 gemini_api_key=args.nexus.gemini_api_key,
+                provider_keys=args.nexus.provider_keys,
+                provider_key_refs=(
+                    derive_api_key_refs(args.nexus.inference_models_toml)
+                    if args.nexus.inference_models_toml is not None
+                    else None
+                ),
             ) if args.nexus is not None else None,
             control_db=self._alloydb.control_db,
             system_db=self._alloydb.system_db,
@@ -384,6 +390,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 # {api_url}/internal/cpgw (synchronous CPS db_index_id on create).
                 # Paired with the cpgw-api-key in the nexus-config secret.
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
+                inference_models_toml=nx.inference_models_toml,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
