@@ -512,7 +512,15 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             k8s_provider=self._aks.k8s_provider,
             pinecone_version=args.pinecone_version,
             pinetools_image=AZURE_REGISTRY.pinetools_image(args.pinecone_version),
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._aks, self._k8s_configmaps]),
+            # Headless/BYOC: block the install pod until the Pulumi-managed exdb
+            # source secrets are present and let the Job retry through the
+            # external-secrets sync window, so the data-plane installs on the first
+            # deploy instead of needing a manual re-run.
+            wait_for_exdb_secrets=True,
+            opts=pulumi.ResourceOptions(
+                parent=self,
+                depends_on=[self._aks, self._k8s_configmaps, self._k8s_secrets],
+            ),
         )
 
         # Install Nexus after the DB stack is ready.
