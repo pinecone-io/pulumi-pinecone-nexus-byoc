@@ -4,10 +4,12 @@ Shared k8s secrets for pinecone services.
 
 import base64
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import pulumi
 import pulumi_kubernetes as k8s
+import pulumi_random as random
 
 
 def b64(data: pulumi.Input[str]) -> pulumi.Output[str]:
@@ -20,8 +22,23 @@ def postgres_url(host: str, port: int, username: str, password: str, db_name: st
     return f"postgres://{username}:{password}@{host}:{port}/{db_name}"
 
 
+@dataclass
+class NexusSecretConfig:
+    """Nexus secret settings. Pass to K8sSecrets to provision the nexus-config secret.
+
+    Gates creation of the ``nexus`` namespace and all Nexus k8s secrets.
+    ``api_key`` is the cluster Pinecone API key used for native index-create egress.
+    """
+
+    api_key: pulumi.Input[str]
+    gemini_api_key: pulumi.Input[str] | None = None
+    azure_storage_access_key: pulumi.Input[str] | None = None
+
+
 class K8sSecrets(pulumi.ComponentResource):
     cpgw_api_key: pulumi.Output[str]
+    # Seeded BYOC login credential; None on DB-only deploys.
+    byoc_session_credential: pulumi.Output[str] | None
 
     def __init__(
         self,
@@ -30,6 +47,7 @@ class K8sSecrets(pulumi.ComponentResource):
         cpgw_api_key: pulumi.Input[str],
         gcps_api_key: pulumi.Input[str] | None = None,
         dd_api_key: pulumi.Input[str] | None = None,
+        nexus: NexusSecretConfig | None = None,
         control_db: Any | None = None,
         system_db: Any | None = None,
         azure_storage_access_key: pulumi.Input[str] | None = None,
@@ -39,6 +57,7 @@ class K8sSecrets(pulumi.ComponentResource):
         super().__init__("pinecone:byoc:K8sSecrets", name, None, opts)
 
         self.cpgw_api_key = pulumi.Output.secret(cpgw_api_key)
+        self.byoc_session_credential = None
 
         self.namespace = k8s.core.v1.Namespace(
             f"{name}-external-secrets-ns",
@@ -103,6 +122,76 @@ class K8sSecrets(pulumi.ComponentResource):
                 opts=ns_opts,
             )
 
+        if nexus is not None:
+            nexus_namespace = k8s.core.v1.Namespace(
+                f"{name}-nexus-ns",
+                metadata=k8s.meta.v1.ObjectMetaArgs(
+                    name="nexus",
+                    labels={
+                        "kubernetes.io/metadata.name": "nexus",
+                        "name": "nexus",
+                    },
+                ),
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    provider=k8s_provider,
+                    delete_before_replace=True,
+                ),
+            )
+
+            nexus_jwt_secret = random.RandomPassword(
+                f"{name}-nexus-jwt",
+                length=48,
+                special=False,
+                opts=pulumi.ResourceOptions(parent=self),
+            )
+
+            # Seeded login credential stored in nexus-config and surfaced as a secret output.
+            byoc_session_credential = random.RandomPassword(
+                f"{name}-nexus-byoc-session-credential",
+                length=32,
+                special=False,
+                opts=pulumi.ResourceOptions(parent=self),
+            )
+            self.byoc_session_credential = pulumi.Output.secret(
+                byoc_session_credential.result
+            )
+
+            k8s.core.v1.Secret(
+                f"{name}-nexus-config",
+                metadata=k8s.meta.v1.ObjectMetaArgs(
+                    name="nexus-config",
+                    namespace="nexus",
+                ),
+                data={
+                    "jwt-secret": b64(pulumi.Output.secret(nexus_jwt_secret.result)),
+                    "gemini-api-key": b64(
+                        pulumi.Output.secret(nexus.gemini_api_key)
+                        if nexus.gemini_api_key is not None
+                        else ""
+                    ),
+                    "claude-api-key": b64(""),
+                    "nebius-api-key": b64(""),
+                    "pinecone-api-key": b64(pulumi.Output.secret(nexus.api_key)),
+                    # CPGW per-(org, env) service key for the CPGW index client
+                    # (Api-Key header). Paired with config.cpgwApiUrl on the Nexus
+                    # component — both must be set together or Nexus panics.
+                    "cpgw-api-key": b64(self.cpgw_api_key),
+                    "byoc-session-credential": b64(self.byoc_session_credential),
+                    "azure-storage-access-key": b64(
+                        pulumi.Output.secret(nexus.azure_storage_access_key)
+                        if nexus.azure_storage_access_key is not None
+                        else ""
+                    ),
+                },
+                type="Opaque",
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    provider=k8s_provider,
+                    depends_on=[nexus_namespace],
+                ),
+            )
+
         if azure_storage_access_key is not None:
             k8s.core.v1.Secret(
                 f"{name}-azure-storage-key",
@@ -136,6 +225,7 @@ class K8sSecrets(pulumi.ComponentResource):
             {
                 "cpgw_api_key": self.cpgw_api_key,
                 "namespace": self.namespace.metadata.name,
+                "byoc_session_credential": self.byoc_session_credential,
             }
         )
 
