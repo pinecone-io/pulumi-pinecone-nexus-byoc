@@ -22,6 +22,19 @@ BLUE = "#002BFF"
 
 PINECONE_VERSION = "main-94a9e90"
 
+# Nexus image tag (proposal §10 `nexus-version`). Coordinated with
+# PINECONE_VERSION as a combined release manifest; the wizard writes it only
+# for a "Nexus BYOC" install. When unset in config the GCP component falls back
+# to `pinecone-version` so a single combined manifest still works.
+NEXUS_VERSION = PINECONE_VERSION
+
+# Nexus images live in their own Artifact Registry repo (`nexus`), co-located on
+# the DB registry host; DB/pinetools images stay in the `unstable` repo.
+NEXUS_IMAGE_REGISTRY = "us-docker.pkg.dev/pinecone-artifacts/nexus"
+
+# Azure analogue: Nexus images in the `nexus` repo co-located on the ACR host.
+NEXUS_AZURE_IMAGE_REGISTRY = "pinecone.azurecr.io/nexus"
+
 console = Console()
 
 
@@ -855,7 +868,7 @@ class AWSSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "us-east-1")
         azs_str = os.environ.get("PINECONE_AZS", f"{region}a,{region}b")
-        azs = [az.strip() for az in azs_str.split(",")]
+        azs = [az.strip() for az in azs_str.split(",") if az.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
@@ -1500,6 +1513,8 @@ class GCPPreflightChecker:
 class GCPSetupWizard(BaseSetupWizard):
     HEADER_TITLE = "Pinecone BYOC Setup Wizard - GCP"
     HEADER_SUBTITLE = "This wizard will set up everything you need to deploy Pinecone BYOC on GCP."
+    # one more than the base flow: GCP adds a Nexus enablement step (task 2.7).
+    TOTAL_STEPS = 14
     DEFAULT_CIDR = "10.112.0.0/12"
     DELETION_PROTECTION_DESC = "Protect AlloyDB databases and GCS buckets from accidental deletion"
     PRIVATE_ACCESS_DESC = "Private access requires Private Service Connect (more secure)"
@@ -1530,6 +1545,7 @@ class GCPSetupWizard(BaseSetupWizard):
         deletion_protection = self._get_deletion_protection()
         public_access = self._get_public_access()
         labels = self._get_custom_metadata()
+        nexus = self._get_nexus_config()
 
         if not self._run_preflight_checks(project_id, region, zones, cidr):
             return False
@@ -1550,6 +1566,7 @@ class GCPSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             labels,
+            nexus,
         )
 
     def _run_headless(self, output_dir: str) -> bool:
@@ -1567,13 +1584,34 @@ class GCPSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "us-central1")
         zones_str = os.environ.get("PINECONE_AZS", f"{region}-a,{region}-b")
-        zones = [z.strip() for z in zones_str.split(",")]
+        zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
         )
         public_access = os.environ.get("PINECONE_PUBLIC_ACCESS", "true").lower() == "true"
         project_name = os.environ.get("PINECONE_PROJECT_NAME", "pinecone-byoc")
+
+        # Nexus is opt-in; default off so headless DB-only installs are unchanged.
+        if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
+            nexus = {
+                "enabled": True,
+                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
+                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                "image_registry": os.environ.get(
+                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_IMAGE_REGISTRY
+                ),
+                "inference_base": os.environ.get(
+                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
+                ),
+                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
+                # Opt-in blob backend: unset = fs (PVC); set = provision GCS buckets.
+                "storage_bucket_prefix": os.environ.get(
+                    "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
+                ),
+            }
+        else:
+            nexus = {"enabled": False}
 
         return self._generate_project(
             output_dir,
@@ -1586,6 +1624,7 @@ class GCPSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             {},
+            nexus,
         )
 
     def _validate_gcp_creds(self) -> str | None:
@@ -1699,6 +1738,58 @@ class GCPSetupWizard(BaseSetupWizard):
         zones = [zone.strip() for zone in zones_input.split(",")]
         return zones
 
+    def _get_nexus_config(self) -> dict:
+        """Prompt for Nexus enablement and inference config (proposal §4.6/§4.7,
+        task 2.7). Default is a DB-only install (nexus_enabled=False) so the
+        generated project is byte-for-byte unchanged unless Nexus is requested.
+
+        For a "Nexus BYOC" install the wizard collects the BYOC env id
+        (PINECONE_BYOC_ENV), the Nexus image tag (nexus-version), and the
+        inference base (INFERENCE_BASE). The inference key is not prompted: it
+        defaults to the minted deployment key per §10.
+        """
+        console.print()
+        console.print(f"  {self._step('Nexus')}")
+        console.print()
+        console.print("  [dim]Deploy Nexus alongside the Pinecone DB stack in the same cluster.[/]")
+
+        response = self._prompt("Enable Nexus? (y/N)", "N")
+        if response.strip().lower() not in ("y", "yes"):
+            return {"enabled": False}
+
+        console.print()
+        console.print("  [dim]The `.byoc` deployment environment id Nexus targets for index CRUD.[/]")
+        byoc_env = self._prompt("Enter PINECONE_BYOC_ENV (or press Enter to use the minted env)", "")
+
+        nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
+
+        console.print()
+        console.print("  [dim]Container registry for the Nexus images (the `nexus` repo, co-located on the DB registry host).[/]")
+        image_registry = self._prompt("Enter nexus image registry", NEXUS_IMAGE_REGISTRY)
+
+        console.print()
+        console.print("  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]")
+        inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
+
+        console.print()
+        console.print("  [dim]BYOC single-tenant project id (PINECONE_PINECONE__BYOC_PROJECT_ID).[/]")
+        byoc_project_id = self._prompt("Enter BYOC project id", "byoc-poc")
+
+        console.print()
+        console.print(
+            "  [dim]The Gemini synthesis key is a secret; set it after the project is"
+            " created:[/]\n  [dim]pulumi config set --secret nexus-gemini-api-key <key>[/]"
+        )
+
+        return {
+            "enabled": True,
+            "byoc_env": byoc_env.strip(),
+            "nexus_version": nexus_version.strip() or NEXUS_VERSION,
+            "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
+            "inference_base": inference_base.strip() or "https://api.pinecone.io",
+            "byoc_project_id": byoc_project_id.strip() or "byoc-poc",
+        }
+
     def _run_preflight_checks(
         self, project_id: str, region: str, zones: list[str], cidr: str
     ) -> bool:
@@ -1728,7 +1819,9 @@ class GCPSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         labels: dict[str, str],
+        nexus: dict | None = None,
     ):
+        nexus = nexus or {"enabled": False}
         console.print()
 
         if not self._check_pulumi_installed():
@@ -1757,10 +1850,12 @@ class GCPSetupWizard(BaseSetupWizard):
 
 import pulumi
 from pulumi_pinecone_byoc.gcp import PineconeGCPCluster, PineconeGCPClusterArgs
+from pulumi_pinecone_byoc.common.nexus import NexusConfig
 
 config = pulumi.Config()
 gcp_config = pulumi.Config("gcp")
 
+_nexus_enabled = config.get_bool("nexus-enabled")
 cluster = PineconeGCPCluster(
     "pinecone-byoc",
     PineconeGCPClusterArgs(
@@ -1773,14 +1868,25 @@ cluster = PineconeGCPCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         labels=config.get_object("labels") or {},
+        nexus=NexusConfig(
+            version=config.get("nexus-version"),
+            byoc_env=config.get("nexus-byoc-env"),
+            image_registry=config.get("nexus-image-registry"),
+            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
+            byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
+            storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+        ) if _nexus_enabled else None,
     ),
 )
 
 update_kubeconfig_command = cluster.name.apply(
-    lambda name: f"gcloud container clusters get-credentials {name} --region {config.require('region')} --project {gcp_config.require('project')}"
+    lambda name: f"gcloud container clusters get-credentials {name} --region {config.require(\'region\')} --project {gcp_config.require(\'project\')}"
 )
 pulumi.export("environment", cluster.environment.env_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
+if _nexus_enabled:
+    pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
+    pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("psc_service_attachment", cluster.psc_service_attachment)
 '''
@@ -1823,6 +1929,35 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
             config_content += f"  {project_name}:labels:\n"
             for key, value in labels.items():
                 config_content += f'    {key}: "{value}"\n'
+
+        # Nexus BYOC install (task 2.7). Written only when enabled, so DB-only
+        # stacks omit these keys entirely and `nexus_enabled` stays False.
+        if nexus.get("enabled"):
+            config_content += f"  {project_name}:nexus-enabled: true\n"
+            config_content += (
+                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
+            )
+            config_content += (
+                f"  {project_name}:nexus-image-registry: "
+                f"{nexus.get('image_registry', NEXUS_IMAGE_REGISTRY)}\n"
+            )
+            if nexus.get("byoc_env"):
+                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
+            if nexus.get("byoc_project_id"):
+                config_content += (
+                    f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
+                )
+            config_content += (
+                f"  {project_name}:nexus-inference-base: "
+                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
+            )
+            if nexus.get("storage_bucket_prefix"):
+                config_content += (
+                    f"  {project_name}:nexus-storage-bucket-prefix: "
+                    f"{nexus['storage_bucket_prefix']}\n"
+                )
+            # nexus-gemini-api-key is a secret; set it out-of-band:
+            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
@@ -2137,7 +2272,7 @@ class AzurePreflightChecker:
 
     def _check_vm_skus(self):
         vm_skus = [
-            "Standard_D4s_v5",
+            "Standard_D4s_v7",
             "Standard_L2aos_v4",
             "Standard_L2s_v4",
             "Standard_L4s_v4",
@@ -2217,7 +2352,7 @@ class AzurePreflightChecker:
 
             data = json.loads(result.stdout)
             required_skus = [
-                "Standard_D4s_v5",
+                "Standard_D4s_v7",
                 "Standard_L2aos_v4",
                 "Standard_L2s_v4",
                 "Standard_L4s_v4",
@@ -2434,13 +2569,36 @@ class AzureSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "eastus")
         zones_str = os.environ.get("PINECONE_AZS", "1,2")
-        zones = [z.strip() for z in zones_str.split(",")]
+        zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
         )
         public_access = os.environ.get("PINECONE_PUBLIC_ACCESS", "true").lower() == "true"
         project_name = os.environ.get("PINECONE_PROJECT_NAME", "pinecone-byoc")
+
+        # Nexus is opt-in; default off so headless DB-only installs are unchanged.
+        # Uses the SAME env var names as the GCP wizard, except the image registry
+        # defaults to the Azure ACR `nexus` repo.
+        if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
+            nexus = {
+                "enabled": True,
+                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
+                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                "image_registry": os.environ.get(
+                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_AZURE_IMAGE_REGISTRY
+                ),
+                "inference_base": os.environ.get(
+                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
+                ),
+                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
+                # Opt-in blob backend: unset = fs (PVC); set = provision blob containers.
+                "storage_bucket_prefix": os.environ.get(
+                    "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
+                ),
+            }
+        else:
+            nexus = {"enabled": False}
 
         return self._generate_project(
             output_dir,
@@ -2453,6 +2611,7 @@ class AzureSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             {},
+            nexus,
         )
 
     def _validate_azure_creds(self) -> str | None:
@@ -2527,7 +2686,7 @@ class AzureSetupWizard(BaseSetupWizard):
             if result.returncode == 0:
                 data = _json.loads(result.stdout)
                 required_skus = [
-                    "Standard_D4s_v5",
+                    "Standard_D4s_v7",
                     "Standard_L2aos_v4",
                     "Standard_L2s_v4",
                     "Standard_L4s_v4",
@@ -2601,7 +2760,9 @@ class AzureSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         tags: dict[str, str],
+        nexus: dict | None = None,
     ):
+        nexus = nexus or {"enabled": False}
         console.print()
 
         if not self._check_pulumi_installed():
@@ -2628,9 +2789,11 @@ class AzureSetupWizard(BaseSetupWizard):
 
 import pulumi
 from pulumi_pinecone_byoc.azure import PineconeAzureCluster, PineconeAzureClusterArgs
+from pulumi_pinecone_byoc.common.nexus import NexusConfig
 
 config = pulumi.Config()
 
+_nexus_enabled = config.get_bool("nexus-enabled")
 cluster = PineconeAzureCluster(
     "pinecone-byoc",
     PineconeAzureClusterArgs(
@@ -2643,15 +2806,26 @@ cluster = PineconeAzureCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         tags=config.get_object("tags"),
+        nexus=NexusConfig(
+            version=config.get("nexus-version"),
+            byoc_env=config.get("nexus-byoc-env"),
+            image_registry=config.get("nexus-image-registry"),
+            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
+            byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
+            storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+        ) if _nexus_enabled else None,
     ),
 )
 
 region = config.require("region")
 update_kubeconfig_command = cluster.name.apply(
-    lambda name: f"az aks get-credentials --resource-group {name.removeprefix('cluster-')}-{region}-rg --name {name}"
+    lambda name: f"az aks get-credentials --resource-group {name.removeprefix(\'cluster-\')}-{region}-rg --name {name}"
 )
 pulumi.export("environment", cluster.environment.env_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
+if _nexus_enabled:
+    pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
+    pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("private_link_service_name", cluster.private_link_service_name)
     pulumi.export("private_link_service_resource_group", cluster.private_link_service_resource_group)
@@ -2692,6 +2866,36 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
             config_content += f"  {project_name}:tags:\n"
             for key, value in tags.items():
                 config_content += f'    {key}: "{value}"\n'
+
+        # Nexus BYOC install. Written only when enabled, so DB-only stacks omit
+        # these keys entirely and `nexus_enabled` stays False. Mirrors the GCP
+        # wizard.
+        if nexus.get("enabled"):
+            config_content += f"  {project_name}:nexus-enabled: true\n"
+            config_content += (
+                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
+            )
+            config_content += (
+                f"  {project_name}:nexus-image-registry: "
+                f"{nexus.get('image_registry', NEXUS_AZURE_IMAGE_REGISTRY)}\n"
+            )
+            if nexus.get("byoc_env"):
+                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
+            if nexus.get("byoc_project_id"):
+                config_content += (
+                    f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
+                )
+            config_content += (
+                f"  {project_name}:nexus-inference-base: "
+                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
+            )
+            if nexus.get("storage_bucket_prefix"):
+                config_content += (
+                    f"  {project_name}:nexus-storage-bucket-prefix: "
+                    f"{nexus['storage_bucket_prefix']}\n"
+                )
+            # nexus-gemini-api-key is a secret; set it out-of-band:
+            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
