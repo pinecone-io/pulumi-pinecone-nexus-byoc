@@ -362,10 +362,12 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         if args.nexus is not None:
             nx = args.nexus
             blob_storage = None
+            nexus_sa_annotations = None
             if nx.storage_bucket_prefix is not None:
                 self._nexus_gcs = NexusGCSBuckets(
                     f"{config.resource_prefix}-nexus-gcs",
                     config,
+                    cell_name=self._cell_name,
                     prefix=nx.storage_bucket_prefix,
                     force_destroy=not args.deletion_protection,
                     opts=pulumi.ResourceOptions(parent=self),
@@ -374,6 +376,12 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                     source=self._nexus_gcs.source,
                     knowledge=self._nexus_gcs.knowledge,
                     archive=self._nexus_gcs.archive,
+                )
+                # Annotate the Nexus KSAs so the Workload-Identity-enabled pods
+                # assume the GCS SA bound to the nexus buckets; without this the
+                # pods have no GCP identity and GCS writes 403.
+                nexus_sa_annotations = self._nexus_gcs.gcs_sa_email.apply(
+                    lambda email: {"iam.gke.io/gcp-service-account": email}
                 )
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
@@ -386,6 +394,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 pinecone_prod=args.global_env == "prod",
                 byoc_project_id=nx.byoc_project_id,
                 blob_storage=blob_storage,
+                service_account_annotations=nexus_sa_annotations,
                 # CPGW index client: Nexus reaches the control-plane gateway at
                 # {api_url}/internal/cpgw (synchronous CPS db_index_id on create).
                 # Paired with the cpgw-api-key in the nexus-config secret.
