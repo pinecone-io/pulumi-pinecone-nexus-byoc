@@ -1,26 +1,30 @@
-"""GCS buckets for Nexus blob storage (source, knowledge, archive)."""
+"""GCS buckets for Nexus blob storage, plus the Workload Identity wiring the
+Nexus pods need to reach them (a dedicated GCS SA bound to the Nexus KSAs)."""
 
 import pulumi
 import pulumi_gcp as gcp
 
 from config.gcp import GCPConfig
 
+from ..common.nexus import NEXUS_KSA_MEMBERS
+from .gke import _sa_id
+
 _NEXUS_BUCKETS = ("source", "knowledge", "archive")
 
 
 class NexusGCSBuckets(pulumi.ComponentResource):
-    """Three GCS buckets backing the Nexus blob storage backend.
+    """Three GCS buckets (``{prefix}-source/knowledge/archive``) plus the GCS SA
+    the Nexus pods use to access them.
 
-    Provisioned when ``NexusConfig.storage_bucket_prefix`` is set. Bucket names
-    follow the pattern ``{prefix}-{suffix}`` where suffix is one of
-    ``source``, ``knowledge``, ``archive``. Pass the outputs to
-    ``NexusBlobStorage`` to wire them into the Nexus helm release.
+    Provisioned when ``NexusConfig.storage_bucket_prefix`` is set. Pass the
+    bucket outputs to ``NexusBlobStorage`` and ``gcs_sa_email`` to ``Nexus``.
     """
 
     def __init__(
         self,
         name: str,
         config: GCPConfig,
+        cell_name: pulumi.Input[str],
         prefix: str,
         force_destroy: bool = False,
         opts: pulumi.ResourceOptions | None = None,
@@ -28,6 +32,7 @@ class NexusGCSBuckets(pulumi.ComponentResource):
         super().__init__("pinecone:byoc:NexusGCSBuckets", name, None, opts)
 
         child_opts = pulumi.ResourceOptions(parent=self)
+        cell = pulumi.Output.from_input(cell_name)
 
         self._buckets: dict[str, gcp.storage.Bucket] = {}
         for suffix in _NEXUS_BUCKETS:
@@ -57,8 +62,44 @@ class NexusGCSBuckets(pulumi.ComponentResource):
                 opts=child_opts,
             )
 
+        # Dedicated GCS identity for the Nexus pods, scoped to just these buckets
+        # (objectAdmin = read/create/delete) rather than project-wide storage.
+        self._gcs_sa = gcp.serviceaccount.Account(
+            f"{name}-sa",
+            account_id=cell.apply(lambda cn: _sa_id("nexus-gcs", cn)),
+            display_name=cell.apply(lambda cn: f"Nexus GCS service account for {cn}"),
+            opts=child_opts,
+        )
+
+        for suffix in _NEXUS_BUCKETS:
+            gcp.storage.BucketIAMMember(
+                f"{name}-{suffix}-objadmin",
+                bucket=self._buckets[suffix].name,
+                role="roles/storage.objectAdmin",
+                member=self._gcs_sa.email.apply(lambda e: f"serviceAccount:{e}"),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gcs_sa]),
+            )
+
+        # Bind each Nexus KSA to the GCS SA; the chart annotates those same KSAs
+        # with iam.gke.io/gcp-service-account=<gcs-sa-email>.
+        gcp.serviceaccount.IAMBinding(
+            f"{name}-sa-workload-identity",
+            service_account_id=self._gcs_sa.name,
+            role="roles/iam.workloadIdentityUser",
+            members=pulumi.Output.all(config.project).apply(
+                lambda args: [
+                    f"serviceAccount:{args[0]}.svc.id.goog[{ns}/{ksa}]"
+                    for ns, ksa in NEXUS_KSA_MEMBERS
+                ]
+            ),
+            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gcs_sa]),
+        )
+
         self.register_outputs(
-            {s: self._buckets[s].name for s in _NEXUS_BUCKETS}
+            {
+                **{s: self._buckets[s].name for s in _NEXUS_BUCKETS},
+                "gcs_sa_email": self._gcs_sa.email,
+            }
         )
 
     @property
@@ -72,3 +113,8 @@ class NexusGCSBuckets(pulumi.ComponentResource):
     @property
     def archive(self) -> pulumi.Output[str]:
         return self._buckets["archive"].name
+
+    @property
+    def gcs_sa_email(self) -> pulumi.Output[str]:
+        """Email of the GCS SA the Nexus KSAs impersonate via Workload Identity."""
+        return self._gcs_sa.email
