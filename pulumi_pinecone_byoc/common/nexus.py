@@ -28,12 +28,9 @@ _NEXUS_NAMESPACE = "nexus"
 _NEXUS_TASKS_NAMESPACE = "nexus-tasks"
 _REGCRED = "regcred"
 
-# (namespace, KSA name) for every Nexus service account the chart creates and
-# attaches to GCS-touching pods (rbac.yaml / serviceAccountName references):
-# nexus-api backs both api and file-proxy, nexus-orchestrator backs the
-# orchestrator, and nexus-task (in the tasks namespace) backs the task pods that
-# do the actual object reads/writes. Cloud SA/Workload-Identity wiring binds and
-# annotates exactly these so blob storage is reachable from every pod.
+# (namespace, KSA name) for the chart's KSAs that touch blob storage; cloud
+# Workload-Identity wiring binds/annotates exactly these. nexus-api backs both
+# api and file-proxy; nexus-task does the actual object reads/writes.
 NEXUS_KSA_MEMBERS: tuple[tuple[str, str], ...] = (
     (_NEXUS_NAMESPACE, "nexus-api"),
     (_NEXUS_NAMESPACE, "nexus-orchestrator"),
@@ -101,10 +98,9 @@ class NexusConfig:
     three buckets/containers (``{prefix}-source``, ``{prefix}-knowledge``,
     ``{prefix}-archive``) and switch Nexus to the blob backend.
 
-    On GCP the ``fs`` default is not durable across pod restarts and file upload
-    requires object storage, so ``storage_bucket_prefix`` must be set there:
-    setting it provisions the buckets, a GCS service account, and the Workload
-    Identity bindings/annotations the Nexus pods need to reach them.
+    On GCP ``storage_bucket_prefix`` must be set: the ``fs`` default is not
+    durable and file upload requires object storage. Setting it also provisions
+    the GCS SA and Workload Identity wiring the pods need.
     """
 
     version: str | None = None  # falls back to pinecone_version
@@ -159,10 +155,9 @@ class Nexus(pulumi.ComponentResource):
                 the storage backend to ``blob`` and passes the names into the helm chart.
                 Leave ``None`` to use the local filesystem backend (``fs``).
             service_account_annotations: Annotations applied to the chart's KSAs
-                (api, orchestrator, task) via ``serviceAccountAnnotations``. On GKE
-                this carries ``iam.gke.io/gcp-service-account=<sa-email>`` so the
-                Workload-Identity-enabled pods assume the blob-storage SA -- without
-                it an un-annotated KSA has no GCP identity and cannot reach GCS.
+                via ``serviceAccountAnnotations``. On GKE this carries
+                ``iam.gke.io/gcp-service-account=<sa-email>`` so the pods assume
+                the blob-storage SA via Workload Identity.
             cpgw_api_url: CPGW control-plane gateway base URL (``…/internal/cpgw``).
                 When set, Nexus uses the CPGW index client (synchronous CPS
                 ``db_index_id`` on create) instead of the managed public path.
@@ -248,9 +243,7 @@ class Nexus(pulumi.ComponentResource):
             },
         }
 
-        # Workload Identity / pod-identity annotations for the chart's KSAs. On
-        # GKE this is {iam.gke.io/gcp-service-account: <gcs-sa-email>}; the bound
-        # SA is what gives the pods (and task pods) GCS access for blob storage.
+        # KSA annotations for Workload Identity (GKE: gcp-service-account=<email>).
         if service_account_annotations is not None:
             app_values["serviceAccountAnnotations"] = service_account_annotations
 

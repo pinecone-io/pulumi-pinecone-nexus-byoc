@@ -1,13 +1,5 @@
-"""GCS buckets for Nexus blob storage (source, knowledge, archive).
-
-Also provisions the Workload Identity wiring the Nexus pods need to reach those
-buckets: a dedicated GCS service account granted ``roles/storage.objectAdmin``
-on the three buckets, bound to the Nexus Kubernetes service accounts via
-``roles/iam.workloadIdentityUser``. The SA email is exposed so the caller can
-annotate the chart's KSAs (``iam.gke.io/gcp-service-account``) -- on a
-Workload-Identity cluster an un-annotated KSA has no GCP identity and does not
-fall back to the node SA, so without this the pods get no GCS access.
-"""
+"""GCS buckets for Nexus blob storage, plus the Workload Identity wiring the
+Nexus pods need to reach them (a dedicated GCS SA bound to the Nexus KSAs)."""
 
 import pulumi
 import pulumi_gcp as gcp
@@ -21,15 +13,11 @@ _NEXUS_BUCKETS = ("source", "knowledge", "archive")
 
 
 class NexusGCSBuckets(pulumi.ComponentResource):
-    """Three GCS buckets backing the Nexus blob storage backend, plus the
-    Workload Identity service account the Nexus pods use to access them.
+    """Three GCS buckets (``{prefix}-source/knowledge/archive``) plus the GCS SA
+    the Nexus pods use to access them.
 
-    Provisioned when ``NexusConfig.storage_bucket_prefix`` is set. Bucket names
-    follow the pattern ``{prefix}-{suffix}`` where suffix is one of
-    ``source``, ``knowledge``, ``archive``. Pass the outputs to
-    ``NexusBlobStorage`` to wire the bucket names into the Nexus helm release,
-    and pass ``gcs_sa_email`` to ``Nexus`` so the chart annotates its KSAs for
-    Workload Identity.
+    Provisioned when ``NexusConfig.storage_bucket_prefix`` is set. Pass the
+    bucket outputs to ``NexusBlobStorage`` and ``gcs_sa_email`` to ``Nexus``.
     """
 
     def __init__(
@@ -74,11 +62,8 @@ class NexusGCSBuckets(pulumi.ComponentResource):
                 opts=child_opts,
             )
 
-        # Dedicated GCS identity for the Nexus pods. Mirrors the DB data-pod
-        # pattern (a purpose-scoped SA bound to the KSAs via Workload Identity)
-        # but scoped to just the three Nexus buckets rather than project-wide
-        # storage. read/write of context source/knowledge/archive objects ->
-        # objectAdmin (read, create, delete).
+        # Dedicated GCS identity for the Nexus pods, scoped to just these buckets
+        # (objectAdmin = read/create/delete) rather than project-wide storage.
         self._gcs_sa = gcp.serviceaccount.Account(
             f"{name}-sa",
             account_id=cell.apply(lambda cn: _sa_id("nexus-gcs", cn)),
@@ -95,9 +80,8 @@ class NexusGCSBuckets(pulumi.ComponentResource):
                 opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gcs_sa]),
             )
 
-        # Bind each Nexus KSA to the GCS SA. The members resolve to
-        # serviceAccount:<project>.svc.id.goog[<ns>/<ksa>]; the chart annotates
-        # those same KSAs with iam.gke.io/gcp-service-account=<gcs-sa-email>.
+        # Bind each Nexus KSA to the GCS SA; the chart annotates those same KSAs
+        # with iam.gke.io/gcp-service-account=<gcs-sa-email>.
         gcp.serviceaccount.IAMBinding(
             f"{name}-sa-workload-identity",
             service_account_id=self._gcs_sa.name,
@@ -132,9 +116,5 @@ class NexusGCSBuckets(pulumi.ComponentResource):
 
     @property
     def gcs_sa_email(self) -> pulumi.Output[str]:
-        """Email of the GCS SA the Nexus KSAs impersonate via Workload Identity.
-
-        Annotate the chart's KSAs with
-        ``iam.gke.io/gcp-service-account=<this>`` (via ``serviceAccountAnnotations``).
-        """
+        """Email of the GCS SA the Nexus KSAs impersonate via Workload Identity."""
         return self._gcs_sa.email

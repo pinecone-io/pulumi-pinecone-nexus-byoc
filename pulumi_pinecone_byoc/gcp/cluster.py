@@ -377,9 +377,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                     knowledge=self._nexus_gcs.knowledge,
                     archive=self._nexus_gcs.archive,
                 )
-                # Annotate the Nexus KSAs so the Workload-Identity-enabled pods
-                # assume the GCS SA bound to the nexus buckets; without this the
-                # pods have no GCP identity and GCS writes 403.
+                # Annotate the Nexus KSAs so the pods assume the GCS SA via WI.
                 nexus_sa_annotations = self._nexus_gcs.gcs_sa_email.apply(
                     lambda email: {"iam.gke.io/gcp-service-account": email}
                 )
