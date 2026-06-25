@@ -40,6 +40,13 @@ class BaseConfig(BaseModel):
     node_pools: list[NodePoolConfig] = Field(default_factory=list)
     parent_zone_name: str = "pinecone.io"
 
+    # Mint a real Datadog API key via CPGW. When false, the datadog-api-key secret
+    # still gets a placeholder so the DB platform's envoy-stats-relay starts (no
+    # stats ship) -- use on dev cells where minting 400s on the org's Datadog quota.
+    # TODO(temporary): a workaround for the platform hard-requiring the secret; the
+    # real fix is platform-side (tolerate a missing key) or reusing a shared key.
+    datadog_enabled: bool = True
+
     @property
     def resource_prefix(self) -> str:
         return "pc"

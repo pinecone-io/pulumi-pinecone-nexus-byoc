@@ -17,6 +17,7 @@ from ..common.providers import (
     ApiKeyArgs,
     CpgwApiKey,
     CpgwApiKeyArgs,
+    DATADOG_DISABLED_PLACEHOLDER,
     DatadogApiKey,
     DatadogApiKeyArgs,
     Environment,
@@ -157,14 +158,19 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._service_account]),
         )
 
-        self._datadog_api_key = DatadogApiKey(
-            f"{config.resource_prefix}-datadog-api-key",
-            DatadogApiKeyArgs(
-                api_url=args.api_url,
-                cpgw_api_key=self._cpgw_api_key.key,
-            ),
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
-        )
+        if config.datadog_enabled:
+            self._datadog_api_key = DatadogApiKey(
+                f"{config.resource_prefix}-datadog-api-key",
+                DatadogApiKeyArgs(
+                    api_url=args.api_url,
+                    cpgw_api_key=self._cpgw_api_key.key,
+                ),
+                opts=pulumi.ResourceOptions(
+                    parent=self, depends_on=[self._cpgw_api_key]
+                ),
+            )
+        else:
+            self._datadog_api_key = None
 
         self._vpc = VPC(
             f"{config.resource_prefix}-vpc",
@@ -238,7 +244,11 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             k8s_provider=self._gke.k8s_provider,
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
-            dd_api_key=self._datadog_api_key.api_key,
+            dd_api_key=(
+                self._datadog_api_key.api_key
+                if self._datadog_api_key is not None
+                else DATADOG_DISABLED_PLACEHOLDER
+            ),
             nexus=NexusSecretConfig(
                 api_key=args.pinecone_api_key,
                 gemini_api_key=args.nexus.gemini_api_key,
@@ -390,7 +400,11 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 cloud="gcp",
                 region=args.region,
                 pinecone_prod=args.global_env == "prod",
-                byoc_project_id=nx.byoc_project_id,
+                byoc_project_id=nx.byoc_project_id or self._api_key.project_id,
+                byoc_vault_id=(
+                    nx.byoc_vault_id
+                    or self._resource_suffix.apply(lambda s: f"byoc{s}")
+                ),
                 blob_storage=blob_storage,
                 service_account_annotations=nexus_sa_annotations,
                 # CPGW index client: Nexus reaches the control-plane gateway at
@@ -458,7 +472,11 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 "sli_checkers_project_id": self._api_key.project_id,
                 "cpgw_api_key": self._k8s_secrets.cpgw_api_key,
                 "cpgw_admin_api_key_id": self._cpgw_api_key.key_id,
-                "datadog_api_key_id": self._datadog_api_key.key_id,
+                "datadog_api_key_id": (
+                    self._datadog_api_key.key_id
+                    if self._datadog_api_key is not None
+                    else None
+                ),
                 "customer_tags": config.custom_tags,
                 "pulumi_backend_url": self._pulumi_operator.backend_url,
                 "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,

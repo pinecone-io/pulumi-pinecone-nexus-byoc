@@ -569,6 +569,11 @@ class DnsDelegation(Resource):
 # DatadogApiKey Resource
 # =============================================================================
 
+# Written as the datadog-api-key secret when minting is disabled: the DB
+# platform's envoy-stats-relay requires DATADOG_API_KEY to start, but no stats
+# are shipped. 32 chars to match the real key shape.
+DATADOG_DISABLED_PLACEHOLDER = "0" * 32
+
 
 class DatadogApiKeyArgs:
     """Arguments for creating a Datadog API Key via cpgw."""
