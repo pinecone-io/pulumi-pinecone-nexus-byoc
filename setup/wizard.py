@@ -2660,6 +2660,10 @@ cluster = PineconeAzureCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         tags=config.get_object("tags"),
+        # Datadog observability. On by default; set `pulumi config set
+        # enable-datadog false` to skip the Datadog API key (and the data-plane
+        # observability wiring). Orthogonal to the serving path.
+        enable_datadog=config.get_bool("enable-datadog") if config.get_bool("enable-datadog") is not None else True,
         # Headless DB: deploy a single static index with no control plane. Off by
         # default so full-DB deploys are unaffected. Enable with
         # `pulumi config set db-headless true`. `static-index-id` pins the index

@@ -93,6 +93,15 @@ class PineconeAzureClusterArgs:
     # False; headless DB ingest->query does not need it.
     storage_integration_enabled: bool = False
 
+    # Datadog observability. When True (default), provision the Datadog API key
+    # (minted via cpgw) and wire it into the data plane so the observability
+    # releases (otel-collector-datadog, dd-global-apm) can report metrics. Set
+    # False to skip the DatadogApiKey resource entirely: dd_api_key is passed as
+    # None (the datadog-api-key Secret is omitted) and the datadog_api_key_id
+    # output is dropped from the configmap. Observability is orthogonal to the
+    # headless/FTS serving path; disabling it does not affect ingest/query.
+    enable_datadog: bool = True
+
     # Headless DB: deploy a HEADLESS Pinecone DB (single static index, no control
     # plane). False = unchanged full DB. When True, a `headless` block is injected
     # into the pc-pulumi-outputs/config ConfigMap and the data plane serves the
@@ -193,14 +202,18 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._service_account]),
         )
 
-        self._datadog_api_key = DatadogApiKey(
-            f"{config.resource_prefix}-datadog-api-key",
-            DatadogApiKeyArgs(
-                api_url=args.api_url,
-                cpgw_api_key=self._cpgw_api_key.key,
-            ),
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
-        )
+        # Datadog observability (gated, default on). When disabled, skip the
+        # resource entirely; downstream consumers handle the None.
+        self._datadog_api_key: DatadogApiKey | None = None
+        if args.enable_datadog:
+            self._datadog_api_key = DatadogApiKey(
+                f"{config.resource_prefix}-datadog-api-key",
+                DatadogApiKeyArgs(
+                    api_url=args.api_url,
+                    cpgw_api_key=self._cpgw_api_key.key,
+                ),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
+            )
 
         self._vnet = VNet(
             f"{config.resource_prefix}-vnet",
@@ -327,7 +340,11 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             k8s_provider=self._aks.k8s_provider,
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
-            dd_api_key=self._datadog_api_key.api_key,
+            dd_api_key=(
+                self._datadog_api_key.api_key
+                if self._datadog_api_key is not None
+                else None
+            ),
             control_db=self._database.control_db,
             system_db=self._database.system_db,
             azure_storage_access_key=self._storage.access_key,
@@ -546,7 +563,11 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 "sli_checkers_project_id": self._api_key.project_id,
                 "cpgw_api_key": self._k8s_secrets.cpgw_api_key,
                 "cpgw_admin_api_key_id": self._cpgw_api_key.key_id,
-                "datadog_api_key_id": self._datadog_api_key.key_id,
+                "datadog_api_key_id": (
+                    self._datadog_api_key.key_id
+                    if self._datadog_api_key is not None
+                    else None
+                ),
                 "customer_tags": config.custom_tags,
                 "pulumi_backend_url": self._pulumi_operator.backend_url,
                 "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,
