@@ -37,10 +37,18 @@ NEXUS_KSA_MEMBERS: tuple[tuple[str, str], ...] = (
     (_NEXUS_TASKS_NAMESPACE, "nexus-task"),
 )
 
-_DEFAULT_BYOC_PROJECT_ID = "byoc-poc"
 _DEFAULT_STORAGE_CLASS = "premium-rwo"
 # GKE uses gce-internal; AKS passes None (gateway exposed directly via LoadBalancer).
 _DEFAULT_INGRESS_CLASS = "gce-internal"
+
+# Public FoundationDB image. The nexus-fdb chart defaults to the nexus-alpha AR
+# mirror, which a BYOC node service account cannot read without a cross-project
+# grant; the upstream public image is identical and needs no extra IAM.
+_FDB_IMAGE_REPOSITORY = "foundationdb/foundationdb"
+
+# In-cluster svc-docs-api base for the keyless BYOC data path (#548): the DB
+# platform is co-located, so task pods reach its docs-api over cluster-internal DNS.
+_DEFAULT_DOCS_API_URL = "http://docs-api.pc-docs-api.svc.cluster.local:3001"
 
 # Inference-proxy routing overlay. The customer's model config is layered onto
 # the proxy's baked default.toml as the `byoc` cascade profile. These names are
@@ -49,10 +57,12 @@ _DEFAULT_INGRESS_CLASS = "gce-internal"
 # key, and `byoc` is appended to the chart's default configProfiles.
 _INFERENCE_BYOC_CONFIGMAP = "nexus-inference-proxy-byoc-config"
 _INFERENCE_BYOC_PROFILE = "byoc"
-# Fallback base profile when nothing upstream has set configProfiles (mirrors
-# the chart default in deploy/helm/nexus/values.yaml). byoc is appended to this
-# so the overlay layers on top of whatever base profiles are already selected.
-_CHART_BASE_CONFIG_PROFILE = "development"
+# Base configProfiles for a BYOC inference overlay. Empty so the byoc profile
+# stands alone: byoc.toml resets the catalog/tiers, but layering the chart's
+# "development" base re-introduces its claude/nebius tier refs (which the reset
+# does not clear), tripping the proxy's startup assert when only a gemini key
+# is present.
+_CHART_BASE_CONFIG_PROFILE = ""
 # Surfaces whose model entries carry an api_key_ref to project as a pod env var.
 _PROVIDER_KEY_SURFACES = ("llm_models", "embedding_models", "rerank_models")
 
@@ -108,7 +118,22 @@ class NexusConfig:
     image_registry: str | None = None  # falls back to cloud-specific default
     gemini_api_key: pulumi.Input[str] | None = None
     inference_base: pulumi.Input[str] | None = None  # falls back to api_url
-    byoc_project_id: pulumi.Input[str] = _DEFAULT_BYOC_PROJECT_ID
+    # BYOC single-tenant project id. None => the project the deploy mints for the
+    # cell (the __SLI__ ApiKey's project_id, also exported as sli_checkers_project_id);
+    # set only to pin Nexus to a different, pre-existing project.
+    byoc_project_id: pulumi.Input[str] | None = None
+    # Short DNS-safe vault id; forms the index host's leftmost label
+    # `nexus-{context_id}-{vault}`, which must stay <= 63 chars. None => a derived
+    # `byoc{cell-suffix}` slug.
+    # TODO(temporary): every non-Nexus caller sends the project's *real* vault_id
+    # from the project record; Nexus has no project store yet, so it can't look it
+    # up and uses this slug (cpgw trusts the value, so it works). Drop the slug once
+    # Nexus can resolve the real vault -- via its own/DB auth service, or by cpgw
+    # deriving vault_id from project_info.id.
+    byoc_vault_id: pulumi.Input[str] | None = None
+    # In-cluster svc-docs-api base URL for the keyless BYOC data path (#548).
+    # None => the co-located DB default (_DEFAULT_DOCS_API_URL).
+    byoc_docs_api_url: pulumi.Input[str] | None = None
     storage_bucket_prefix: str | None = None  # None = fs backend, set = provision blob
     # Inference-proxy model routing. When set, the proxy loads this TOML as the
     # `byoc` config overlay (model catalog + the default profile's tiers) on top
@@ -130,12 +155,14 @@ class Nexus(pulumi.ComponentResource):
         cloud: pulumi.Input[str],
         region: pulumi.Input[str],
         pinecone_prod: bool,
-        byoc_project_id: pulumi.Input[str] = _DEFAULT_BYOC_PROJECT_ID,
+        byoc_project_id: pulumi.Input[str],
+        byoc_vault_id: pulumi.Input[str] | None = None,
         storage_class: str = _DEFAULT_STORAGE_CLASS,
         ingress_class: str | None = _DEFAULT_INGRESS_CLASS,
         blob_storage: "NexusBlobStorage | None" = None,
         service_account_annotations: pulumi.Input[dict] | None = None,
         cpgw_api_url: pulumi.Input[str] | None = None,
+        byoc_docs_api_url: pulumi.Input[str] | None = None,
         inference_models_toml: str | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
@@ -148,7 +175,11 @@ class Nexus(pulumi.ComponentResource):
             cloud: Cloud provider for index placement (``"azure"``/``"gcp"``).
             region: Deploy region for index placement.
             pinecone_prod: False on preprod omits the preprod header.
-            byoc_project_id: BYOC single-tenant project id.
+            byoc_project_id: BYOC single-tenant project id (the cell's minted
+                ``__SLI__`` project id).
+            byoc_vault_id: Short DNS-safe vault id used as the index host label
+                ``nexus-{context_id}-{vault}``. Keeps that leftmost label <= 63 chars
+                (a full UUID overflows it). Sent to CPGW as ``project_info.vault_id``.
             storage_class: StorageClass for Nexus PVCs. Defaults to GKE ``premium-rwo``.
             ingress_class: Gateway Ingress class annotation. Pass ``None`` to omit (AKS).
             blob_storage: Provisioned blob bucket/container names. When set, switches
@@ -164,6 +195,9 @@ class Nexus(pulumi.ComponentResource):
                 Must be paired with the ``cpgw-api-key`` entry in the
                 ``nexus-config`` secret — setting one without the other makes
                 Nexus panic at startup (partial CPGW config).
+            byoc_docs_api_url: In-cluster svc-docs-api base URL for the keyless BYOC
+                data path (#548). Defaults to the co-located DB's docs-api. Only
+                applied when ``cpgw_api_url`` is set.
             inference_models_toml: BYOC inference-proxy routing overlay. When set, a
                 ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
                 pointed at it (``byoc`` appended to configProfiles); leave ``None`` to
@@ -173,12 +207,18 @@ class Nexus(pulumi.ComponentResource):
 
         self._image_registry = image_registry
         self._byoc_project_id = byoc_project_id
+        self._byoc_vault_id = byoc_vault_id
 
         provider_opts = pulumi.ResourceOptions(parent=self, provider=k8s_provider)
 
         fdb_values: dict = {
             "image": {
                 "pullSecrets": [{"name": _REGCRED}],
+            },
+            "foundationdb": {
+                "image": {
+                    "repository": _FDB_IMAGE_REPOSITORY,
+                },
             },
             "persistence": {
                 "storageClass": storage_class,
@@ -247,14 +287,22 @@ class Nexus(pulumi.ComponentResource):
         if service_account_annotations is not None:
             app_values["serviceAccountAnnotations"] = service_account_annotations
 
+        # Set explicitly: Nexus otherwise defaults the vault id to byocProjectId,
+        # whose full UUID overflows the 63-char DNS label of the index host.
+        if byoc_vault_id is not None:
+            app_values["config"]["byocVaultId"] = byoc_vault_id
+
         # CPGW index client. When the cluster can reach the control-plane gateway,
         # point Nexus at its ``…/internal/cpgw`` base so index create/delete use the
         # CPGW path (synchronous CPS db_index_id) instead of the managed public API.
         # The chart gates on truthiness; the paired ``cpgw-api-key`` is delivered via
         # the nexus-config secret (set together or Nexus panics on partial config).
-        # byoc_vault_id is intentionally omitted: Nexus defaults it to byocProjectId.
+        # The keyless data path needs svc-docs-api too, injected as byocDocsApiUrl.
         if cpgw_api_url is not None:
             app_values["config"]["cpgwApiUrl"] = cpgw_api_url
+            app_values["config"]["byocDocsApiUrl"] = (
+                byoc_docs_api_url or _DEFAULT_DOCS_API_URL
+            )
 
         # BYOC inference-proxy routing overlay. Ship the customer's model config
         # as a ConfigMap mounted as the `byoc` cascade profile. The TOML sets

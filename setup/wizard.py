@@ -52,7 +52,7 @@ NEXUS_INFERENCE_MODELS_TEMPLATE = '''\
 #
 # For every `api_key_ref` below, set its secret value (the wizard printed the
 # exact commands):
-#   pulumi config set --secret nexus-provider-keys.<api-key-ref> <value>
+#   pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <value>
 # Pinecone embed/rerank models need NO api_key_ref -- the caller supplies the
 # key per request via the Api-Key header.
 #
@@ -143,7 +143,7 @@ _INFERENCE_MODELS_HEADER = """\
 # frozen to it) and is injected automatically -- it is not operator-configurable.
 #
 # For every `api_key_ref` below, set its secret value:
-#   pulumi config set --secret nexus-provider-keys.<api-key-ref> <value>
+#   pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <value>
 # Pinecone embed/rerank models need NO api_key_ref (caller supplies it per request).
 """
 
@@ -1971,7 +1971,7 @@ class GCPSetupWizard(BaseSetupWizard):
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
-                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
+                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID"),
                 # Opt-in blob backend: unset = fs (PVC); set = provision GCS buckets.
                 "storage_bucket_prefix": os.environ.get(
                     "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
@@ -2140,10 +2140,6 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print("  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]")
         inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
 
-        console.print()
-        console.print("  [dim]BYOC single-tenant project id (PINECONE_PINECONE__BYOC_PROJECT_ID).[/]")
-        byoc_project_id = self._prompt("Enter BYOC project id", "byoc-poc")
-
         # Guided model catalog + tier selection. None => default template is
         # written and the operator can edit it before `pulumi up`.
         inference_models_toml = self._collect_inference_models()
@@ -2157,7 +2153,7 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print(
             "  [dim]Each model's api_key_ref is a secret; set one per provider before"
             " `pulumi up`:[/]\n"
-            "  [dim]pulumi config set --secret nexus-provider-keys.<api-key-ref> <key>[/]"
+            "  [dim]pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <key>[/]"
         )
 
         return {
@@ -2166,7 +2162,6 @@ class GCPSetupWizard(BaseSetupWizard):
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
             "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
-            "byoc_project_id": byoc_project_id.strip() or "byoc-poc",
             "inference_models_toml": inference_models_toml,
         }
 
@@ -2259,7 +2254,9 @@ cluster = PineconeGCPCluster(
             byoc_env=config.get("nexus-byoc-env"),
             image_registry=config.get("nexus-image-registry"),
             gemini_api_key=config.get_secret("nexus-gemini-api-key"),
-            byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
+            byoc_project_id=config.get("nexus-byoc-project-id"),
+            byoc_vault_id=config.get("nexus-byoc-vault-id"),
+            byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
             storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
@@ -2989,7 +2986,7 @@ class AzureSetupWizard(BaseSetupWizard):
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
-                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID", "byoc-poc"),
+                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID"),
                 # Opt-in blob backend: unset = fs (PVC); set = provision blob containers.
                 "storage_bucket_prefix": os.environ.get(
                     "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
@@ -3217,7 +3214,9 @@ cluster = PineconeAzureCluster(
             byoc_env=config.get("nexus-byoc-env"),
             image_registry=config.get("nexus-image-registry"),
             gemini_api_key=config.get_secret("nexus-gemini-api-key"),
-            byoc_project_id=config.get("nexus-byoc-project-id") or "byoc-poc",
+            byoc_project_id=config.get("nexus-byoc-project-id"),
+            byoc_vault_id=config.get("nexus-byoc-vault-id"),
+            byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
             storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
