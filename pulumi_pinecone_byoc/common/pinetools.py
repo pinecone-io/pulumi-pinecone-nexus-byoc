@@ -17,6 +17,35 @@ echo "ERROR: regcred secret not found after 10 minutes"
 exit 1
 """
 
+# The exdb source Secrets live in the `external-secrets` namespace and are
+# written by Pulumi (K8sSecrets). `pinetools cluster install` later installs the
+# `secrets` chart, whose ClusterExternalSecrets sync these into the pc-* consuming
+# namespaces; the pg-* bootstrap jobs that install triggers immediately afterwards
+# envFrom the synced copies. Blocking the install pod until the *source* secrets
+# exist removes the Pulumi-vs-Job ordering half of the sync race. (We cannot wait
+# on the synced target here: those secrets only appear after install creates the
+# ClusterExternalSecrets, so waiting on them would deadlock.)
+WAIT_FOR_EXDB_SECRETS_SCRIPT = """
+echo "Waiting for exdb source secrets in external-secrets namespace..."
+required="exdb-control-db-credentials exdb-system-db-credentials exdb-data-db-credentials exdb-all-credentials"
+for i in $(seq 1 60); do
+  missing=""
+  for s in $required; do
+    if ! kubectl get secret "$s" -n external-secrets >/dev/null 2>&1; then
+      missing="$missing $s"
+    fi
+  done
+  if [ -z "$missing" ]; then
+    echo "all exdb source secrets present!"
+    exit 0
+  fi
+  echo "Attempt $i/60: still missing:$missing, waiting 10s..."
+  sleep 10
+done
+echo "ERROR: exdb source secrets not found after 10 minutes:$missing"
+exit 1
+"""
+
 
 def _job_name(pinecone_version: str) -> str:
     import re
@@ -32,6 +61,7 @@ class Pinetools(pulumi.ComponentResource):
         pinecone_version: pulumi.Input[str],
         pinetools_image: str,
         schedule: str = "0 * * * *",
+        wait_for_exdb_secrets: bool = False,
         opts: pulumi.ResourceOptions | None = None,
     ):
         super().__init__("pinecone:byoc:Pinetools", name, None, opts)
@@ -117,6 +147,13 @@ class Pinetools(pulumi.ComponentResource):
             args=[WAIT_FOR_REGCRED_SCRIPT],
         )
 
+        wait_for_exdb_secrets_container = k8s.core.v1.ContainerArgs(
+            name="wait-for-exdb-secrets",
+            image="alpine/k8s:1.31.3",
+            command=["/bin/sh", "-c"],
+            args=[WAIT_FOR_EXDB_SECRETS_SCRIPT],
+        )
+
         def make_pod_spec(
             init_containers: list[k8s.core.v1.ContainerArgs] | None = None,
         ) -> k8s.core.v1.PodSpecArgs:
@@ -140,9 +177,23 @@ class Pinetools(pulumi.ComponentResource):
         def make_install_job_spec(
             init_containers: list[k8s.core.v1.ContainerArgs] | None = None,
         ) -> k8s.batch.v1.JobSpecArgs:
+            # When waiting on the exdb sync, give the Job room to retry through the
+            # external-secrets reconcile window. `install` creates the
+            # ClusterExternalSecrets, then immediately triggers the pg-* bootstrap
+            # jobs that envFrom the synced copies; on a first deploy those copies
+            # can lag the install step by several minutes (ESO refreshInterval),
+            # failing the run. `install` is idempotent (it deletes+recreates the pg
+            # jobs each run), so a later retry succeeds once the sync lands. A short
+            # fixed backoff_limit/deadline exhausts before the sync completes.
+            if wait_for_exdb_secrets:
+                backoff_limit = 5
+                active_deadline_seconds = 3600
+            else:
+                backoff_limit = 1
+                active_deadline_seconds = 1800
             return k8s.batch.v1.JobSpecArgs(
-                backoff_limit=1,
-                active_deadline_seconds=1800,
+                backoff_limit=backoff_limit,
+                active_deadline_seconds=active_deadline_seconds,
                 ttl_seconds_after_finished=300,
                 template=k8s.core.v1.PodTemplateSpecArgs(
                     spec=make_pod_spec(init_containers),
@@ -163,13 +214,30 @@ class Pinetools(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, provider=k8s_provider, depends_on=[self.sa]),
         )
 
+        # initContainers run in order: ensure the image pull secret exists, then
+        # (headless/BYOC only) ensure the exdb source secrets are present before
+        # `pinetools cluster install` runs.
+        install_init_containers = [wait_for_regcred_container]
+        if wait_for_exdb_secrets:
+            install_init_containers.append(wait_for_exdb_secrets_container)
+
         # job name includes version suffix: same version = skip, new version = replace
         version_output = pulumi.Output.from_input(pinecone_version)
         job_name = version_output.apply(_job_name)
         install_job = k8s.batch.v1.Job(
             f"{name}-install-job",
-            metadata=k8s.meta.v1.ObjectMetaArgs(name=job_name, namespace=namespace),
-            spec=make_install_job_spec(init_containers=[wait_for_regcred_container]),
+            metadata=k8s.meta.v1.ObjectMetaArgs(
+                name=job_name,
+                namespace=namespace,
+                # Don't block the stack on the install Job's `cluster check`. On
+                # headless Azure BYOC, gloo `auth` and `metrics-proxy` crashloop on
+                # a GCP Cloud Spanner (exDB) dependency that isn't reachable here,
+                # so `cluster check` never passes even though the data-plane serving
+                # path is healthy. Awaiting it would wedge a full `up` on services
+                # outside the serving path.
+                annotations={"pulumi.com/skipAwait": "true"},
+            ),
+            spec=make_install_job_spec(init_containers=install_init_containers),
             opts=pulumi.ResourceOptions(
                 parent=self,
                 provider=k8s_provider,

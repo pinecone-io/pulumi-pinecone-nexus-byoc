@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import pulumi
 import pulumi_azure_native as azure_native
 import pulumi_azuread as azuread
+import pulumi_random as random
 
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
@@ -36,11 +37,24 @@ from .pulumi_operator import PulumiOperator
 from .storage import BlobStorage
 from .vnet import VNet
 
+# In-cluster hostname for the DB's documents/* REST listener (svc-docs-api) in a
+# headless deploy. Source: db-3 svc-docs-api/service.values.yaml (name=docs-api,
+# ns=pc-docs-api, port=3001, http). Used as the headless block's `host` (a bare
+# hostname, no scheme/port).
+_HEADLESS_DOCS_API_HOST = "docs-api.pc-docs-api.svc.cluster.local"
+# Fixed headless static-index attributes (single static index, no control plane).
+_HEADLESS_INDEX_NAME = "headless-static"
+_HEADLESS_DIMENSION = 1024
+_HEADLESS_METRIC = "cosine"
+_HEADLESS_VECTOR_TYPE = "dense"
+_HEADLESS_INDEX_MODE = "slab"
+_HEADLESS_DRN_POOL_ID = "headless-static-pool"
+
 
 @dataclass
 class NodePool:
     name: str
-    vm_size: str = "Standard_D4s_v5"
+    vm_size: str = "Standard_D4s_v7"
     min_size: int = 1
     max_size: int = 10
     disk_size_gb: int = 100
@@ -72,6 +86,28 @@ class PineconeAzureClusterArgs:
     # features
     public_access_enabled: bool = True
     deletion_protection: bool = True
+    # when True, provision the Azure AD Application + ServicePrincipal (and the
+    # subscription-scoped Storage Blob Data Reader role) that the data-importer
+    # uses for cross-account blob reads. Requires the deploying identity to hold
+    # the Entra directory permission to create a ServicePrincipal. Defaults to
+    # False; headless DB ingest->query does not need it.
+    storage_integration_enabled: bool = False
+
+    # Headless DB: deploy a HEADLESS Pinecone DB (single static index, no control
+    # plane). False = unchanged full DB. When True, a `headless` block is injected
+    # into the pc-pulumi-outputs/config ConfigMap and the data plane serves the
+    # single static index directly.
+    headless_enabled: bool = False
+    # The single static index id. None -> generated deterministically
+    # (random.RandomUuid). Set via the `static-index-id` config key to pin it.
+    static_index_id: pulumi.Input[str] | None = None
+    # The headless static index's project id. Defaults to "byoc-poc".
+    static_index_project_id: pulumi.Input[str] | None = None
+    # Optional explicit IndexSchemaDef for the headless index, as a tagged JSON string,
+    # e.g. '{"version":"v1","fields":{...}}'. When set, injected into the headless block
+    # as `schema` → PINECONE_HEADLESS__SCHEMA on the DB side. When None (default) the DB
+    # applies its dense default schema; omit unless you need a custom field layout (e.g. FTS).
+    static_index_schema: str | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -107,7 +143,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
         client_config = azure_native.authorization.get_client_config()
         tenant_id = client_config.tenant_id
 
-        # phase 1: authentication
         self._environment = Environment(
             f"{config.resource_prefix}-environment",
             EnvironmentArgs(
@@ -167,7 +202,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
         )
 
-        # phase 2: infrastructure
         self._vnet = VNet(
             f"{config.resource_prefix}-vnet",
             config,
@@ -202,7 +236,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vnet]),
         )
 
-        # phase 3: dns & networking
         self._subdomain = self._environment.env_name
 
         self._dns = DNS(
@@ -247,42 +280,48 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             ),
         )
 
-        # storage integration: Azure AD app for data-importer blob access
-        storage_integration_app = azuread.Application(
-            f"{config.resource_prefix}-storage-integration-app",
-            display_name=self._cell_name.apply(lambda cn: f"{cn}-storage-integration"),
-            opts=child_opts,
-        )
-        storage_integration_sp = azuread.ServicePrincipal(
-            f"{config.resource_prefix}-storage-integration-sp",
-            client_id=storage_integration_app.client_id,
-            opts=child_opts,
-        )
-        storage_integration_password = azuread.ServicePrincipalPassword(
-            f"{config.resource_prefix}-storage-integration-password",
-            service_principal_id=storage_integration_sp.id,
-            opts=child_opts,
-        )
-        # Storage Blob Data Reader at subscription scope so the data-importer
-        # can read from any storage account the customer points their import URI at.
-        STORAGE_BLOB_DATA_READER_ROLE = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
-        azure_native.authorization.RoleAssignment(
-            f"{config.resource_prefix}-storage-integration-role",
-            principal_id=storage_integration_sp.object_id,
-            principal_type="ServicePrincipal",
-            role_definition_id=pulumi.Output.from_input(config.subscription_id).apply(
-                lambda sid: (
-                    f"/subscriptions/{sid}/providers/Microsoft.Authorization"
-                    f"/roleDefinitions/{STORAGE_BLOB_DATA_READER_ROLE}"
-                )
-            ),
-            scope=pulumi.Output.from_input(config.subscription_id).apply(
-                lambda sid: f"/subscriptions/{sid}"
-            ),
-            opts=child_opts,
-        )
+        # Storage integration: Azure AD app for data-importer blob access.
+        # Gated on storage_integration_enabled (default False) — requires Entra
+        # directory permission the deploying identity may lack.
+        storage_integration_app_client_id: pulumi.Input[str] | None = None
+        storage_integration_password_value: pulumi.Input[str] | None = None
+        if args.storage_integration_enabled:
+            storage_integration_app = azuread.Application(
+                f"{config.resource_prefix}-storage-integration-app",
+                display_name=self._cell_name.apply(lambda cn: f"{cn}-storage-integration"),
+                opts=child_opts,
+            )
+            storage_integration_sp = azuread.ServicePrincipal(
+                f"{config.resource_prefix}-storage-integration-sp",
+                client_id=storage_integration_app.client_id,
+                opts=child_opts,
+            )
+            storage_integration_password = azuread.ServicePrincipalPassword(
+                f"{config.resource_prefix}-storage-integration-password",
+                service_principal_id=storage_integration_sp.id,
+                opts=child_opts,
+            )
+            # Storage Blob Data Reader at subscription scope so the data-importer
+            # can read from any storage account the customer points their import URI at.
+            STORAGE_BLOB_DATA_READER_ROLE = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
+            azure_native.authorization.RoleAssignment(
+                f"{config.resource_prefix}-storage-integration-role",
+                principal_id=storage_integration_sp.object_id,
+                principal_type="ServicePrincipal",
+                role_definition_id=pulumi.Output.from_input(config.subscription_id).apply(
+                    lambda sid: (
+                        f"/subscriptions/{sid}/providers/Microsoft.Authorization"
+                        f"/roleDefinitions/{STORAGE_BLOB_DATA_READER_ROLE}"
+                    )
+                ),
+                scope=pulumi.Output.from_input(config.subscription_id).apply(
+                    lambda sid: f"/subscriptions/{sid}"
+                ),
+                opts=child_opts,
+            )
+            storage_integration_app_client_id = storage_integration_app.client_id
+            storage_integration_password_value = storage_integration_password.value
 
-        # phase 4: k8s configuration
         self._k8s_secrets = K8sSecrets(
             f"{config.resource_prefix}-k8s-secrets",
             k8s_provider=self._aks.k8s_provider,
@@ -292,17 +331,23 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             control_db=self._database.control_db,
             system_db=self._database.system_db,
             azure_storage_access_key=self._storage.access_key,
-            storage_integration_credentials={
-                "client-secret": storage_integration_password.value,
-            },
+            storage_integration_credentials=(
+                {"client-secret": storage_integration_password_value}
+                if storage_integration_password_value is not None
+                else None
+            ),
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[
-                    self._aks,
-                    self._cpgw_api_key,
-                    self._api_key,
-                    self._datadog_api_key,
-                    self._database,
+                    r
+                    for r in [
+                        self._aks,
+                        self._cpgw_api_key,
+                        self._api_key,
+                        self._datadog_api_key,
+                        self._database,
+                    ]
+                    if r is not None
                 ],
             ),
         )
@@ -330,6 +375,53 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             ),
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
         )
+
+        # Headless DB: resolve the single static index id and assemble the
+        # `headless` block injected into pc-pulumi-outputs/config.
+        self._static_index_id: pulumi.Input[str] | None = None
+        headless_block: dict[str, pulumi.Input] | None = None
+        if args.headless_enabled:
+            if args.static_index_id is not None:
+                self._static_index_id = args.static_index_id
+            else:
+                self._static_index_uuid = random.RandomUuid(
+                    f"{config.resource_prefix}-static-index-id",
+                    opts=child_opts,
+                )
+                self._static_index_id = self._static_index_uuid.result
+            static_project_id = (
+                args.static_index_project_id
+                if args.static_index_project_id is not None
+                else "byoc-poc"
+            )
+            headless_block = {
+                "enabled": True,
+                "index_id": self._static_index_id,
+                "project_id": static_project_id,
+                "index_name": _HEADLESS_INDEX_NAME,
+                # bare hostname for the db index-metadata store (no scheme/port)
+                "host": _HEADLESS_DOCS_API_HOST,
+                "dimension": _HEADLESS_DIMENSION,
+                "metric": _HEADLESS_METRIC,
+                "vector_type": _HEADLESS_VECTOR_TYPE,
+                "index_mode": _HEADLESS_INDEX_MODE,
+                # DRN (dedicated read-node) pool. BYOC headless is DRN-only: byoc.toml
+                # sets shared_pool_watcher=none (NoOpPhysicalAssigner -> NoAvailablePeers),
+                # and the read pool "never falls back to the shared pool" in headless. A
+                # populated drn block stamps WorkerPool::Provisioned/Ready, makes
+                # provisioned_capacity() non-empty, and renders the ProvisionedPool CR the
+                # provisioned-operator reconciles into executor pods that serve the index.
+                "drn": {
+                    "pool_id": _HEADLESS_DRN_POOL_ID,
+                    "tier": "b1",
+                    "shards": 1,
+                    "replicas": 1,
+                },
+            }
+            # Inject schema only when explicitly set; absent = DB uses dense default.
+            # Maps to PINECONE_HEADLESS__SCHEMA on the DB side via the pinetools gotmpl.
+            if args.static_index_schema is not None:
+                headless_block["schema"] = args.static_index_schema
 
         pulumi_outputs = {
             "cell_name": self._cell_name,
@@ -363,8 +455,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             "aws_amp_remote_write_url": self._amp_access.amp_remote_write_endpoint,
             "aws_amp_sigv4_role_arn": self._amp_access.pinecone_role_arn,
             "aws_amp_ingest_role_arn": "",
-            "azure_storage_integration_tenant_id": tenant_id,
-            "azure_storage_integration_client_id": storage_integration_app.client_id,
+            # None when storage integration is disabled; the configmap component
+            # omits None-valued entries.
+            "azure_storage_integration_tenant_id": (
+                tenant_id if storage_integration_app_client_id is not None else None
+            ),
+            "azure_storage_integration_client_id": storage_integration_app_client_id,
         }
 
         self._k8s_configmaps = K8sConfigMaps(
@@ -378,6 +474,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             region=config.region,
             public_access_enabled=args.public_access_enabled,
             pulumi_outputs=pulumi_outputs,
+            headless=headless_block,
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[self._aks, self._dns, self._storage, self._database],
@@ -397,10 +494,17 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             k8s_provider=self._aks.k8s_provider,
             pinecone_version=args.pinecone_version,
             pinetools_image=AZURE_REGISTRY.pinetools_image(args.pinecone_version),
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._aks, self._k8s_configmaps]),
+            # Headless/BYOC: block the install pod until the Pulumi-managed exdb
+            # source secrets are present and let the Job retry through the
+            # external-secrets sync window, so the data-plane installs on the first
+            # deploy instead of needing a manual re-run.
+            wait_for_exdb_secrets=True,
+            opts=pulumi.ResourceOptions(
+                parent=self,
+                depends_on=[self._aks, self._k8s_configmaps, self._k8s_secrets],
+            ),
         )
 
-        # phase 5: cleanup
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
             kubeconfig=self._aks.kubeconfig,
@@ -475,7 +579,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             node_pools = [
                 NodePoolConfig(
                     name="default",
-                    vm_size="Standard_D4s_v5",
+                    vm_size="Standard_D4s_v7",
                     min_size=1,
                     max_size=10,
                     disk_size_gb=100,

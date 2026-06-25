@@ -200,7 +200,7 @@ class AKS(pulumi.ComponentResource):
         np_config: NodePoolConfig | None,
         subnet_id: pulumi.Input[str],
     ) -> containerservice.ManagedClusterAgentPoolProfileArgs:
-        vm_size = np_config.vm_size if np_config else "Standard_D4s_v5"
+        vm_size = np_config.vm_size if np_config else "Standard_D4s_v7"
         min_count = np_config.min_size if np_config else 1
         max_count = np_config.max_size if np_config else 10
         disk_size_gb = np_config.disk_size_gb if np_config else 100

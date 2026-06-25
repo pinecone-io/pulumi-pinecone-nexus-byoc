@@ -2441,13 +2441,21 @@ class AzureSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "eastus")
         zones_str = os.environ.get("PINECONE_AZS", "1,2")
-        zones = [z.strip() for z in zones_str.split(",")]
+        # Drop empties so PINECONE_AZS="" yields a zoneless deploy (zones=[]).
+        zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
         )
         public_access = os.environ.get("PINECONE_PUBLIC_ACCESS", "true").lower() == "true"
         project_name = os.environ.get("PINECONE_PROJECT_NAME", "pinecone-byoc")
+
+        # Headless DB: single static index, no control plane. Opt-in.
+        headless = {
+            "enabled": os.environ.get("PINECONE_DB_HEADLESS", "false").lower() == "true",
+            "static_index_id": os.environ.get("PINECONE_STATIC_INDEX_ID", ""),
+            "static_index_schema": os.environ.get("PINECONE_STATIC_INDEX_SCHEMA", ""),
+        }
 
         return self._generate_project(
             output_dir,
@@ -2460,6 +2468,7 @@ class AzureSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             {},
+            headless,
         )
 
     def _validate_azure_creds(self) -> str | None:
@@ -2608,6 +2617,7 @@ class AzureSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         tags: dict[str, str],
+        headless: dict | None = None,
     ):
         console.print()
 
@@ -2650,6 +2660,14 @@ cluster = PineconeAzureCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         tags=config.get_object("tags"),
+        # Headless DB: deploy a single static index with no control plane. Off by
+        # default so full-DB deploys are unaffected. Enable with
+        # `pulumi config set db-headless true`. `static-index-id` pins the index
+        # id (else generated); `static-index-schema` is an optional tagged-JSON
+        # IndexSchemaDef (e.g. for full-text search).
+        headless_enabled=config.get_bool("db-headless") or False,
+        static_index_id=config.get("static-index-id"),
+        static_index_schema=config.get("static-index-schema"),
     ),
 )
 
@@ -2699,6 +2717,21 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
             config_content += f"  {project_name}:tags:\n"
             for key, value in tags.items():
                 config_content += f'    {key}: "{value}"\n'
+
+        # Headless DB: single static index, no control plane. Written only when
+        # enabled so full-DB stacks are unaffected.
+        if headless and headless.get("enabled"):
+            config_content += f"  {project_name}:db-headless: true\n"
+            if headless.get("static_index_id"):
+                config_content += (
+                    f"  {project_name}:static-index-id: "
+                    f"{headless['static_index_id']}\n"
+                )
+            if headless.get("static_index_schema"):
+                config_content += (
+                    f"  {project_name}:static-index-schema: "
+                    f"'{headless['static_index_schema']}'\n"
+                )
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
