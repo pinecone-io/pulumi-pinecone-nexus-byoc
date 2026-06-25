@@ -48,6 +48,8 @@ _FDB_IMAGE_REPOSITORY = "foundationdb/foundationdb"
 
 # In-cluster svc-docs-api base for the keyless BYOC data path (#548): the DB
 # platform is co-located, so task pods reach its docs-api over cluster-internal DNS.
+# TODO: these coords belong to the DB platform (separate repo) -- confirm the svc
+# name / namespace / port there, and that they don't differ by cloud.
 _DEFAULT_DOCS_API_URL = "http://docs-api.pc-docs-api.svc.cluster.local:3001"
 
 # Inference-proxy routing overlay. The customer's model config is layered onto
