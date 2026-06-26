@@ -363,6 +363,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             k8s_provider=self._gke.k8s_provider,
             pinecone_version=args.pinecone_version,
             pinetools_image=GCP_REGISTRY.pinetools_image(args.pinecone_version),
+            config_map_dependencies=self._k8s_configmaps.config_maps,
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gke, self._k8s_configmaps]),
         )
 
