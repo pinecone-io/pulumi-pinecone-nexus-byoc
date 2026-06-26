@@ -34,6 +34,24 @@ _UUID_RE = re.compile(
 def _is_uuid(value: str) -> bool:
     return bool(_UUID_RE.match(value.strip()))
 
+
+# GCS bucket-name prefix for Nexus storage. The cluster provisions
+# `{prefix}-source`, `{prefix}-knowledge`, `{prefix}-archive`; the longest
+# suffix is `-knowledge` (10 chars). GCS bucket names (and the derived DNS
+# labels) must stay <= 63 chars, so the prefix itself must be <= 53. Bucket
+# names are lowercase letters/digits/hyphens and must start and end with an
+# alphanumeric character.
+_STORAGE_PREFIX_MAX_LEN = 53
+_STORAGE_PREFIX_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+def _is_storage_bucket_prefix(value: str) -> bool:
+    value = value.strip()
+    if not value or len(value) > _STORAGE_PREFIX_MAX_LEN:
+        return False
+    return bool(_STORAGE_PREFIX_RE.match(value))
+
+
 PINECONE_VERSION = "main-94a9e90"
 
 # Nexus image tag (proposal §10 `nexus-version`). Coordinated with
@@ -1999,6 +2017,33 @@ class GCPSetupWizard(BaseSetupWizard):
                     " project name"
                 )
                 return False
+            # The GCS bucket-name prefix Nexus storage is provisioned under.
+            # REQUIRED on GCP: the `fs` (PVC) default is not durable and file
+            # upload requires object storage, so a fresh GCP+Nexus deploy that
+            # omits this can't upload files. Accepts the canonical
+            # PINECONE_NEXUS_STORAGE_BUCKET_PREFIX, falling back to the shorter
+            # PINECONE_STORAGE_BUCKET_PREFIX alias.
+            storage_bucket_prefix = (
+                os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX")
+                or os.environ.get("PINECONE_STORAGE_BUCKET_PREFIX")
+                or ""
+            ).strip()
+            if not storage_bucket_prefix:
+                console.print(
+                    "  [red]✗[/] PINECONE_NEXUS_STORAGE_BUCKET_PREFIX environment"
+                    " variable is required when Nexus is enabled on GCP (the GCS"
+                    " bucket name prefix for Nexus storage, e.g. pc-nexus-<cell>)"
+                )
+                return False
+            if not _is_storage_bucket_prefix(storage_bucket_prefix):
+                console.print(
+                    "  [red]✗[/] PINECONE_NEXUS_STORAGE_BUCKET_PREFIX must be a valid"
+                    " GCS bucket name prefix: lowercase letters, digits and hyphens,"
+                    " starting and ending alphanumeric, and at most"
+                    f" {_STORAGE_PREFIX_MAX_LEN} chars (so {{prefix}}-knowledge stays"
+                    " <= 63)"
+                )
+                return False
             nexus = {
                 "enabled": True,
                 "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
@@ -2010,10 +2055,8 @@ class GCPSetupWizard(BaseSetupWizard):
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
                 "byoc_project_id": byoc_project_id,
-                # Opt-in blob backend: unset = fs (PVC); set = provision GCS buckets.
-                "storage_bucket_prefix": os.environ.get(
-                    "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
-                ),
+                # Required on GCP: provisions the GCS buckets + WI wiring.
+                "storage_bucket_prefix": storage_bucket_prefix,
                 # Inference models from env JSON, or None -> default template.
                 "inference_models_toml": self._headless_inference_models_toml(),
             }
@@ -2185,6 +2228,29 @@ class GCPSetupWizard(BaseSetupWizard):
                 " this is the Pinecone gCPS project id, not the GCP project name.[/]"
             )
 
+        console.print()
+        console.print(
+            "  [dim]The GCS bucket name prefix for Nexus storage. Required on GCP:[/]"
+        )
+        console.print(
+            "  [dim]the cluster provisions {prefix}-source/-knowledge/-archive and[/]"
+        )
+        console.print(
+            "  [dim]switches Nexus to durable object storage (file upload needs it).[/]"
+        )
+        while True:
+            storage_bucket_prefix = self._prompt(
+                "Enter the GCS bucket name prefix for Nexus storage (e.g. pc-nexus-<cell>)"
+            ).strip()
+            if _is_storage_bucket_prefix(storage_bucket_prefix):
+                break
+            console.print(
+                "  [red]Enter a valid GCS bucket name prefix: lowercase letters,"
+                " digits and hyphens, starting and ending alphanumeric, and at most"
+                f" {_STORAGE_PREFIX_MAX_LEN} chars (so {{prefix}}-knowledge stays <="
+                " 63).[/]"
+            )
+
         nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
 
         console.print()
@@ -2215,6 +2281,7 @@ class GCPSetupWizard(BaseSetupWizard):
             "enabled": True,
             "byoc_env": byoc_env.strip(),
             "byoc_project_id": byoc_project_id,
+            "storage_bucket_prefix": storage_bucket_prefix,
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
             "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
