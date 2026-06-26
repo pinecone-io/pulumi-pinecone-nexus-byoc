@@ -3,6 +3,7 @@
 import json
 import os
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -20,6 +21,18 @@ if not IS_WINDOWS:
 
 # pinecone blue
 BLUE = "#002BFF"
+
+# Canonical UUID form (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2). The Nexus BYOC
+# project id is the Pinecone gCPS project UUID (matched against `projects.id` by
+# CPGW), NOT the GCP project name -- so it must validate as a UUID.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_uuid(value: str) -> bool:
+    return bool(_UUID_RE.match(value.strip()))
 
 PINECONE_VERSION = "main-94a9e90"
 
@@ -126,6 +139,11 @@ model_ref = "multilingual-e5-large"
 
 [default.rerank.tiers.default]
 model_ref = "bge-reranker-v2-m3"
+
+# Override the image default's search.standard phase, which otherwise inherits
+# claude-sonnet-4-6 (not in this deployment's gemini-only supported_llm_models).
+[default.llm.phase_overrides.search.standard]
+model_ref = "gemini-3.5-flash"
 '''
 
 # Filename of the routing overlay written into the generated project.
@@ -221,7 +239,10 @@ def build_inference_models_toml(
         f'[default.llm.tiers.standard]\nmodel_ref = {_toml_scalar(tiers["standard"])}\n\n'
         f'[default.llm.tiers.pro]\nmodel_ref = {_toml_scalar(tiers["pro"])}\n\n'
         f"[default.embedding.tiers.default]\nmodel_ref = {_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}\n\n"
-        f'[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers["rerank"])}'
+        f'[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers["rerank"])}\n\n'
+        "# Override the image default's search.standard phase, which otherwise\n"
+        "# inherits claude-sonnet-4-6 (not in this deployment's supported_llm_models).\n"
+        f'[default.llm.phase_overrides.search.standard]\nmodel_ref = {_toml_scalar(tiers["standard"])}'
     )
     return "\n\n".join(parts) + "\n"
 
@@ -1961,6 +1982,23 @@ class GCPSetupWizard(BaseSetupWizard):
 
         # Nexus is opt-in; default off so headless DB-only installs are unchanged.
         if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
+            # The Pinecone gCPS project UUID the BYOC vault belongs to (matched
+            # against projects.id by CPGW). Required, and must NOT be the GCP
+            # project name -- pass it as its own var, distinct from GCP_PROJECT.
+            byoc_project_id = os.environ.get("PINECONE_BYOC_PROJECT_ID", "").strip()
+            if not byoc_project_id:
+                console.print(
+                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID environment variable is required"
+                    " when Nexus is enabled (the Pinecone gCPS project UUID)"
+                )
+                return False
+            if not _is_uuid(byoc_project_id):
+                console.print(
+                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID must be a Pinecone gCPS project"
+                    " UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2), not the GCP"
+                    " project name"
+                )
+                return False
             nexus = {
                 "enabled": True,
                 "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
@@ -1971,7 +2009,7 @@ class GCPSetupWizard(BaseSetupWizard):
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
-                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID"),
+                "byoc_project_id": byoc_project_id,
                 # Opt-in blob backend: unset = fs (PVC); set = provision GCS buckets.
                 "storage_bucket_prefix": os.environ.get(
                     "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
@@ -2130,6 +2168,23 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print("  [dim]The `.byoc` deployment environment id Nexus targets for index CRUD.[/]")
         byoc_env = self._prompt("Enter PINECONE_BYOC_ENV (or press Enter to use the minted env)", "")
 
+        console.print()
+        console.print(
+            "  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]"
+        )
+        console.print(
+            "  [dim]This is NOT the GCP project name -- it is the gCPS project id"
+            " (matched against projects.id), e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2.[/]"
+        )
+        while True:
+            byoc_project_id = self._prompt("Enter Pinecone gCPS project UUID").strip()
+            if _is_uuid(byoc_project_id):
+                break
+            console.print(
+                "  [red]Enter a valid UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2);"
+                " this is the Pinecone gCPS project id, not the GCP project name.[/]"
+            )
+
         nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
 
         console.print()
@@ -2159,6 +2214,7 @@ class GCPSetupWizard(BaseSetupWizard):
         return {
             "enabled": True,
             "byoc_env": byoc_env.strip(),
+            "byoc_project_id": byoc_project_id,
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
             "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
@@ -2976,6 +3032,22 @@ class AzureSetupWizard(BaseSetupWizard):
         # Uses the SAME env var names as the GCP wizard, except the image registry
         # defaults to the Azure ACR `nexus` repo.
         if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
+            # The Pinecone gCPS project UUID the BYOC vault belongs to (matched
+            # against projects.id by CPGW). Required, and must NOT be the cloud
+            # project/subscription -- pass it as its own var.
+            byoc_project_id = os.environ.get("PINECONE_BYOC_PROJECT_ID", "").strip()
+            if not byoc_project_id:
+                console.print(
+                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID environment variable is required"
+                    " when Nexus is enabled (the Pinecone gCPS project UUID)"
+                )
+                return False
+            if not _is_uuid(byoc_project_id):
+                console.print(
+                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID must be a Pinecone gCPS project"
+                    " UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2)"
+                )
+                return False
             nexus = {
                 "enabled": True,
                 "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
@@ -2986,7 +3058,7 @@ class AzureSetupWizard(BaseSetupWizard):
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
-                "byoc_project_id": os.environ.get("PINECONE_BYOC_PROJECT_ID"),
+                "byoc_project_id": byoc_project_id,
                 # Opt-in blob backend: unset = fs (PVC); set = provision blob containers.
                 "storage_bucket_prefix": os.environ.get(
                     "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
