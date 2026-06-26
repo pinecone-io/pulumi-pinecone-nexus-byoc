@@ -16,7 +16,8 @@ class NexusGCSBuckets(pulumi.ComponentResource):
     """Three GCS buckets (``{prefix}-source/knowledge/archive``) plus the GCS SA
     the Nexus pods use to access them.
 
-    Provisioned when ``NexusConfig.storage_bucket_prefix`` is set. Pass the
+    Always provisioned for GCP+Nexus. ``prefix`` is a derived ``pc-nexus-{cell}``
+    Output unless ``NexusConfig.storage_bucket_prefix`` overrides it. Pass the
     bucket outputs to ``NexusBlobStorage`` and ``gcs_sa_email`` to ``Nexus``.
     """
 
@@ -25,7 +26,7 @@ class NexusGCSBuckets(pulumi.ComponentResource):
         name: str,
         config: GCPConfig,
         cell_name: pulumi.Input[str],
-        prefix: str,
+        prefix: pulumi.Input[str],
         force_destroy: bool = False,
         opts: pulumi.ResourceOptions | None = None,
     ):
@@ -33,12 +34,15 @@ class NexusGCSBuckets(pulumi.ComponentResource):
 
         child_opts = pulumi.ResourceOptions(parent=self)
         cell = pulumi.Output.from_input(cell_name)
+        # `prefix` may be a derived Output (e.g. `pc-nexus-{cell}`) or a literal
+        # override, so resolve it through Output before building bucket names.
+        prefix_out = pulumi.Output.from_input(prefix)
 
         self._buckets: dict[str, gcp.storage.Bucket] = {}
         for suffix in _NEXUS_BUCKETS:
             self._buckets[suffix] = gcp.storage.Bucket(
                 f"{name}-{suffix}",
-                name=f"{prefix}-{suffix}",
+                name=prefix_out.apply(lambda p, s=suffix: f"{p}-{s}"),
                 project=config.project,
                 location=config.region,
                 force_destroy=force_destroy,

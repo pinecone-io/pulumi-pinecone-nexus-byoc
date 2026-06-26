@@ -372,26 +372,32 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         self._nexus_gcs = None
         if args.nexus is not None:
             nx = args.nexus
-            blob_storage = None
-            nexus_sa_annotations = None
-            if nx.storage_bucket_prefix is not None:
-                self._nexus_gcs = NexusGCSBuckets(
-                    f"{config.resource_prefix}-nexus-gcs",
-                    config,
-                    cell_name=self._cell_name,
-                    prefix=nx.storage_bucket_prefix,
-                    force_destroy=not args.deletion_protection,
-                    opts=pulumi.ResourceOptions(parent=self),
-                )
-                blob_storage = NexusBlobStorage(
-                    source=self._nexus_gcs.source,
-                    knowledge=self._nexus_gcs.knowledge,
-                    archive=self._nexus_gcs.archive,
-                )
-                # Annotate the Nexus KSAs so the pods assume the GCS SA via WI.
-                nexus_sa_annotations = self._nexus_gcs.gcs_sa_email.apply(
-                    lambda email: {"iam.gke.io/gcp-service-account": email}
-                )
+            # Durable GCS storage is always provisioned for GCP+Nexus (the `fs`
+            # default isn't durable and file upload needs object storage). The
+            # bucket prefix is derived from the cell name (`pc-nexus-{cell}`),
+            # mirroring the vault-id derivation -- the cell name is minted
+            # server-side mid-deploy, so the operator can't supply it in advance.
+            # `storage_bucket_prefix` is an optional override, not a gate.
+            storage_prefix = nx.storage_bucket_prefix or self._cell_name.apply(
+                lambda cn: f"pc-nexus-{cn}"
+            )
+            self._nexus_gcs = NexusGCSBuckets(
+                f"{config.resource_prefix}-nexus-gcs",
+                config,
+                cell_name=self._cell_name,
+                prefix=storage_prefix,
+                force_destroy=not args.deletion_protection,
+                opts=pulumi.ResourceOptions(parent=self),
+            )
+            blob_storage = NexusBlobStorage(
+                source=self._nexus_gcs.source,
+                knowledge=self._nexus_gcs.knowledge,
+                archive=self._nexus_gcs.archive,
+            )
+            # Annotate the Nexus KSAs so the pods assume the GCS SA via WI.
+            nexus_sa_annotations = self._nexus_gcs.gcs_sa_email.apply(
+                lambda email: {"iam.gke.io/gcp-service-account": email}
+            )
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._gke.k8s_provider,

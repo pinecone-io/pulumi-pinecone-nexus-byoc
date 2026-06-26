@@ -105,14 +105,15 @@ def derive_api_key_refs(inference_models_toml: str) -> list[str]:
 class NexusConfig:
     """Nexus enablement settings. Pass to cluster args to deploy Nexus alongside the DB stack.
 
-    Storage defaults to the local filesystem backend (``fs``). Set
-    ``storage_bucket_prefix`` to a string prefix and the cluster will provision
-    three buckets/containers (``{prefix}-source``, ``{prefix}-knowledge``,
-    ``{prefix}-archive``) and switch Nexus to the blob backend.
+    On GCP, durable object storage is always provisioned: the cluster creates
+    three buckets (``{prefix}-source/-knowledge/-archive``) plus the GCS SA and
+    Workload Identity wiring, and switches Nexus to the blob backend. The prefix
+    is derived from the cell name (``pc-nexus-{cell}``) -- minted server-side
+    mid-deploy, so the operator can't supply it in advance. Set
+    ``storage_bucket_prefix`` only to override that derived prefix.
 
-    On GCP ``storage_bucket_prefix`` must be set: the ``fs`` default is not
-    durable and file upload requires object storage. Setting it also provisions
-    the GCS SA and Workload Identity wiring the pods need.
+    On Azure ``storage_bucket_prefix`` is opt-in: unset keeps the ``fs``
+    backend; set provisions blob containers.
     """
 
     version: str | None = None  # falls back to pinecone_version
@@ -136,7 +137,9 @@ class NexusConfig:
     # In-cluster svc-docs-api base URL for the keyless BYOC data path (#548).
     # None => the co-located DB default (_DEFAULT_DOCS_API_URL).
     byoc_docs_api_url: pulumi.Input[str] | None = None
-    storage_bucket_prefix: str | None = None  # None = fs backend, set = provision blob
+    # Override for the storage bucket prefix. GCP: None => derived `pc-nexus-{cell}`
+    # (storage always provisioned); set to override. Azure: None => fs backend, set => blob.
+    storage_bucket_prefix: str | None = None
     # Inference-proxy model routing. When set, the proxy loads this TOML as the
     # `byoc` config overlay (model catalog + the default profile's tiers) on top
     # of its baked default. ``provider_keys`` maps each ``api_key_ref`` in the

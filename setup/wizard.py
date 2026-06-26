@@ -2018,24 +2018,17 @@ class GCPSetupWizard(BaseSetupWizard):
                 )
                 return False
             # The GCS bucket-name prefix Nexus storage is provisioned under.
-            # REQUIRED on GCP: the `fs` (PVC) default is not durable and file
-            # upload requires object storage, so a fresh GCP+Nexus deploy that
-            # omits this can't upload files. Accepts the canonical
-            # PINECONE_NEXUS_STORAGE_BUCKET_PREFIX, falling back to the shorter
-            # PINECONE_STORAGE_BUCKET_PREFIX alias.
+            # OPTIONAL override on GCP: when unset, the package derives it from
+            # the cell name (`pc-nexus-{cell}`), which is minted server-side
+            # mid-deploy and so can't be supplied in advance. Accepts the
+            # canonical PINECONE_NEXUS_STORAGE_BUCKET_PREFIX, falling back to the
+            # shorter PINECONE_STORAGE_BUCKET_PREFIX alias.
             storage_bucket_prefix = (
                 os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX")
                 or os.environ.get("PINECONE_STORAGE_BUCKET_PREFIX")
                 or ""
             ).strip()
-            if not storage_bucket_prefix:
-                console.print(
-                    "  [red]✗[/] PINECONE_NEXUS_STORAGE_BUCKET_PREFIX environment"
-                    " variable is required when Nexus is enabled on GCP (the GCS"
-                    " bucket name prefix for Nexus storage, e.g. pc-nexus-<cell>)"
-                )
-                return False
-            if not _is_storage_bucket_prefix(storage_bucket_prefix):
+            if storage_bucket_prefix and not _is_storage_bucket_prefix(storage_bucket_prefix):
                 console.print(
                     "  [red]✗[/] PINECONE_NEXUS_STORAGE_BUCKET_PREFIX must be a valid"
                     " GCS bucket name prefix: lowercase letters, digits and hyphens,"
@@ -2055,7 +2048,7 @@ class GCPSetupWizard(BaseSetupWizard):
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
                 "byoc_project_id": byoc_project_id,
-                # Required on GCP: provisions the GCS buckets + WI wiring.
+                # Optional override; blank => package derives `pc-nexus-{cell}`.
                 "storage_bucket_prefix": storage_bucket_prefix,
                 # Inference models from env JSON, or None -> default template.
                 "inference_models_toml": self._headless_inference_models_toml(),
@@ -2230,19 +2223,19 @@ class GCPSetupWizard(BaseSetupWizard):
 
         console.print()
         console.print(
-            "  [dim]The GCS bucket name prefix for Nexus storage. Required on GCP:[/]"
+            "  [dim]Optional override for the Nexus storage bucket prefix. Leave[/]"
         )
         console.print(
-            "  [dim]the cluster provisions {prefix}-source/-knowledge/-archive and[/]"
+            "  [dim]blank to auto-derive it from the cell name (pc-nexus-<cell>);[/]"
         )
         console.print(
-            "  [dim]switches Nexus to durable object storage (file upload needs it).[/]"
+            "  [dim]the cluster provisions {prefix}-source/-knowledge/-archive.[/]"
         )
         while True:
             storage_bucket_prefix = self._prompt(
-                "Enter the GCS bucket name prefix for Nexus storage (e.g. pc-nexus-<cell>)"
+                "Enter a Nexus storage bucket prefix override (blank = auto-derive)"
             ).strip()
-            if _is_storage_bucket_prefix(storage_bucket_prefix):
+            if not storage_bucket_prefix or _is_storage_bucket_prefix(storage_bucket_prefix):
                 break
             console.print(
                 "  [red]Enter a valid GCS bucket name prefix: lowercase letters,"
