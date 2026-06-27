@@ -5,15 +5,15 @@ import pulumi_kubernetes as k8s
 
 WAIT_FOR_REGCRED_SCRIPT = """
 echo "Waiting for regcred secret in pc-control-plane namespace..."
-for i in $(seq 1 60); do
+for i in $(seq 1 240); do
   if kubectl get secret regcred -n pc-control-plane >/dev/null 2>&1; then
     echo "regcred secret found!"
     exit 0
   fi
-  echo "Attempt $i/60: regcred not found, waiting 10s..."
+  echo "Attempt $i/240: regcred not found, waiting 10s..."
   sleep 10
 done
-echo "ERROR: regcred secret not found after 10 minutes"
+echo "ERROR: regcred secret not found after 40 minutes"
 exit 1
 """
 
@@ -143,7 +143,9 @@ class Pinetools(pulumi.ComponentResource):
         ) -> k8s.batch.v1.JobSpecArgs:
             return k8s.batch.v1.JobSpecArgs(
                 backoff_limit=1,
-                active_deadline_seconds=1800,
+                # 70 min = 40 min regcred wait (ESO can take ~31 min on a cold
+                # cluster) + ~30 min install/check budget.
+                active_deadline_seconds=4200,
                 ttl_seconds_after_finished=300,
                 template=k8s.core.v1.PodTemplateSpecArgs(
                     spec=make_pod_spec(init_containers),
