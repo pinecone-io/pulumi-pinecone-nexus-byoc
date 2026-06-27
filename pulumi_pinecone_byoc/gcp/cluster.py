@@ -66,7 +66,13 @@ class PineconeGCPClusterArgs:
     vpc_cidr: str = "10.112.0.0/12"
 
     # kubernetes
-    kubernetes_version: str = "1.33"
+    # Pinned to a specific patched GKE build (not a channel-tracked minor) to avoid
+    # the Cilium endpoint-deletion race present in affected 1.33/1.34/1.35 builds.
+    # Fix floor is 1.33.11-gke.1137000; this build is >= the floor and verified
+    # available in us-central1. Pin both the control plane (min_master_version) and
+    # node pools (NodePool.version) in gke.py so nodes match and don't drift
+    # (node pools run with auto_upgrade=False).
+    kubernetes_version: str = "1.33.12-gke.1208000"
     node_pools: list[NodePool] | None = None
 
     # dns

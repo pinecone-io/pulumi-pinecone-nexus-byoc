@@ -119,6 +119,12 @@ class GKE(pulumi.ComponentResource):
             subnetwork=subnet_id,
             networking_mode="VPC_NATIVE",
             datapath_provider="ADVANCED_DATAPATH",
+            # Pin the control plane to a specific patched GKE build (see
+            # config/base.py / gcp/cluster.py kubernetes_version) instead of letting
+            # the UNSPECIFIED release channel pick a drifting default that may be an
+            # affected Cilium-endpoint-deletion-race build. UNSPECIFIED channel +
+            # min_master_version is the standard way to pin to an exact version.
+            min_master_version=config.kubernetes_version,
             initial_node_count=1,
             remove_default_node_pool=True,
             ip_allocation_policy=gcp.container.ClusterIpAllocationPolicyArgs(
@@ -447,6 +453,11 @@ users:
         node_pool = gcp.container.NodePool(
             node_pool_name,
             cluster=cluster_id,
+            # Pin nodes to the same patched build as the control plane. With
+            # auto_upgrade=False (below) nodes won't drift on their own, so we set
+            # `version` explicitly to keep control-plane and node versions consistent
+            # and on the Cilium-race fix build.
+            version=config.kubernetes_version,
             autoscaling=autoscaling,
             node_config=gcp.container.NodePoolNodeConfigArgs(
                 machine_type=np_config.machine_type,
