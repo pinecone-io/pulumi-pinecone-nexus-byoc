@@ -264,6 +264,7 @@ class Nexus(pulumi.ComponentResource):
             },
             "orchestrator": {
                 "taskNamespace": _NEXUS_TASKS_NAMESPACE,
+                "runtimePushFiles": True,
             },
             "persistence": {
                 "storageClass": storage_class,
