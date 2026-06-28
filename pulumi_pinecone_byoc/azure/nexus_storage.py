@@ -39,9 +39,7 @@ class NexusBlobContainers(pulumi.ComponentResource):
                 opts=child_opts,
             )
 
-        self.register_outputs(
-            {s: self._containers[s].name for s in _NEXUS_CONTAINERS}
-        )
+        self.register_outputs({s: self._containers[s].name for s in _NEXUS_CONTAINERS})
 
     @property
     def source(self) -> pulumi.Output[str]:

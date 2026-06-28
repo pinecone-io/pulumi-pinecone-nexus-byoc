@@ -11,13 +11,13 @@ from ..common.naming import cell_name as _cell_name
 from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
 from ..common.pinetools import Pinetools
 from ..common.providers import (
+    DATADOG_DISABLED_PLACEHOLDER,
     AmpAccess,
     AmpAccessArgs,
     ApiKey,
     ApiKeyArgs,
     CpgwApiKey,
     CpgwApiKeyArgs,
-    DATADOG_DISABLED_PLACEHOLDER,
     DatadogApiKey,
     DatadogApiKeyArgs,
     Environment,
@@ -30,9 +30,9 @@ from ..common.uninstaller import ClusterUninstaller
 from .alloydb import AlloyDB
 from .dns import DNS
 from .gcs import GCSBuckets
-from .nexus_gcs import NexusGCSBuckets
 from .gke import GKE
 from .k8s_addons import K8sAddons
+from .nexus_gcs import NexusGCSBuckets
 from .nlb import InternalLoadBalancer
 from .pulumi_operator import PulumiOperator
 from .vpc import VPC
@@ -171,9 +171,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                     api_url=args.api_url,
                     cpgw_api_key=self._cpgw_api_key.key,
                 ),
-                opts=pulumi.ResourceOptions(
-                    parent=self, depends_on=[self._cpgw_api_key]
-                ),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
             )
         else:
             self._datadog_api_key = None
@@ -264,7 +262,9 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                     if args.nexus.inference_models_toml is not None
                     else None
                 ),
-            ) if args.nexus is not None else None,
+            )
+            if args.nexus is not None
+            else None,
             control_db=self._alloydb.control_db,
             system_db=self._alloydb.system_db,
             storage_integration_credentials=(
@@ -415,8 +415,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 pinecone_prod=args.global_env == "prod",
                 byoc_project_id=nx.byoc_project_id or self._api_key.project_id,
                 byoc_vault_id=(
-                    nx.byoc_vault_id
-                    or self._resource_suffix.apply(lambda s: f"byoc{s}")
+                    nx.byoc_vault_id or self._resource_suffix.apply(lambda s: f"byoc{s}")
                 ),
                 blob_storage=blob_storage,
                 service_account_annotations=nexus_sa_annotations,
@@ -486,9 +485,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 "cpgw_api_key": self._k8s_secrets.cpgw_api_key,
                 "cpgw_admin_api_key_id": self._cpgw_api_key.key_id,
                 "datadog_api_key_id": (
-                    self._datadog_api_key.key_id
-                    if self._datadog_api_key is not None
-                    else None
+                    self._datadog_api_key.key_id if self._datadog_api_key is not None else None
                 ),
                 "customer_tags": config.custom_tags,
                 "pulumi_backend_url": self._pulumi_operator.backend_url,

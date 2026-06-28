@@ -148,8 +148,7 @@ def check_auth() -> bool:
             all_ok = False
             fail(
                 "ADC did not return a token",
-                "gcloud auth application-default login "
-                "[--impersonate-service-account=<SA>]",
+                "gcloud auth application-default login [--impersonate-service-account=<SA>]",
             )
     except Exception as e:
         all_ok = False
@@ -346,10 +345,7 @@ def check_iam_owner(project: str) -> bool:
         return True  # don't double-count the auth failure
 
     body = json.dumps({"permissions": OWNER_PERMS}).encode()
-    url = (
-        "https://cloudresourcemanager.googleapis.com/v1/projects/"
-        f"{project}:testIamPermissions"
-    )
+    url = f"https://cloudresourcemanager.googleapis.com/v1/projects/{project}:testIamPermissions"
     try:
         req = urllib.request.Request(
             url,
@@ -370,8 +366,7 @@ def check_iam_owner(project: str) -> bool:
     if missing:
         fail(
             f"{display} lacks owner-level IAM perms: {', '.join(missing)}",
-            "BYOC creates IAM service accounts AND bindings; roles/editor is not "
-            "enough.",
+            "BYOC creates IAM service accounts AND bindings; roles/editor is not enough.",
         )
         if member:
             console.print(
@@ -501,9 +496,7 @@ def check_cloud_side(project: str, region: str, zones: list[str], cidr: str) -> 
         if suggestion:
             console.print(f"    [dim]→ free range available: --cidr {suggestion}[/]")
         else:
-            console.print(
-                "    [dim]→ no free /12 in 10.0.0.0/8; pick a smaller block manually[/]"
-            )
+            console.print("    [dim]→ no free /12 in 10.0.0.0/8; pick a smaller block manually[/]")
 
     return passed and reserved_ok
 
@@ -529,9 +522,7 @@ def check_nexus_secrets(stack_dir: str | None) -> bool:
             "No --stack-dir given; cannot verify secrets are set. Before `pulumi up` "
             "set, per the generated project:"
         )
-        console.print(
-            "    [dim]pulumi config set --secret <project>:nexus-gemini-api-key <key>[/]"
-        )
+        console.print("    [dim]pulumi config set --secret <project>:nexus-gemini-api-key <key>[/]")
         console.print(
             "    [dim]pulumi config set --path --secret "
             "nexus-provider-keys.<api-key-ref> <key>  (one per model api_key_ref)[/]"
@@ -593,9 +584,7 @@ def main() -> int:
         help="comma-separated zones (default: <region>-a,<region>-b)",
     )
     parser.add_argument("--cidr", default=DEFAULT_CIDR, help=f"default: {DEFAULT_CIDR}")
-    parser.add_argument(
-        "--nexus", action="store_true", help="also check Nexus provider secrets"
-    )
+    parser.add_argument("--nexus", action="store_true", help="also check Nexus provider secrets")
     parser.add_argument(
         "--stack-dir",
         help="generated project dir to verify Nexus secrets against (implies --nexus)",
@@ -624,9 +613,7 @@ def main() -> int:
 
     if not project:
         section("GCP cloud-side")
-        fail(
-            "No project id (pass --project or set one: gcloud config set project <id>)"
-        )
+        fail("No project id (pass --project or set one: gcloud config set project <id>)")
         results.append(False)
     else:
         results.append(check_iam_owner(project))
@@ -640,8 +627,7 @@ def main() -> int:
     console.print("  [dim]Not auto-checked (verify manually):[/]")
     console.print("    [dim]· Pinecone Enterprise plan (required for BYOC access)[/]")
     console.print(
-        "    [dim]· After installing any new tool, open a new terminal so PATH "
-        "picks it up[/]"
+        "    [dim]· After installing any new tool, open a new terminal so PATH picks it up[/]"
     )
     console.print()
     if all(results):

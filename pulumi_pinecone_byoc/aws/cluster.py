@@ -12,13 +12,13 @@ from ..common.k8s_secrets import K8sSecrets
 from ..common.naming import cell_name as _cell_name
 from ..common.pinetools import Pinetools
 from ..common.providers import (
+    DATADOG_DISABLED_PLACEHOLDER,
     AmpAccess,
     AmpAccessArgs,
     ApiKey,
     ApiKeyArgs,
     CpgwApiKey,
     CpgwApiKeyArgs,
-    DATADOG_DISABLED_PLACEHOLDER,
     DatadogApiKey,
     DatadogApiKeyArgs,
     Environment,
@@ -164,9 +164,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                     api_url=args.api_url,
                     cpgw_api_key=self._cpgw_api_key.key,
                 ),
-                opts=pulumi.ResourceOptions(
-                    parent=self, depends_on=[self._cpgw_api_key]
-                ),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
             )
         else:
             self._datadog_api_key = None
@@ -526,9 +524,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 "cpgw_api_key": self._k8s_secrets.cpgw_api_key,
                 "cpgw_admin_api_key_id": self._cpgw_api_key.key_id,
                 "datadog_api_key_id": (
-                    self._datadog_api_key.key_id
-                    if self._datadog_api_key is not None
-                    else None
+                    self._datadog_api_key.key_id if self._datadog_api_key is not None else None
                 ),
                 "customer_tags": args.tags or {},
                 "pulumi_backend_url": self._pulumi_operator.backend_url,

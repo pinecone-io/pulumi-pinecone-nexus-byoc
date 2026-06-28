@@ -160,9 +160,7 @@ class K8sSecrets(pulumi.ComponentResource):
                 special=False,
                 opts=pulumi.ResourceOptions(parent=self),
             )
-            self.byoc_session_credential = pulumi.Output.secret(
-                byoc_session_credential.result
-            )
+            self.byoc_session_credential = pulumi.Output.secret(byoc_session_credential.result)
 
             # Provider api keys projected onto the inference-proxy pod. Overlay
             # mode (a routing TOML supplied provider_key_refs) writes one key per
@@ -174,9 +172,9 @@ class K8sSecrets(pulumi.ComponentResource):
                     if nexus.provider_keys is not None:
                         provider_data[ref] = b64(
                             pulumi.Output.secret(nexus.provider_keys).apply(
-                                lambda keys, r=ref: str(keys.get(r, ""))
-                                if isinstance(keys, dict)
-                                else ""
+                                lambda keys, r=ref: (
+                                    str(keys.get(r, "")) if isinstance(keys, dict) else ""
+                                )
                             )
                         )
                     else:

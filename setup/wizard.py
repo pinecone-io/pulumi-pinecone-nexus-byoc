@@ -73,7 +73,7 @@ NEXUS_AZURE_IMAGE_REGISTRY = "pinecone.azurecr.io/nexus"
 # ConfigMap. Gemini + Pinecone only (the keys a BYOC deploy reliably has) and a
 # complete `default` profile -- project/phase overrides are intentionally out of
 # scope. Keep every api_key_ref's secret wired via `nexus-provider-keys.<ref>`.
-NEXUS_INFERENCE_MODELS_TEMPLATE = '''\
+NEXUS_INFERENCE_MODELS_TEMPLATE = """\
 # Inference models for this BYOC deployment.
 #
 # These are the models the deployment serves and how the lite / standard / pro
@@ -162,7 +162,7 @@ model_ref = "bge-reranker-v2-m3"
 # claude-sonnet-4-6 (not in this deployment's gemini-only supported_llm_models).
 [default.llm.phase_overrides.search.standard]
 model_ref = "gemini-3.5-flash"
-'''
+"""
 
 # Filename of the routing overlay written into the generated project.
 NEXUS_INFERENCE_MODELS_FILENAME = "inference-proxy-models.toml"
@@ -253,14 +253,14 @@ def build_inference_models_toml(
         f"supported_llm_models = {supported_llm}\n"
         f"supported_embedding_models = [{_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}]\n"
         f"supported_rerank_models = {supported_rr}\n\n"
-        f'[default.llm.tiers.lite]\nmodel_ref = {_toml_scalar(tiers["lite"])}\n\n'
-        f'[default.llm.tiers.standard]\nmodel_ref = {_toml_scalar(tiers["standard"])}\n\n'
-        f'[default.llm.tiers.pro]\nmodel_ref = {_toml_scalar(tiers["pro"])}\n\n'
+        f"[default.llm.tiers.lite]\nmodel_ref = {_toml_scalar(tiers['lite'])}\n\n"
+        f"[default.llm.tiers.standard]\nmodel_ref = {_toml_scalar(tiers['standard'])}\n\n"
+        f"[default.llm.tiers.pro]\nmodel_ref = {_toml_scalar(tiers['pro'])}\n\n"
         f"[default.embedding.tiers.default]\nmodel_ref = {_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}\n\n"
-        f'[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers["rerank"])}\n\n'
+        f"[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers['rerank'])}\n\n"
         "# Override the image default's search.standard phase, which otherwise\n"
         "# inherits claude-sonnet-4-6 (not in this deployment's supported_llm_models).\n"
-        f'[default.llm.phase_overrides.search.standard]\nmodel_ref = {_toml_scalar(tiers["standard"])}'
+        f"[default.llm.phase_overrides.search.standard]\nmodel_ref = {_toml_scalar(tiers['standard'])}"
     )
     return "\n\n".join(parts) + "\n"
 
@@ -749,7 +749,9 @@ class BaseSetupWizard:
             ).strip()
             if base_url:
                 fields["base_url"] = base_url
-            cw = self._prompt("  context_window (optional, Enter to let LiteLLM decide)", "").strip()
+            cw = self._prompt(
+                "  context_window (optional, Enter to let LiteLLM decide)", ""
+            ).strip()
             if cw:
                 fields["context_window"] = int(cw)
             mot = self._prompt("  max_output_tokens (optional, Enter to skip)", "").strip()
@@ -765,9 +767,7 @@ class BaseSetupWizard:
         api_style = self._choose_from("  api_style", ["pinecone", "litellm"])
         fields: dict = {"api_style": api_style, "model": self._prompt("  model").strip()}
         if api_style == "litellm":
-            fields["api_key_ref"] = self._prompt(
-                "  api_key_ref (provider key env var)"
-            ).strip()
+            fields["api_key_ref"] = self._prompt("  api_key_ref (provider key env var)").strip()
             base_url = self._prompt(
                 "  base_url (optional, Enter for LiteLLM's default endpoint)", ""
             ).strip()
@@ -2201,13 +2201,15 @@ class GCPSetupWizard(BaseSetupWizard):
             return {"enabled": False}
 
         console.print()
-        console.print("  [dim]The `.byoc` deployment environment id Nexus targets for index CRUD.[/]")
-        byoc_env = self._prompt("Enter PINECONE_BYOC_ENV (or press Enter to use the minted env)", "")
+        console.print(
+            "  [dim]The `.byoc` deployment environment id Nexus targets for index CRUD.[/]"
+        )
+        byoc_env = self._prompt(
+            "Enter PINECONE_BYOC_ENV (or press Enter to use the minted env)", ""
+        )
 
         console.print()
-        console.print(
-            "  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]"
-        )
+        console.print("  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]")
         console.print(
             "  [dim]This is NOT the GCP project name -- it is the gCPS project id"
             " (matched against projects.id), e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2.[/]"
@@ -2222,15 +2224,9 @@ class GCPSetupWizard(BaseSetupWizard):
             )
 
         console.print()
-        console.print(
-            "  [dim]Optional override for the Nexus storage bucket prefix. Leave[/]"
-        )
-        console.print(
-            "  [dim]blank to auto-derive it from the cell name (pc-nexus-<cell>);[/]"
-        )
-        console.print(
-            "  [dim]the cluster provisions {prefix}-source/-knowledge/-archive.[/]"
-        )
+        console.print("  [dim]Optional override for the Nexus storage bucket prefix. Leave[/]")
+        console.print("  [dim]blank to auto-derive it from the cell name (pc-nexus-<cell>);[/]")
+        console.print("  [dim]the cluster provisions {prefix}-source/-knowledge/-archive.[/]")
         while True:
             storage_bucket_prefix = self._prompt(
                 "Enter a Nexus storage bucket prefix override (blank = auto-derive)"
@@ -2247,11 +2243,15 @@ class GCPSetupWizard(BaseSetupWizard):
         nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
 
         console.print()
-        console.print("  [dim]Container registry for the Nexus images (the `nexus` repo, co-located on the DB registry host).[/]")
+        console.print(
+            "  [dim]Container registry for the Nexus images (the `nexus` repo, co-located on the DB registry host).[/]"
+        )
         image_registry = self._prompt("Enter nexus image registry", NEXUS_IMAGE_REGISTRY)
 
         console.print()
-        console.print("  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]")
+        console.print(
+            "  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]"
+        )
         inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
 
         # Guided model catalog + tier selection. None => default template is
@@ -3120,9 +3120,7 @@ class AzureSetupWizard(BaseSetupWizard):
                 ),
                 "byoc_project_id": byoc_project_id,
                 # Opt-in blob backend: unset = fs (PVC); set = provision blob containers.
-                "storage_bucket_prefix": os.environ.get(
-                    "PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""
-                ),
+                "storage_bucket_prefix": os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""),
                 # Inference models from env JSON, or None -> default template.
                 "inference_models_toml": self._headless_inference_models_toml(),
             }
