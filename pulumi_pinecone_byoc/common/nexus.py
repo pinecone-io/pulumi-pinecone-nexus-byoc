@@ -359,6 +359,11 @@ class Nexus(pulumi.ComponentResource):
                 chart=_NEXUS_CHART,
                 namespace=_NEXUS_NAMESPACE,
                 values=app_values,
+                # An image bump rolls every nexus deployment at once; the
+                # gateway pod drains slowly, so the rollout can exceed Helm's
+                # default 300s wait and false-fail the release even though the
+                # cluster converges. Give the roll generous headroom.
+                timeout=900,
             ),
             opts=pulumi.ResourceOptions(
                 parent=self,
