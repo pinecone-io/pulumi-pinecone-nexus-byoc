@@ -101,6 +101,7 @@ def derive_api_key_refs(inference_models_toml: str) -> list[str]:
                 refs.add(ref)
     return sorted(refs)
 
+
 @dataclass
 class NexusConfig:
     """Nexus enablement settings. Pass to cluster args to deploy Nexus alongside the DB stack.
@@ -306,9 +307,7 @@ class Nexus(pulumi.ComponentResource):
         # The keyless data path needs svc-docs-api too, injected as byocDocsApiUrl.
         if cpgw_api_url is not None:
             app_values["config"]["cpgwApiUrl"] = cpgw_api_url
-            app_values["config"]["byocDocsApiUrl"] = (
-                byoc_docs_api_url or _DEFAULT_DOCS_API_URL
-            )
+            app_values["config"]["byocDocsApiUrl"] = byoc_docs_api_url or _DEFAULT_DOCS_API_URL
 
         # BYOC inference-proxy routing overlay. Ship the customer's model config
         # as a ConfigMap mounted as the `byoc` cascade profile. The TOML sets
