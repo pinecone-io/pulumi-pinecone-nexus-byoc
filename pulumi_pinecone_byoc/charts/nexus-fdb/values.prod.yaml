@@ -1,0 +1,8 @@
+## Prod environment overrides for nexus-fdb. Tune storage and resources
+## here when the prod GKE cluster lands.
+
+## Pin to Docker Hub so a change to the chart default (AR mirror path) does
+## not trigger a StatefulSet update on the running prod cluster.
+foundationdb:
+  image:
+    repository: foundationdb/foundationdb

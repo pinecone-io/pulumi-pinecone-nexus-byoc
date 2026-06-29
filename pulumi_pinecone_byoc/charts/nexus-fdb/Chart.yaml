@@ -1,0 +1,6 @@
+apiVersion: v2
+name: nexus-fdb
+description: Nexus FoundationDB (split from the main nexus chart so app deploys do not restart FDB).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

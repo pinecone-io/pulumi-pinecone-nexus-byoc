@@ -1,0 +1,77 @@
+{{- if eq .Values.orchestrator.mode "kubernetes" }}
+{{- $fullname := include "nexus.fullname" . -}}
+{{- $ns := default .Release.Namespace .Values.orchestrator.taskNamespace -}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-api
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+  {{- with .Values.serviceAccountAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-orchestrator
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "orchestrator") | nindent 4 }}
+  {{- with .Values.serviceAccountAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $fullname }}-orchestrator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "orchestrator") | nindent 4 }}
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete", "patch", "update"]
+  - apiGroups: [""]
+    resources: ["pods/exec", "pods/attach"]
+    verbs: ["create", "get"]
+  - apiGroups: [""]
+    resources: ["pods/log", "pods/status"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $fullname }}-orchestrator
+  namespace: {{ $ns }}
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "orchestrator") | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $fullname }}-orchestrator
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $fullname }}-orchestrator
+{{- if ne $ns .Release.Namespace }}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $fullname }}-task
+  namespace: {{ $ns }}
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "task") | nindent 4 }}
+  {{- with .Values.serviceAccountAnnotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- with .Values.image.pullSecrets }}
+imagePullSecrets:
+  {{- toYaml . | nindent 2 }}
+{{- end }}
+{{- end }}
+{{- end }}

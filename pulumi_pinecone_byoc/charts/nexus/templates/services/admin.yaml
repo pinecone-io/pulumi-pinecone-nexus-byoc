@@ -1,0 +1,98 @@
+{{- $fullname := include "nexus.fullname" . -}}
+{{- if .Values.admin.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-admin
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "admin") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nexus.selectorLabels" (dict "root" . "component" "admin") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.admin.service.port }}
+      targetPort: 9300
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-admin
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "admin") | nindent 4 }}
+spec:
+  replicas: {{ .Values.admin.replicaCount }}
+  {{- include "nexus.deployStrategy" .Values.admin.strategy | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "admin") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "admin") | nindent 8 }}
+      annotations:
+        ad.datadoghq.com/admin.logs: '[{"source": "rust", "service": "{{ include "nexus.fullname" . }}-admin"}]'
+    spec:
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: admin
+          image: {{ include "nexus.image" (dict "root" . "component" "admin") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          ports:
+            - name: http
+              containerPort: 9300
+          env:
+            - name: FDB_CLUSTER_FILE
+              value: /var/fdb/fdb.cluster
+            - name: RUST_LOG
+              value: {{ .Values.rustLog | quote }}
+            - name: PINECONE_SERVER__PORT
+              value: "9300"
+            {{- include "nexus.envSettings" . | nindent 12 }}
+            {{- include "nexus.datadogEnvSettings" (dict "root" . "component" "admin") | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9300
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9300
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: fdb-cluster
+              mountPath: /var/fdb
+              readOnly: true
+            {{- if eq (include "nexus.usesFsStorage" .) "true" }}
+            - name: data
+              mountPath: {{ include "nexus.localRoot" . | quote }}
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml .Values.admin.resources | nindent 12 }}
+      volumes:
+        - name: fdb-cluster
+          configMap:
+            name: {{ $fullname }}-fdb-cluster
+            items:
+              - key: fdb.cluster
+                path: fdb.cluster
+        {{- if eq (include "nexus.usesFsStorage" .) "true" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "nexus.pvc" (dict "root" . "volume" "data") }}
+        {{- end }}
+{{- end }}

@@ -1,0 +1,599 @@
+## Nexus Helm chart values
+##
+## Each core service is deployed as its own Deployment with a dedicated
+## PersistentVolumeClaim for its writable paths. Pods communicate via
+## Kubernetes ClusterIP Services using DNS. The gateway Service (front
+## door) is exposed via NodePort by default.
+##
+## FoundationDB is deployed by a separate `nexus-fdb` Helm release (see
+## deploy/helm/nexus-fdb/). App pods reference its resources by name —
+## the `nexus-fdb-cluster` ConfigMap and the `nexus-fdb-headless` Service
+## — so the FDB release must be installed before this one.
+
+## Deployment environment: local, dev, or prod.
+## "local" creates secrets from Helm values. "dev" and "prod" expect
+## secrets to be managed externally (e.g. Pulumi).
+env: local
+
+## Annotations added to the nexus-orchestrator and nexus-task Kubernetes service
+## accounts. Use this to wire cloud-provider workload identity on managed K8s:
+##   GKE:  iam.gke.io/gcp-service-account: <sa-email>
+##   EKS:  eks.amazonaws.com/role-arn: <iam-role-arn>
+##   AKS:  azure.workload.identity/client-id: <client-id>
+## The nexus/default SA (used by all other services) must be annotated separately
+## via Pulumi, since Helm cannot safely mutate the pre-existing default SA.
+serviceAccountAnnotations: {}
+
+## Local development mode. When true, secrets are created from Helm values and
+## NEXUS_LOCAL_RUNTIME=1 is injected into services (local secrets, local-dev
+## behaviors). Set to false for dev/prod where secrets are managed externally.
+localRuntime: false
+
+## Console log format (NEXUS_LOG_FORMAT), independent of localRuntime. Empty
+## leaves services on JSON (Datadog); "text"/"pretty" emits human-readable logs
+## (k8s-local sets "text"). Real deploys leave this empty.
+logFormat: ""
+
+nameOverride: ""
+fullnameOverride: "nexus"
+
+## Image pull configuration. The chart assumes images are available under
+## `image.registry/image.repository-<component>:image.tag`. Override per
+## component if needed.
+image:
+  registry: ""
+  tag: "latest"
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+## Shared app config. Injected into the Rust services as PINECONE_* env (secrets via the
+## {{ fullname }}-config Secret) and read through pc-settings. LLM provider keys live
+## only on the nexus-inference-proxy pod; every other service reaches LLM / embed /
+## rerank through it. See the README.
+config:
+  host:
+    name: "Nexus"
+    url: "http://localhost"
+  ## LLM provider keys (gemini / claude / nebius / ...) are wired only into
+  ## the nexus-inference-proxy pod and are NOT exposed in the api/orchestrator
+  ## pods. The Secret may still hold them under stable keys (gemini-api-key,
+  ## claude-api-key, ...) which the proxy reads via its model entries'
+  ## ``api_key_ref``.
+  geminiApiKey: ""
+  claudeApiKey: ""
+  nebiusApiKey: ""
+  pineconeApiKey: ""
+  ## BYOC seeded login credential, surfaced as PINECONE_PINECONE__BYOC_SESSION_CREDENTIAL
+  ## via the {{ fullname }}-config Secret. Empty on managed/local. In BYOC deploys this
+  ## is populated by Pulumi, not the chart.
+  byocSessionCredential: ""
+  ## When true, omit the x-environment preprod header from Pinecone API requests.
+  pineconeProd: false
+  ## Index-creation mode: "managed" (per-request customer key) or "byoc"
+  ## (cluster control-plane credential). Empty leaves the config default (managed).
+  deploymentMode: ""
+  ## Deployment environment / cell id, shared with a co-located BYOC database
+  ## cluster. Mirrors pinecone-db's `subdomain` -> PINECONE_ENVIRONMENT. Empty
+  ## on managed/local. Set to the BYOC cluster's env name (e.g. preprod-aws-0).
+  environment: ""
+  ## Control-plane index placement, mirroring pinecone-db's [cloud] values so
+  ## the same Helm inputs feed both. Empty leaves the config default (aws/us-east-1).
+  cloud:
+    provider: ""
+    region: ""
+  ## BYOC single-tenant project id. Injected as PINECONE_PINECONE__BYOC_PROJECT_ID
+  ## (non-secret). Empty on managed/local.
+  byocProjectId: ""
+  ## Short DNS-safe vault id forming the index host's leftmost label
+  ## `nexus-{context_id}-{vault}`. Injected as PINECONE_PINECONE__BYOC_VAULT_ID.
+  ## Empty -> Nexus defaults it to byocProjectId, whose full UUID overflows the
+  ## 63-char DNS label and makes the index host unresolvable.
+  ## TODO(temporary): the BYOC stack feeds a derived slug here; replace once Nexus
+  ## can resolve the project's real vault id (its own/DB auth service, or cpgw
+  ## deriving the vault from project_info.id).
+  byocVaultId: ""
+  ## Control-plane-gateway base URL (e.g. https://api.pinecone.io/internal/cpgw),
+  ## set by the BYOC Pulumi stack. When set, the api + orchestrator deployments
+  ## render PINECONE_PINECONE__CPGW_API_URL plus a PINECONE_PINECONE__CPGW_API_KEY
+  ## secretKeyRef to the `cpgw-api-key` key of the (Pulumi-managed) config secret,
+  ## activating the CPGW index client. Set together with that secret key or not at
+  ## all — a partial config fails closed at boot. Empty leaves CPGW inactive
+  ## (managed path).
+  cpgwApiUrl: ""
+  ## Managed control-plane index placement, decoupled from [cloud] above (the
+  ## cluster/blob location). Injected as PINECONE_PINECONE__INDEX_{CLOUD,REGION}
+  ## from the Pulumi stack config at deploy time. Empty -> config default
+  ## (aws/us-east-1).
+  indexCloud: ""
+  indexRegion: ""
+  ## Preview Playground usage constraints. Enabled only on the public-preview
+  ## cluster. When enabled, the api pod renders PINECONE_PREVIEW__* env; the
+  ## numeric/bool caps below mirror the config defaults, so flipping `enabled`
+  ## alone yields the intended limits. The extension allowlist is not a chart
+  ## key — it uses the config default; override via a config layer if needed.
+  preview:
+    enabled: false
+    maxContextsPerProject: 2
+    maxFilesPerContext: 2000
+    maxBytesPerContext: 1073741824
+    ## Importable leaf-file extensions (matched on input extension; empty = no
+    ## restriction). Rendered as a comma-separated env value. Empty list here
+    ## leaves the config default (text formats).
+    allowedImportExtensions: []
+    allowArchives: true
+    maxActiveTasksPerContext: 1
+    maxActiveQueriesPerProject: 1
+  ## In-cluster svc-docs-api base URL for the keyless BYOC data path (#548),
+  ## injected into task pods as PINECONE_TASKS__DOCS_API_URL. Set to the
+  ## co-located DB's docs-api service (e.g. http://docs-api.pc-docs-api:3001).
+  ## Empty leaves the keyless path unconfigured (index-host fallback).
+  byocDocsApiUrl: ""
+  ## Legacy keyless-BYOC data-path index id, injected into the orchestrator as
+  ## PINECONE_TASKS__DB_INDEX_ID and forwarded to task pods as the keyless
+  ## x-index-id (#548). Only for deployments WITHOUT a static-index ConfigMap; in
+  ## static-index mode leave this empty and set indexMetadata.indexId instead (the
+  ## orchestrator env is derived from it). A per-context control-plane id still
+  ## takes precedence. Empty on managed/local.
+  byocDbIndexId: ""
+  ## Static-index (headless, no-egress BYOC) metadata. When `indexId` is set the
+  ## chart renders a ConfigMap, mounts it into api + orchestrator, sets
+  ## PINECONE_PINECONE__STATIC_INDEX_METADATA_PATH so Nexus binds the single
+  ## context to this pre-provisioned index with no control-plane egress, and
+  ## derives the orchestrator's PINECONE_TASKS__DB_INDEX_ID from it. `indexId` is
+  ## the single source of truth for the static index id (leave byocDbIndexId
+  ## empty). Empty -> normal control-plane create path.
+  indexMetadata:
+    indexId: ""
+    host: ""
+    dimension: 0
+    metric: ""
+    vectorType: ""
+  ## Source-of-truth embedding contract for the static index. Required when
+  ## indexMetadata.indexId is set. `model` is passed to the inference-proxy
+  ## (reached like the LLMs); dimension/metric/vectorType must match the
+  ## provisioned index.
+  embeddingModel:
+    model: ""
+    dimension: 0
+    metric: ""
+    vectorType: ""
+  ## pc-blob store wiring. provider/region come from config.cloud; localRoot is
+  ## the filesystem root for the `local` provider; endpoint overrides the cloud
+  ## endpoint for an emulator (fake-gcs). Empty -> config default.
+  storage:
+    endpoint: ""
+    localRoot: ""
+    ## Physical bucket names for the blob backend's three logical buckets.
+    ## Empty -> config default (bare "source"/"knowledge"/"archive"); set per env.
+    source: ""
+    knowledge: ""
+    archive: ""
+    azure:
+      account: ""
+
+## In-cluster fake-gcs-server for exercising the blob backend locally (kind).
+## Enabled by k8s-local.sh when the config resolves to blob + gcp; never in
+## deployed clusters (they use real GCS).
+fakeGcs:
+  enabled: false
+  ## Mirrored to AR to avoid Docker Hub rate limits on CI runners.
+  ## Override with bare Docker Hub names for air-gapped local dev without AR access.
+  image: us-east1-docker.pkg.dev/pinecone-artifacts/nexus-alpha/fsouza/fake-gcs-server:1.54.0
+  busyboxImage: us-east1-docker.pkg.dev/pinecone-artifacts/nexus-alpha/busybox:1.36
+
+## JWT signing secret used by API (and validated by orchestrator).
+## Only used when env=local. For dev/prod, manage via Pulumi:
+##   pulumi config set --secret nexus-alpha-k8s:jwt_secret "$(openssl rand -hex 32)"
+auth:
+  jwtSecret: "local-dev-only"
+
+
+## Log level for Rust services.
+rustLog: "info"
+
+## pc-settings profile layers (comma-separated), highest-priority last. Each maps to a
+## config/<profile>.toml layer on top of config/default.toml. Overridden per environment
+## (values.dev.yaml / values.prod.yaml). For BYOC, extend e.g. "production,byoc,cell-<name>".
+configProfiles: "development"
+
+## Datadog observability config injected into api and orchestrator pods.
+##
+## When enabled, the chart injects DD_AGENT_HOST (node IP via downward API),
+## POD_NAME (downward API), DD_SERVICE (per-component), DD_ENV, DD_VERSION
+## (image tag), and DD_TAGS. The Rust o11y init reads these to wire DogStatsD
+## metrics, OTel traces, and the unified default tag set. DD_AGENT_HOST = node
+## IP requires a Datadog agent DaemonSet on the same nodes — provisioned by
+## the Pulumi stack.
+##
+## DD_TAGS always starts with `pod_name:$(POD_NAME)` (matching the pc-o11y
+## convention used in pinecone-db) so DogStatsD UDP metrics carry pod identity;
+## any tags configured below are appended.
+##
+## DD_API_KEY is intentionally absent: it lives only with the agent DaemonSet.
+datadog:
+  enabled: false
+  ## DD_ENV — keep clean (dev / staging / prod). Do not encode region/cluster
+  ## here; DD reserves env for the prod/staging/dev axis.
+  env: ""
+  ## Additional identity tags appended to DD_TAGS, comma-separated key:value
+  ## pairs (e.g. `region:us-east1,cluster:foo`). Most kube_* tags are added
+  ## automatically by the DD agent; only set tags here that the agent can't
+  ## infer from pod metadata.
+  tags: ""
+
+## Scheduling constraints for the two node pools provisioned by Pulumi.
+## Services pods (api, orchestrator, console, gateway) target the
+## services pool; task pods spawned by the orchestrator target the jobs pool.
+## FDB scheduling lives in the separate nexus-fdb chart's values.
+scheduling:
+  services:
+    nodeSelector:
+      nexus-role: services
+    tolerations:
+      - key: nexus-role
+        operator: Equal
+        value: services
+        effect: NoSchedule
+  jobs:
+    nodeSelector:
+      nexus-role: jobs
+    tolerations:
+      - key: nexus-role
+        operator: Equal
+        value: jobs
+        effect: NoSchedule
+
+## --- Overprovisioning ---
+##
+## Deploys low-priority pause pods on the jobs node pool to reserve warm
+## capacity. When real task pods arrive they preempt the placeholders
+## and start immediately on an already-scheduled node.
+overprovision:
+  enabled: false
+  replicas: 1
+  resources:
+    requests:
+      cpu: "1000m"
+      memory: "512Mi"
+
+## --- Task Image Warmer ---
+##
+## DaemonSet that pre-pulls the runtime image on every jobs node so task
+## pods skip the image pull phase on startup.
+taskImageWarmer:
+  enabled: true
+
+## The pc-blob `local` provider stores files on a single PersistentVolume
+## mounted at config.storage.localRoot. The PVC (and its mount) is provisioned
+## automatically when config.cloud.provider = local, and omitted for cloud
+## providers (GCS/S3/Azure) which read from object storage. The local provider
+## is single-node, so ReadWriteOnce suffices.
+fsPersistence:
+  size: 10Gi
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+## --- API ---
+api:
+  image:
+    repository: nexus_api
+    tag: ""  # falls back to global image.tag
+  replicaCount: 1
+  service:
+    port: 9000
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  pdb:
+    enabled: true
+    maxUnavailable: 1
+  livenessProbe:
+    initialDelaySeconds: 5
+    failureThreshold: 3
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 70
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+## --- Orchestrator ---
+##
+## The orchestrator launches per-task workflow containers. Two modes:
+##
+##   mode: kubernetes (recommended for K8s)
+##     Launches each task as a Pod in the same namespace using the K8s API
+##     through a bound ServiceAccount. No Docker daemon needed. Task pods
+##     reach the API at orchestrator.taskApiUrl (defaults to the in-cluster
+##     API Service).
+##
+##   mode: docker
+##     Launches each task as a Docker container on a daemon the pod can
+##     reach. Either a remote daemon via `dockerHost` or the node's
+##     /var/run/docker.sock via hostPath (`mountDockerSocket=true`). Task
+##     containers run outside the K8s network, so `taskApiUrl` must point
+##     at an externally reachable API address.
+orchestrator:
+  image:
+    repository: nexus_orchestrator
+    tag: ""
+  replicaCount: 1
+  ## Runtime backend: "kubernetes" or "docker".
+  mode: kubernetes
+  ## Docker-mode only: DOCKER_HOST override (e.g., tcp://dind:2375).
+  dockerHost: ""
+  ## Docker-mode only: mount /var/run/docker.sock from the host node.
+  mountDockerSocket: true
+  ## URL that workflow containers use to reach the API. For kubernetes mode
+  ## the default in-cluster Service DNS works. For docker mode override to
+  ## a NodePort or host.docker.internal address.
+  taskApiUrl: ""
+  ## Docker-mode only: docker network that task containers join.
+  taskNetwork: "bridge"
+  ## Kubernetes-mode only: namespace where task pods are launched.
+  taskNamespace: "nexus-tasks"
+  ## Maximum concurrent task pods. Requests beyond this limit stay queued
+  ## and are picked up on the next poll cycle.
+  maxConcurrentTasks: 10
+  ## How long the orchestrator waits for a task pod stuck in Pending to
+  ## get scheduled (node scale-up). Pods exceeding this are retried.
+  scheduleTimeoutSecs: 300
+  ## When true, task pods pull files from the file-proxy service via
+  ## HTTP instead of receiving them via WebSocket exec tar pipe.
+  ## Requires the file-proxy service to be deployed.
+  runtimePullFiles: true
+  ## When true, task pods push their outputs to the file-proxy service before
+  ## terminate and the orchestrator skips the exec pull (falling back to it
+  ## only when a push is not signalled). Requires the file-proxy service.
+  runtimePushFiles: false
+  ## When true, an incremental curate computes its source delta from a bucket
+  ## listing and fetches only changed bodies instead of hydrating the whole
+  ## source tree. First/forced curates still pull everything.
+  runtimeCurateSourceOnDemand: false
+  strategy:
+    ## maxSurge 0 prevents two orchestrator instances from running
+    ## simultaneously (no leader election yet). The old pod is terminated
+    ## before the new one starts, same as Recreate but through the
+    ## rollout controller.
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  pdb:
+    ## Disabled: the orchestrator deploy strategy (maxSurge:0) requires
+    ## going to 0 pods during rollouts. A PDB with minAvailable:1
+    ## would conflict with that.
+    enabled: false
+  runtime:
+    image: ""  # defaults to image.registry/nexus_runtime:image.tag
+    ## Per-workflow CPU and memory *requests* live here so they stay co-located
+    ## with the overprovision budget (see overprovision.resources.requests below).
+    ## The invariant — overprovision.cpu >= curate.cpuRequest — is CI-checked.
+    ## *Limits* live in config/svc-nexus-orchestrator/ (TOML); they are
+    ## independent operational tuning with no scheduling coupling. See README.
+    optimize:
+      cpuRequest: "500m"
+      memoryRequest: "640Mi"
+    curate:
+      cpuRequest: "250m"
+      memoryRequest: "256Mi"
+    import:
+      cpuRequest: "250m"
+      memoryRequest: "256Mi"
+    default:
+      cpuRequest: "250m"
+      memoryRequest: "256Mi"
+    ## Priority class assigned to task pods. Defaults to the chart's
+    ## nexus-tasks PriorityClass when left empty.
+    priorityClassName: ""
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      memory: 1Gi
+
+## --- Inference Proxy ---
+##
+## Long-lived Python service that brokers LLM / embedding / rerank calls
+## for the rest of Nexus. Inbound is OpenAI Chat Completions / OpenAI
+## Embeddings / LiteLLM rerank; outbound goes to upstream providers (via
+## the LiteLLM SDK, the OpenAI SDK, or direct httpx to Pinecone).
+##
+## The routing table (model catalog + tier matrix + project overrides)
+## lives in config/svc-nexus-inference-proxy/default.toml baked into the
+## image. Provider api_keys aren't listed here -- the inference-proxy
+## template loops over a hardcoded list of LLM Secret keys and projects
+## each onto the pod under its linux-shape env name (e.g.
+## `gemini-api-key` -> `GEMINI_API_KEY`). New provider keys: add the
+## Secret entry in secret-config.yaml, the `[llm_models.<id>]` entry
+## with matching `api_key_ref`, and one more entry to the template's
+## list. No values.yaml change.
+inference-proxy:
+  image:
+    repository: nexus_inference_proxy
+    tag: ""
+  replicaCount: 1
+  service:
+    port: 9400
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  readinessProbe:
+    initialDelaySeconds: 2
+    periodSeconds: 5
+    timeoutSeconds: 3
+  livenessProbe:
+    initialDelaySeconds: 5
+    periodSeconds: 30
+    failureThreshold: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  ## BYOC inference overlay, set together by the BYOC Pulumi stack (empty on
+  ## managed/local). byocConfigMap names a ConfigMap holding byoc.toml, mounted at
+  ## /opt/nexus-inference-proxy/config/svc-nexus-inference-proxy/byoc.toml to overlay
+  ## the baked routing table; configChecksum is the checksum of that config, rendered
+  ## as the checksum/byoc-config pod annotation to roll the pod when it changes.
+  byocConfigMap: ""
+  configChecksum: ""
+
+## --- File Proxy ---
+##
+## Lightweight HTTP service for streaming context files (source,
+## knowledge) as tar archives. Task pods pull files from this
+## service during bootstrap instead of receiving them via WebSocket
+## exec from the orchestrator.
+file-proxy:
+  image:
+    repository: nexus_file_proxy
+    tag: ""
+  replicaCount: 2
+  service:
+    port: 9200
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      ## Sized for blob-transfer buffering. Peak unpack buffers scale with the
+      ## upload transfer knobs (file-proxy [transfer] in config):
+      ## max_concurrent_upload × concurrency × 1 MiB (16 × 16 ≈ 256 MiB), with
+      ## ample headroom under 2Gi (downloads stream out and don't buffer). Tar
+      ## build/unpack is network-bound (CPU-light) but the buffer copies want
+      ## headroom. Raise this in step if you raise max_concurrent_upload.
+      cpu: 1500m
+      memory: 2Gi
+
+## --- Nexus Auth ---
+##
+## ext_authz HTTP sidecar for the Gloo/Envoy gateway. Validates JWT or
+## API key credentials, resolves the workspace from the request Host header,
+## verifies project ownership, and injects identity headers for nexus-api.
+## CPGW_URL enables the BYOC control-plane gateway path; empty disables it.
+auth:
+  image:
+    repository: nexus_auth
+    tag: ""
+  replicaCount: 2
+  service:
+    port: 8090
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  cpgwUrl: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+## --- Admin ---
+##
+## Read-only diagnostic service for FDB inspection. Not routed through
+## the gateway; accessed via kubectl port-forward only.
+admin:
+  enabled: true
+  image:
+    repository: nexus_admin
+    tag: ""
+  replicaCount: 1
+  service:
+    port: 9300
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      cpu: 200m
+      memory: 256Mi
+
+## --- Metrics Collector ---
+##
+## Single-instance pod that polls FDB for queue health gauges
+## (task queue depth, oldest pending age).
+## Recreate strategy — only one instance should run at a time.
+metrics-collector:
+  enabled: false
+  image:
+    repository: nexus_metrics_collector
+    tag: ""
+
+## --- Console ---
+console:
+  enabled: true
+  image:
+    repository: nexus_console
+    tag: ""
+  replicaCount: 1
+  service:
+    port: 7000
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+
+## --- Gateway ---
+##
+## NGINX reverse proxy exposing the console at `/` and the API at `/api/`.
+## Uses a ConfigMap-mounted gateway.conf with K8s-compatible service names.
+gateway:
+  image:
+    repository: nexus_gateway
+    tag: ""
+  replicaCount: 1
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  service:
+    type: NodePort
+    port: 80
+    nodePort: 30080
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+
+## --- Optional app platform (nexus-apps) ---
+##
+## nexus-apps deploys as its own Helm release from pinecone-io/nexus-apps;
+## this chart only carries the gateway route to it. Enabling adds a /apps/
+## location proxying to the named in-namespace Service.
+apps:
+  enabled: false
+  host: nexus-apps-api
+  port: 8000
+

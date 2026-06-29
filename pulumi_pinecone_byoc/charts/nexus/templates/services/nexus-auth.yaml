@@ -1,0 +1,94 @@
+{{- $fullname := include "nexus.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-auth
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "auth") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nexus.selectorLabels" (dict "root" . "component" "auth") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.auth.service.port }}
+      targetPort: 8090
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-auth
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "auth") | nindent 4 }}
+spec:
+  replicas: {{ .Values.auth.replicaCount }}
+  {{- include "nexus.deployStrategy" .Values.auth.strategy | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "auth") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "auth") | nindent 8 }}
+      annotations:
+        ad.datadoghq.com/nexus-auth.logs: '[{"source": "rust", "service": "{{ include "nexus.fullname" . }}-auth"}]'
+    spec:
+      serviceAccountName: {{ include "nexus.fullname" . }}-api
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: nexus-auth
+          image: {{ include "nexus.image" (dict "root" . "component" "auth") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          ports:
+            - name: http
+              containerPort: 8090
+          env:
+            - name: FDB_CLUSTER_FILE
+              value: /var/fdb/fdb.cluster
+            - name: PINECONE_AUTH__JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: jwt-secret
+            - name: CPGW_URL
+              value: {{ .Values.auth.cpgwUrl | quote }}
+            - name: RUST_LOG
+              value: {{ .Values.rustLog | quote }}
+            - name: PINECONE_SERVER__PORT
+              value: "8090"
+            {{- include "nexus.envSettings" . | nindent 12 }}
+            {{- include "nexus.datadogEnvSettings" (dict "root" . "component" "auth") | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8090
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: fdb-cluster
+              mountPath: /var/fdb
+              readOnly: true
+          resources:
+            {{- toYaml .Values.auth.resources | nindent 12 }}
+      volumes:
+        - name: fdb-cluster
+          configMap:
+            name: {{ $fullname }}-fdb-cluster
+            items:
+              - key: fdb.cluster
+                path: fdb.cluster

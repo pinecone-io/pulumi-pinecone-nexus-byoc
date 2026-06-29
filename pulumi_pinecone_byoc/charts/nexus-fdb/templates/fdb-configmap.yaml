@@ -1,0 +1,11 @@
+{{- $fullname := include "nexus-fdb.fullname" . -}}
+{{- $headless := printf "%s-fdb-headless" $fullname -}}
+{{- $coord := printf "%s-fdb-0.%s.%s.svc.cluster.local" $fullname $headless .Release.Namespace -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-fdb-cluster
+  labels:
+    {{- include "nexus-fdb.componentLabels" (dict "root" . "component" "fdb") | nindent 4 }}
+data:
+  fdb.cluster: "docker:docker@{{ $coord }}:4500"

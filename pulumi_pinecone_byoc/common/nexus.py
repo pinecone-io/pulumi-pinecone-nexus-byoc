@@ -8,7 +8,10 @@ Pinecone DB stack is up. Two releases are installed in order:
   2. ``nexus`` — the app services (api, orchestrator, knowql, file-proxy,
      console, gateway). Depends on the fdb release and the DB stack bootstrap.
 
-Charts are the vendored copies at ``<repo>/nexus/deploy/helm/{nexus,nexus-fdb}``.
+Charts are the vendored copies under ``pulumi_pinecone_byoc/charts/{nexus,nexus-fdb}``,
+mirrored from the ``nexus`` repo by ``dev/sync_nexus_charts.py`` and shipped inside the
+wheel. Resolving them package-relative (not repo-root + sibling symlink) is what lets a
+standalone ``git clone`` and a ``pip install`` of this package find the charts.
 """
 
 import hashlib
@@ -20,9 +23,9 @@ import pulumi
 import pulumi_kubernetes as k8s
 from pulumi_kubernetes.helm.v3 import Release, ReleaseArgs
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_NEXUS_CHART = str(_REPO_ROOT / "nexus" / "deploy" / "helm" / "nexus")
-_NEXUS_FDB_CHART = str(_REPO_ROOT / "nexus" / "deploy" / "helm" / "nexus-fdb")
+_CHARTS = Path(__file__).resolve().parent.parent / "charts"
+_NEXUS_CHART = str(_CHARTS / "nexus")
+_NEXUS_FDB_CHART = str(_CHARTS / "nexus-fdb")
 
 _NEXUS_NAMESPACE = "nexus"
 _NEXUS_TASKS_NAMESPACE = "nexus-tasks"

@@ -89,7 +89,7 @@ jobs:
       - name: Replace PyPI dep with local source
         working-directory: ./e2e-project
         run: |
-          sed -i 's|"pulumi-pinecone-byoc\[aws\]"|"pulumi-pinecone-byoc[aws] @ file://'"$GITHUB_WORKSPACE"'"|' pyproject.toml
+          sed -i 's|"pulumi-pinecone-nexus-byoc\[aws\]"|"pulumi-pinecone-nexus-byoc[aws] @ file://'"$GITHUB_WORKSPACE"'"|' pyproject.toml
           grep -q 'file://' pyproject.toml || { echo "ERROR: local source substitution failed"; exit 1; }
 
       - name: Install dependencies
@@ -183,7 +183,7 @@ jobs:
       - name: Replace PyPI dep with local source
         working-directory: ./e2e-project
         run: |
-          sed -i 's|"pulumi-pinecone-byoc\[aws\]"|"pulumi-pinecone-byoc[aws] @ file://'"$GITHUB_WORKSPACE"'"|' pyproject.toml
+          sed -i 's|"pulumi-pinecone-nexus-byoc\[aws\]"|"pulumi-pinecone-nexus-byoc[aws] @ file://'"$GITHUB_WORKSPACE"'"|' pyproject.toml
           grep -q 'file://' pyproject.toml || { echo "ERROR: local source substitution failed"; exit 1; }
 
       - name: Install dependencies

@@ -1,0 +1,56 @@
+{{- if (index .Values "metrics-collector").enabled }}
+{{- $fullname := include "nexus.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-metrics-collector
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "metrics-collector") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "metrics-collector") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "metrics-collector") | nindent 8 }}
+      annotations:
+        ad.datadoghq.com/metrics-collector.logs: '[{"source": "rust", "service": "{{ include "nexus.fullname" . }}-metrics-collector"}]'
+    spec:
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: metrics-collector
+          image: {{ include "nexus.image" (dict "root" . "component" "metrics-collector") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: FDB_CLUSTER_FILE
+              value: /var/fdb/fdb.cluster
+            - name: RUST_LOG
+              value: {{ .Values.rustLog | quote }}
+            {{- include "nexus.envSettings" . | nindent 12 }}
+            {{- include "nexus.datadogEnvSettings" (dict "root" . "component" "metrics-collector") | nindent 12 }}
+          volumeMounts:
+            - name: fdb-cluster
+              mountPath: /var/fdb
+              readOnly: true
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 64Mi
+      volumes:
+        - name: fdb-cluster
+          configMap:
+            name: {{ $fullname }}-fdb-cluster
+            items:
+              - key: fdb.cluster
+                path: fdb.cluster
+{{- end }}

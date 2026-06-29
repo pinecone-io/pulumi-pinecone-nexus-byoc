@@ -1,0 +1,15 @@
+## Local development (kind / minikube). Drops node-pool scheduling
+## constraints that don't exist on single-node local clusters.
+scheduling:
+  services:
+    nodeSelector:
+    tolerations: []
+
+foundationdb:
+  readinessProbe:
+    # On a fresh cluster, FDB takes longer than 5s to respond after
+    # configure new single ssd (recovery phase). Give fdbcli and the k8s
+    # probe timeout enough room. Prod keeps the compiled-in defaults (5s/1s)
+    # since FDB is already running and healthy when app pods roll.
+    fdbcliTimeout: 30
+    timeoutSeconds: 35

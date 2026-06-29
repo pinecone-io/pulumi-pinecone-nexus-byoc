@@ -1,0 +1,53 @@
+## Dev environment overrides
+
+env: dev
+
+## pc-settings: load config/development.toml on top of config/default.toml.
+configProfiles: "development"
+
+config:
+  pineconeProd: false
+  host:
+    url: "https://dev.nexus.pinecone.io"
+    name: "Nexus"
+  storage:
+    source: "nexus-alpha-source-dev"
+    knowledge: "nexus-alpha-knowledge-dev"
+    archive: "nexus-alpha-archive-dev"
+
+file-proxy:
+  replicaCount: 1
+
+orchestrator:
+  ## Push cutover (#828): task pods push their outputs to the file-proxy before
+  ## terminate and the orchestrator skips the exec pull (falling back to the
+  ## now-safe exec pull only when a push is not signalled). Enabled on dev first
+  ## to soak ahead of the prod flip. Flip to false to roll back.
+  runtimePushFiles: true
+  ## Incremental curates fetch only changed source bodies on demand instead of
+  ## hydrating the whole tree. Enabled on dev first to soak. Flip to false to
+  ## roll back.
+  runtimeCurateSourceOnDemand: true
+
+overprovision:
+  enabled: true
+  replicas: 2
+  resources:
+    requests:
+      # Must be >= the largest cpuRequest/memoryRequest of any workflow in
+      # orchestrator.runtime (currently base values.yaml: optimize at 500m cpu,
+      # 640Mi memory). See README § Configuration and CI check.
+      cpu: "500m"
+      memory: "768Mi"
+
+## DD identity tags for the dev stack. The cluster name matches the GKE
+## cluster provisioned by the Pulumi `nexus-alpha-k8s` dev stack
+## (`nexus-alpha-{stack}-cluster`); region matches `gcp:region` in
+## Pulumi.dev.yaml. To add more tags, append `,key:value` here.
+metrics-collector:
+  enabled: true
+
+datadog:
+  enabled: true
+  env: dev
+  tags: "region:us-east1,kube_cluster_name:nexus-alpha-dev-cluster"

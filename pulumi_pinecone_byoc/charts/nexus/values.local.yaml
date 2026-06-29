@@ -1,0 +1,99 @@
+## Local development overrides (kind / minikube)
+##
+## Disables node-pool scheduling constraints that require labels not
+## present on single-node local clusters.
+##
+## For Docker-based local dev (start.sh), config is read from
+## config/local.toml. See config/local.toml.example for available settings.
+
+localRuntime: true
+
+## Profiles the services load: default.toml + config/local.toml (laptop secrets
+## and overrides), instead of the chart-default "development" profile whose
+## cluster-specific blob/cloud settings don't apply to a kind cluster. CI sets
+## CONFIG_PROFILES=ci, which k8s-local.sh passes as --set configProfiles=ci to
+## override this with default.toml + config/ci.toml.
+configProfiles: "local"
+
+## The task-image-warmer DaemonSet pulls the runtime image into containerd on
+## every node. On CI the image is already loaded via kind load, so this just
+## adds unnecessary I/O pressure. Disable for local/CI.
+taskImageWarmer:
+  enabled: false
+
+## Local clusters are single-node with RWO PVCs — Recreate avoids
+## RollingUpdate deadlocks and PDBs are not useful with one replica.
+api:
+  strategy:
+    type: Recreate
+  pdb:
+    enabled: false
+  resources:
+    requests:
+      cpu: 100m
+  livenessProbe:
+    # FDB is configured from scratch on each kind run; the API health handler
+    # blocks on FDB connectivity, so give FDB time to initialize before the
+    # liveness probe fires. Prod uses the template default (5s) since FDB is
+    # already running when API pods roll.
+    initialDelaySeconds: 60
+    # Under load on a single-node CI runner, FDB is intermittently slow while
+    # initializing. Increase the failure budget so the pod isn't killed before
+    # FDB stabilizes. Prod keeps the default (3) since FDB is already running.
+    failureThreshold: 10
+
+orchestrator:
+  strategy:
+    type: Recreate
+  pdb:
+    enabled: false
+  runtimePullFiles: true
+  resources:
+    requests:
+      cpu: 100m
+  ## Task-pod resources are intentionally left at the chart defaults
+  ## (orchestrator.runtime in values.yaml: 1Gi per tier, 4Gi for import) — CI
+  ## runs the baseline envelope until a real need for an override surfaces.
+
+knowql:
+  resources:
+    requests:
+      cpu: 100m
+
+file-proxy:
+  replicaCount: 1
+  strategy:
+    type: Recreate
+  resources:
+    requests:
+      cpu: 50m
+
+## admin (internal debug) is not exercised by the integration smoke test;
+## disable it so the single CI node isn't running services the suite never calls.
+admin:
+  enabled: false
+
+console:
+  enabled: false
+
+## Single shared volume backing the pc-blob local store (small for kind).
+fsPersistence:
+  size: 5Gi
+
+config:
+  pineconeProd: false
+  ## Single-node kind cluster uses the pc-blob local filesystem driver. provider
+  ## drives PVC provisioning + the mount; localRoot is the store root and the
+  ## mount path. The blob CI cell overrides provider to gcp in k8s-local.sh.
+  cloud:
+    provider: local
+  storage:
+    localRoot: /data
+
+scheduling:
+  services:
+    nodeSelector:
+    tolerations: []
+  jobs:
+    nodeSelector:
+    tolerations: []

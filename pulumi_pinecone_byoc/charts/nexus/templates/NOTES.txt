@@ -1,0 +1,46 @@
+{{- $fullname := include "nexus.fullname" . -}}
+Nexus has been installed.
+
+Services:
+  Gateway (front door):  {{ $fullname }}-gateway
+  Console:               {{ $fullname }}-console:{{ .Values.console.service.port }}
+  API:                   {{ $fullname }}-api:{{ .Values.api.service.port }}
+  FoundationDB:          {{ $fullname }}-fdb-headless (coordinator {{ $fullname }}-fdb-0,
+                         deployed by the separate nexus-fdb release)
+
+{{- if eq .Values.gateway.service.type "NodePort" }}
+Gateway is exposed as NodePort {{ .Values.gateway.service.nodePort }}:
+  Console:  http://<node-ip>:{{ .Values.gateway.service.nodePort }}/
+  API:      http://<node-ip>:{{ .Values.gateway.service.nodePort }}/api/
+
+With kubectl port-forward:
+  kubectl port-forward svc/{{ $fullname }}-gateway 8080:{{ .Values.gateway.service.port }}
+{{- else if eq .Values.gateway.service.type "LoadBalancer" }}
+Gateway is exposed as LoadBalancer — get the external IP with:
+  kubectl get svc {{ $fullname }}-gateway -w
+{{- else }}
+Gateway uses ClusterIP. Port-forward to reach it:
+  kubectl port-forward svc/{{ $fullname }}-gateway 8080:{{ .Values.gateway.service.port }}
+{{- end }}
+
+Orchestrator workflow launch:
+  {{- $mode := .Values.orchestrator.mode | default "kubernetes" }}
+  {{- $taskNs := default .Release.Namespace .Values.orchestrator.taskNamespace }}
+  {{- if eq $mode "kubernetes" }}
+  Mode: kubernetes — task pods are launched via the K8s API in namespace
+  "{{ $taskNs }}" using ServiceAccount {{ $fullname }}-orchestrator.
+  {{- if .Values.orchestrator.taskApiUrl }}
+  Task pods reach the API via: {{ .Values.orchestrator.taskApiUrl }}
+  {{- else }}
+  Task pods reach the API via: http://{{ $fullname }}-api.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.api.service.port }}
+  {{- end }}
+  {{- else if .Values.orchestrator.dockerHost }}
+  Mode: docker — remote daemon {{ .Values.orchestrator.dockerHost }}
+  {{- else if .Values.orchestrator.mountDockerSocket }}
+  Mode: docker — using the node's /var/run/docker.sock.
+  Task containers reach the API via: {{ .Values.orchestrator.taskApiUrl | default (printf "http://host.docker.internal:%d/api" (int .Values.gateway.service.nodePort)) }}
+  {{- else }}
+  WARNING: orchestrator.mode is "docker" but no daemon is configured. Set
+  orchestrator.dockerHost or orchestrator.mountDockerSocket=true, or switch
+  to orchestrator.mode=kubernetes.
+  {{- end }}

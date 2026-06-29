@@ -1,0 +1,102 @@
+{{- $fullname := include "nexus.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-file-proxy
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "file-proxy") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nexus.selectorLabels" (dict "root" . "component" "file-proxy") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ (index .Values "file-proxy").service.port }}
+      targetPort: 9200
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-file-proxy
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "file-proxy") | nindent 4 }}
+spec:
+  replicas: {{ (index .Values "file-proxy").replicaCount }}
+  {{- include "nexus.deployStrategy" (index .Values "file-proxy").strategy | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "file-proxy") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "file-proxy") | nindent 8 }}
+      annotations:
+        ad.datadoghq.com/file-proxy.logs: '[{"source": "rust", "service": "{{ include "nexus.fullname" . }}-file-proxy"}]'
+    spec:
+      serviceAccountName: {{ include "nexus.fullname" . }}-api
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: file-proxy
+          image: {{ include "nexus.image" (dict "root" . "component" "file-proxy") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          ports:
+            - name: http
+              containerPort: 9200
+          env:
+            - name: FDB_CLUSTER_FILE
+              value: /var/fdb/fdb.cluster
+            - name: PINECONE_AUTH__JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: jwt-secret
+            - name: RUST_LOG
+              value: {{ .Values.rustLog | quote }}
+            - name: PINECONE_SERVER__PORT
+              value: "9200"
+            {{- include "nexus.envSettings" . | nindent 12 }}
+            {{- include "nexus.datadogEnvSettings" (dict "root" . "component" "file-proxy") | nindent 12 }}
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 9200
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9200
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            failureThreshold: 3
+          volumeMounts:
+            - name: fdb-cluster
+              mountPath: /var/fdb
+              readOnly: true
+            {{- if eq (include "nexus.usesFsStorage" .) "true" }}
+            - name: data
+              mountPath: {{ include "nexus.localRoot" . | quote }}
+              readOnly: true
+            {{- end }}
+          resources:
+            {{- toYaml (index .Values "file-proxy").resources | nindent 12 }}
+      volumes:
+        - name: fdb-cluster
+          configMap:
+            name: {{ $fullname }}-fdb-cluster
+            items:
+              - key: fdb.cluster
+                path: fdb.cluster
+        {{- if eq (include "nexus.usesFsStorage" .) "true" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "nexus.pvc" (dict "root" . "volume" "data") }}
+        {{- end }}

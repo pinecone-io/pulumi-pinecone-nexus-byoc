@@ -1,0 +1,3 @@
+# Vendored from pinecone-io/nexus deploy/helm by dev/sync_nexus_charts.py.
+# Do not edit by hand -- re-run the sync to refresh.
+nexus_sha = 1cb60de7819947c9ec28f32d75273f5d96671ecc

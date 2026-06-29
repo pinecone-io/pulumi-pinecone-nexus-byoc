@@ -1,0 +1,22 @@
+{{- $fullname := include "nexus.fullname" . -}}
+{{- range $component := list "api" "orchestrator" }}
+{{- $cfg := index $.Values $component }}
+{{- if and (hasKey $cfg "pdb") $cfg.pdb.enabled }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ $fullname }}-{{ $component }}
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" $ "component" $component) | nindent 4 }}
+spec:
+  {{- if $cfg.pdb.maxUnavailable }}
+  maxUnavailable: {{ $cfg.pdb.maxUnavailable }}
+  {{- else }}
+  minAvailable: {{ $cfg.pdb.minAvailable | default 1 }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" $ "component" $component) | nindent 6 }}
+{{- end }}
+{{- end }}

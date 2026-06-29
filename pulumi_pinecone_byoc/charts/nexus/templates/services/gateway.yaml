@@ -1,0 +1,83 @@
+{{- $fullname := include "nexus.fullname" . -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "gateway") | nindent 4 }}
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector:
+    {{- include "nexus.selectorLabels" (dict "root" . "component" "gateway") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.gateway.service.port }}
+      targetPort: 80
+      {{- if and (eq .Values.gateway.service.type "NodePort") .Values.gateway.service.nodePort }}
+      nodePort: {{ .Values.gateway.service.nodePort }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-gateway
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "gateway") | nindent 4 }}
+spec:
+  replicas: {{ .Values.gateway.replicaCount }}
+  {{- include "nexus.deployStrategy" .Values.gateway.strategy | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "gateway") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "gateway") | nindent 8 }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/services/gateway-configmap.yaml") . | sha256sum }}
+        ad.datadoghq.com/gateway.logs: '[{"source": "nginx", "service": "{{ include "nexus.fullname" . }}-gateway"}]'
+    spec:
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        # NGINX resolver directive requires an IP, not a hostname. The
+        # kube-dns ClusterIP varies per cluster, so we read it from
+        # /etc/resolv.conf at startup and substitute it into the config.
+        - name: gateway
+          image: {{ include "nexus.image" (dict "root" . "component" "gateway") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              RESOLVER=$(awk '/^nameserver/{print $2; exit}' /etc/resolv.conf)
+              sed "s/__RESOLVER__/$RESOLVER/g" /tmp/gateway-conf/default.conf > /etc/nginx/conf.d/default.conf
+              exec nginx -g 'daemon off;'
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "5"]
+          ports:
+            - name: http
+              containerPort: 80
+          readinessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 2
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 80
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          volumeMounts:
+            - name: conf
+              mountPath: /tmp/gateway-conf
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+      volumes:
+        - name: conf
+          configMap:
+            name: {{ $fullname }}-gateway-conf

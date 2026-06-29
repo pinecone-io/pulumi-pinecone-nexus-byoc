@@ -1,0 +1,38 @@
+{{- if .Values.config.indexMetadata.indexId }}
+{{- $m := .Values.config.indexMetadata }}
+{{- /*
+  Static-index mode is on. Fail the install rather than render a ConfigMap that
+  crashes the pod at boot (the API validates the same invariants and panics).
+*/}}
+{{- if not .Values.config.embeddingModel.model }}
+{{- fail "config.embeddingModel.model is required when config.indexMetadata.indexId is set (headless BYOC static index)" }}
+{{- end }}
+{{- if not $m.host }}
+{{- fail "config.indexMetadata.host is required when config.indexMetadata.indexId is set" }}
+{{- end }}
+{{- if not (gt ($m.dimension | int) 0) }}
+{{- fail "config.indexMetadata.dimension must be > 0 when config.indexMetadata.indexId is set" }}
+{{- end }}
+{{- if not $m.metric }}
+{{- fail "config.indexMetadata.metric is required when config.indexMetadata.indexId is set" }}
+{{- end }}
+{{- if not $m.vectorType }}
+{{- fail "config.indexMetadata.vectorType is required when config.indexMetadata.indexId is set" }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nexus.fullname" . }}-index-metadata
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "nexus.labels" . | nindent 4 }}
+data:
+  metadata.json: |
+    {
+      "index_id": {{ $m.indexId | quote }},
+      "host": {{ $m.host | quote }},
+      "dimension": {{ $m.dimension | int }},
+      "metric": {{ $m.metric | quote }},
+      "vector_type": {{ $m.vectorType | quote }}
+    }
+{{- end }}

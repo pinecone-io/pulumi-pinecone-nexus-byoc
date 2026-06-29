@@ -1,0 +1,154 @@
+{{- $fullname := include "nexus.fullname" . -}}
+{{- $mode := .Values.orchestrator.mode | default "kubernetes" -}}
+{{- $inferenceProxyUrl := .Values.api.inferenceProxyUrl -}}
+{{- $inferenceProxyPort := int (index .Values "inference-proxy" "service" "port") -}}
+{{- if not $inferenceProxyUrl -}}
+  {{- if eq $mode "kubernetes" -}}
+    {{- $inferenceProxyUrl = printf "http://%s-inference-proxy.%s.svc.cluster.local:%d" $fullname .Release.Namespace $inferenceProxyPort -}}
+  {{- else -}}
+    {{- $inferenceProxyUrl = printf "http://%s-inference-proxy:%d" $fullname $inferenceProxyPort -}}
+  {{- end -}}
+{{- end -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-api
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nexus.selectorLabels" (dict "root" . "component" "api") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.api.service.port }}
+      targetPort: 9000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-api
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "api") | nindent 4 }}
+spec:
+  replicas: {{ .Values.api.replicaCount }}
+  {{- include "nexus.deployStrategy" .Values.api.strategy | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "api") | nindent 8 }}
+      annotations:
+        ad.datadoghq.com/api.logs: '[{"source": "rust", "service": "{{ include "nexus.fullname" . }}-api"}]'
+    spec:
+      serviceAccountName: {{ include "nexus.fullname" . }}-api
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: api
+          image: {{ include "nexus.image" (dict "root" . "component" "api") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          ports:
+            - name: http
+              containerPort: 9000
+          readinessProbe:
+            httpGet:
+              path: /api/v0/healthz
+              port: 9000
+            initialDelaySeconds: 2
+            periodSeconds: 5
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /api/v0/healthz
+              port: 9000
+            initialDelaySeconds: {{ .Values.api.livenessProbe.initialDelaySeconds | default 5 }}
+            periodSeconds: 30
+            failureThreshold: {{ .Values.api.livenessProbe.failureThreshold | default 3 }}
+            timeoutSeconds: 5
+          env:
+            - name: FDB_CLUSTER_FILE
+              value: /var/fdb/fdb.cluster
+            - name: RUST_LOG
+              value: {{ .Values.rustLog | quote }}
+            - name: PINECONE_AUTH__JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: jwt-secret
+            - name: PINECONE_PINECONE__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: pinecone-api-key
+                  optional: {{ ne .Values.config.deploymentMode "byoc" }}
+            - name: PINECONE_PINECONE__BYOC_SESSION_CREDENTIAL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: byoc-session-credential
+                  optional: {{ ne .Values.config.deploymentMode "byoc" }}
+            {{- if .Values.config.cpgwApiUrl }}
+            # CPGW control-plane-gateway index client (BYOC, control-plane egress).
+            # URL + key are rendered together; a partial config fails closed at boot.
+            # cpgw-api-key is provided in the (Pulumi-managed) {{ $fullname }}-config secret.
+            - name: PINECONE_PINECONE__CPGW_API_URL
+              value: {{ .Values.config.cpgwApiUrl | quote }}
+            - name: PINECONE_PINECONE__CPGW_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: cpgw-api-key
+                  optional: false
+            {{- end }}
+            # In-cluster nexus-inference-proxy URL. Overrides the
+            # baked-in default (`http://nexus_inference_proxy:9400`,
+            # which is the Docker-compose service name and doesn't
+            # resolve in a K8s cluster). nexus-api reads it via
+            # SharedSettings.inference_proxy_url and forwards every
+            # LLM / embed / rerank call through it.
+            - name: PINECONE_INFERENCE_PROXY_URL
+              value: {{ $inferenceProxyUrl | quote }}
+            {{- include "nexus.envSettings" . | nindent 12 }}
+            {{- include "nexus.datadogEnvSettings" (dict "root" . "component" "api") | nindent 12 }}
+          volumeMounts:
+            - name: fdb-cluster
+              mountPath: /var/fdb
+              readOnly: true
+            {{- if .Values.config.indexMetadata.indexId }}
+            - name: index-metadata
+              mountPath: /etc/nexus/index-metadata
+              readOnly: true
+            {{- end }}
+            {{- if eq (include "nexus.usesFsStorage" .) "true" }}
+            - name: data
+              mountPath: {{ include "nexus.localRoot" . | quote }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.api.resources | nindent 12 }}
+      volumes:
+        - name: fdb-cluster
+          configMap:
+            name: {{ $fullname }}-fdb-cluster
+            items:
+              - key: fdb.cluster
+                path: fdb.cluster
+        {{- if .Values.config.indexMetadata.indexId }}
+        - name: index-metadata
+          configMap:
+            name: {{ $fullname }}-index-metadata
+        {{- end }}
+        {{- if eq (include "nexus.usesFsStorage" .) "true" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "nexus.pvc" (dict "root" . "volume" "data") }}
+        {{- end }}

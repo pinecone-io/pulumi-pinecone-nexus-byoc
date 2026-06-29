@@ -1,0 +1,22 @@
+{{- $fullname := include "nexus.fullname" . -}}
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ $fullname }}-tasks
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "priority-tasks") | nindent 4 }}
+value: 100
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority
+description: "Priority for Nexus task pods"
+---
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: {{ $fullname }}-overprovision
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "priority-overprovision") | nindent 4 }}
+value: -1
+globalDefault: false
+preemptionPolicy: Never
+description: "Low-priority placeholder for capacity reservation"

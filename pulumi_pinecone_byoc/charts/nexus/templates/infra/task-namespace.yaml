@@ -1,0 +1,8 @@
+{{- if and (eq .Values.orchestrator.mode "kubernetes") .Values.orchestrator.taskNamespace }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.orchestrator.taskNamespace }}
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "tasks") | nindent 4 }}
+{{- end }}

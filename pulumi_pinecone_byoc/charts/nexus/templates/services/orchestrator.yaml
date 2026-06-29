@@ -1,0 +1,224 @@
+{{- $fullname := include "nexus.fullname" . -}}
+{{- $mode := .Values.orchestrator.mode | default "kubernetes" -}}
+{{- $taskNs := default .Release.Namespace .Values.orchestrator.taskNamespace -}}
+{{- $taskApiUrl := .Values.orchestrator.taskApiUrl -}}
+{{- $taskInferenceProxyUrl := .Values.orchestrator.taskInferenceProxyUrl -}}
+{{- $inferenceProxyPort := int (index .Values "inference-proxy" "service" "port") -}}
+{{- if not $taskApiUrl -}}
+  {{- if eq $mode "kubernetes" -}}
+    {{- $taskApiUrl = printf "http://%s-api.%s.svc.cluster.local:%d" $fullname .Release.Namespace (int .Values.api.service.port) -}}
+  {{- else -}}
+    {{- $taskApiUrl = printf "http://host.docker.internal:%d/api" (int .Values.gateway.service.nodePort) -}}
+  {{- end -}}
+{{- end -}}
+{{- if not $taskInferenceProxyUrl -}}
+  {{- if eq $mode "kubernetes" -}}
+    {{- $taskInferenceProxyUrl = printf "http://%s-inference-proxy.%s.svc.cluster.local:%d" $fullname .Release.Namespace $inferenceProxyPort -}}
+  {{- else -}}
+    {{- $taskInferenceProxyUrl = printf "http://%s-inference-proxy:%d" $fullname $inferenceProxyPort -}}
+  {{- end -}}
+{{- end -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-orchestrator
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "orchestrator") | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  selector:
+    {{- include "nexus.selectorLabels" (dict "root" . "component" "orchestrator") | nindent 4 }}
+  ports:
+    - name: placeholder
+      port: 9
+      targetPort: 9
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-orchestrator
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "orchestrator") | nindent 4 }}
+spec:
+  replicas: {{ .Values.orchestrator.replicaCount }}
+  {{- include "nexus.deployStrategy" .Values.orchestrator.strategy | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "orchestrator") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "orchestrator") | nindent 8 }}
+      annotations:
+        ad.datadoghq.com/orchestrator.logs: '[{"source": "rust", "service": "{{ include "nexus.fullname" . }}-orchestrator"}]'
+    spec:
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- if eq $mode "kubernetes" }}
+      serviceAccountName: {{ $fullname }}-orchestrator
+      {{- end }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: orchestrator
+          image: {{ include "nexus.image" (dict "root" . "component" "orchestrator") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          env:
+            - name: FDB_CLUSTER_FILE
+              value: /var/fdb/fdb.cluster
+            - name: RUST_LOG
+              value: {{ .Values.rustLog | quote }}
+            - name: PINECONE_AUTH__JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: jwt-secret
+            - name: PINECONE_PINECONE__API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: pinecone-api-key
+                  optional: {{ ne .Values.config.deploymentMode "byoc" }}
+            - name: PINECONE_PINECONE__BYOC_SESSION_CREDENTIAL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: byoc-session-credential
+                  optional: {{ ne .Values.config.deploymentMode "byoc" }}
+            {{- if .Values.config.cpgwApiUrl }}
+            # CPGW control-plane-gateway index client (BYOC, control-plane egress).
+            # URL + key are rendered together; a partial config fails closed at boot.
+            # cpgw-api-key is provided in the (Pulumi-managed) {{ $fullname }}-config secret.
+            - name: PINECONE_PINECONE__CPGW_API_URL
+              value: {{ .Values.config.cpgwApiUrl | quote }}
+            - name: PINECONE_PINECONE__CPGW_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: cpgw-api-key
+                  optional: false
+            {{- end }}
+            - name: PINECONE_RUNTIME__MODE
+              value: {{ $mode | quote }}
+            # The version-GC curate-lease holder is keyed off POD_NAME for a
+            # legible, per-replica-unique id; inject it independently of Datadog
+            # so the holder never falls back to an opaque random uuid.
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            {{- include "nexus.envSettings" . | nindent 12 }}
+            {{- include "nexus.datadogEnvSettings" (dict "root" . "component" "orchestrator" "skipPodName" true) | nindent 12 }}
+            - name: PINECONE_RUNTIME__IMAGE
+              value: {{ include "nexus.runtimeImage" . | quote }}
+            {{- $rt := .Values.orchestrator.runtime }}
+            - name: PINECONE_TASKS__RESOURCES__OPTIMIZE__CPU_REQUEST
+              value: {{ $rt.optimize.cpuRequest | quote }}
+            - name: PINECONE_TASKS__RESOURCES__OPTIMIZE__MEMORY_REQUEST
+              value: {{ $rt.optimize.memoryRequest | quote }}
+            - name: PINECONE_TASKS__RESOURCES__CURATE__CPU_REQUEST
+              value: {{ $rt.curate.cpuRequest | quote }}
+            - name: PINECONE_TASKS__RESOURCES__CURATE__MEMORY_REQUEST
+              value: {{ $rt.curate.memoryRequest | quote }}
+            - name: PINECONE_TASKS__RESOURCES__IMPORT__CPU_REQUEST
+              value: {{ $rt.import.cpuRequest | quote }}
+            - name: PINECONE_TASKS__RESOURCES__IMPORT__MEMORY_REQUEST
+              value: {{ $rt.import.memoryRequest | quote }}
+            - name: PINECONE_TASKS__RESOURCES__DEFAULT__CPU_REQUEST
+              value: {{ $rt.default.cpuRequest | quote }}
+            - name: PINECONE_TASKS__RESOURCES__DEFAULT__MEMORY_REQUEST
+              value: {{ $rt.default.memoryRequest | quote }}
+            - name: PINECONE_TASKS__API_URL
+              value: {{ $taskApiUrl | quote }}
+            # Inference-proxy URL spawned task pods reach for every LLM /
+            # embed / rerank call. Loaded by pc-settings into
+            # OrchestratorSettings.tasks.inference_proxy_url and forwarded
+            # onto each task pod as NEXUS_INFERENCE_PROXY_URL.
+            - name: PINECONE_TASKS__INFERENCE_PROXY_URL
+              value: {{ $taskInferenceProxyUrl | quote }}
+            {{- if .Values.config.byocDocsApiUrl }}
+            - name: PINECONE_TASKS__DOCS_API_URL
+              value: {{ .Values.config.byocDocsApiUrl | quote }}
+            {{- end }}
+            {{- $dbIndexId := .Values.config.indexMetadata.indexId | default .Values.config.byocDbIndexId }}
+            {{- if $dbIndexId }}
+            - name: PINECONE_TASKS__DB_INDEX_ID
+              value: {{ $dbIndexId | quote }}
+            {{- end }}
+            {{- if eq $mode "kubernetes" }}
+            - name: PINECONE_TASKS__NAMESPACE
+              value: {{ $taskNs | quote }}
+            - name: PINECONE_TASKS__SERVICE_ACCOUNT
+              value: {{ if ne $taskNs .Release.Namespace }}{{ $fullname }}-task{{ else }}{{ $fullname }}-orchestrator{{ end }}
+            - name: PINECONE_TASKS__NODE_SELECTOR
+              value: {{ .Values.scheduling.jobs.nodeSelector | toJson | quote }}
+            - name: PINECONE_TASKS__TOLERATIONS
+              value: {{ .Values.scheduling.jobs.tolerations | toJson | quote }}
+            - name: PINECONE_TASKS__MAX_CONCURRENT
+              value: {{ .Values.orchestrator.maxConcurrentTasks | quote }}
+            - name: PINECONE_TASKS__SCHEDULE_TIMEOUT_SECS
+              value: {{ .Values.orchestrator.scheduleTimeoutSecs | quote }}
+            - name: PINECONE_TASKS__PRIORITY_CLASS
+              value: {{ default (printf "%s-tasks" $fullname) .Values.orchestrator.runtime.priorityClassName | quote }}
+            - name: PINECONE_RUNTIME__PULL_FILES
+              value: {{ ternary "true" "false" .Values.orchestrator.runtimePullFiles | quote }}
+            - name: PINECONE_RUNTIME__PUSH_FILES
+              value: {{ ternary "true" "false" .Values.orchestrator.runtimePushFiles | quote }}
+            - name: PINECONE_RUNTIME__CURATE_SOURCE_ON_DEMAND
+              value: {{ ternary "true" "false" .Values.orchestrator.runtimeCurateSourceOnDemand | quote }}
+            # Runtime broker URL (file-proxy is today's impl). Read via pc-settings into
+            # tasks.runtime_broker_url, then forwarded to task pods as NEXUS_RUNTIME_BROKER_URL.
+            - name: PINECONE_TASKS__RUNTIME_BROKER_URL
+              value: "http://{{ $fullname }}-file-proxy.{{ .Release.Namespace }}.svc.cluster.local:{{ (index .Values "file-proxy").service.port }}"
+            {{- else }}
+            {{- if .Values.orchestrator.dockerHost }}
+            - name: DOCKER_HOST
+              value: {{ .Values.orchestrator.dockerHost | quote }}
+            {{- end }}
+            - name: PINECONE_TASKS__DOCKER__NETWORK
+              value: {{ .Values.orchestrator.taskNetwork | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: fdb-cluster
+              mountPath: /var/fdb
+              readOnly: true
+            {{- if .Values.config.indexMetadata.indexId }}
+            - name: index-metadata
+              mountPath: /etc/nexus/index-metadata
+              readOnly: true
+            {{- end }}
+            {{- if eq (include "nexus.usesFsStorage" .) "true" }}
+            - name: data
+              mountPath: {{ include "nexus.localRoot" . | quote }}
+            {{- end }}
+            {{- if and (eq $mode "docker") (not .Values.orchestrator.dockerHost) .Values.orchestrator.mountDockerSocket }}
+            - name: docker-socket
+              mountPath: /var/run/docker.sock
+            {{- end }}
+          resources:
+            {{- toYaml .Values.orchestrator.resources | nindent 12 }}
+      volumes:
+        - name: fdb-cluster
+          configMap:
+            name: {{ $fullname }}-fdb-cluster
+            items:
+              - key: fdb.cluster
+                path: fdb.cluster
+        {{- if .Values.config.indexMetadata.indexId }}
+        - name: index-metadata
+          configMap:
+            name: {{ $fullname }}-index-metadata
+        {{- end }}
+        {{- if eq (include "nexus.usesFsStorage" .) "true" }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "nexus.pvc" (dict "root" . "volume" "data") }}
+        {{- end }}
+        {{- if and (eq $mode "docker") (not .Values.orchestrator.dockerHost) .Values.orchestrator.mountDockerSocket }}
+        - name: docker-socket
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+        {{- end }}

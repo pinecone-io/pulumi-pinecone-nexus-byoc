@@ -1,0 +1,11 @@
+{{- if .Values.console.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "nexus.fullname" . }}-console-config
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "console") | nindent 4 }}
+data:
+  NEXUS_HOST_URL: {{ .Values.config.host.url | default "http://localhost" | quote }}
+  NEXUS_HOST_NAME: {{ .Values.config.host.name | default "Nexus" | quote }}
+{{- end }}

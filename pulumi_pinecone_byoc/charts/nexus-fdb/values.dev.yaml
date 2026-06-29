@@ -1,0 +1,9 @@
+## Dev environment overrides for nexus-fdb. Defaults match the dev
+## cluster layout; this file is kept so the deploy workflow can reference
+## stack-specific overrides uniformly across stacks.
+
+## Pin to Docker Hub so a change to the chart default (AR mirror path) does
+## not trigger a StatefulSet update on the running dev cluster.
+foundationdb:
+  image:
+    repository: foundationdb/foundationdb

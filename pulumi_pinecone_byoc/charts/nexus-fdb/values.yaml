@@ -1,0 +1,59 @@
+## FoundationDB chart for the Nexus stack.
+##
+## Lives in its own Helm release so app deploys (api/orchestrator/console/
+## gateway) do not trigger a restart of the FDB StatefulSet. App
+## pods reference FDB resources by name (`nexus-fdb-cluster` ConfigMap,
+## `nexus-fdb-headless` Service), so the names produced here must match
+## what the original combined chart produced.
+
+## Resource name prefix. Defaults to "nexus" so the StatefulSet, Service,
+## and ConfigMap come out as `nexus-fdb`, `nexus-fdb-headless`,
+## `nexus-fdb-cluster` — identical to the legacy combined-release names.
+fullnameOverride: "nexus"
+
+## Selector / instance label. Kept at the legacy value because StatefulSet
+## selectors are immutable; if this changed, adopting an existing FDB
+## StatefulSet via `helm install --take-ownership` would fail with a
+## selector immutability error.
+instanceOverride: "nexus"
+
+image:
+  pullSecrets: []
+
+## Scheduling constraints for the services node pool. Mirrors the main
+## chart so FDB lands on the same pool as the app workloads. Override in
+## values.local.yaml for single-node clusters that lack the labels.
+scheduling:
+  services:
+    nodeSelector:
+      nexus-role: services
+    tolerations:
+      - key: nexus-role
+        operator: Equal
+        value: services
+        effect: NoSchedule
+
+## Storage class and access modes for the FDB data PVC.
+persistence:
+  storageClass: ""
+  accessModes:
+    - ReadWriteOnce
+
+## Single-node FoundationDB. For HA see upstream FDB operators.
+foundationdb:
+  image:
+    repository: us-east1-docker.pkg.dev/pinecone-artifacts/nexus-alpha/foundationdb/foundationdb
+    tag: "7.3.77"
+  storage:
+    size: 10Gi
+  # Storage engine the init-db sidecar configures the database with. "ssd"
+  # persists across restarts; "memory" keeps the whole keyspace in RAM and is
+  # used on CI kind clusters to avoid disk contention with co-located pods.
+  storageEngine: ssd
+  readinessProbe:
+    timeoutSeconds: 1
+    fdbcliTimeout: 5
+  resources:
+    requests:
+      cpu: 500m
+      memory: 512Mi

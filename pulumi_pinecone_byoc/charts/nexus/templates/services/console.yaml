@@ -1,0 +1,65 @@
+{{- $fullname := include "nexus.fullname" . -}}
+{{- if .Values.console.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-console
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "console") | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nexus.selectorLabels" (dict "root" . "component" "console") | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.console.service.port }}
+      targetPort: 7000
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-console
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "console") | nindent 4 }}
+spec:
+  replicas: {{ .Values.console.replicaCount }}
+  {{- include "nexus.deployStrategy" .Values.console.strategy | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "console") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "console") | nindent 8 }}
+    spec:
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: console
+          image: {{ include "nexus.image" (dict "root" . "component" "console") }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          envFrom:
+            - configMapRef:
+                name: {{ $fullname }}-console-config
+          env:
+            - name: NEXUS_VERSION
+              value: {{ .Values.image.tag | quote }}
+          ports:
+            - name: http
+              containerPort: 7000
+          readinessProbe:
+            tcpSocket:
+              port: 7000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            {{- toYaml .Values.console.resources | nindent 12 }}
+      volumes:
+{{- end }}

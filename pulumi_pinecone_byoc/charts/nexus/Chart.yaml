@@ -1,0 +1,6 @@
+apiVersion: v2
+name: nexus
+description: Nexus platform (FoundationDB, API, orchestrator, console, gateway).
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

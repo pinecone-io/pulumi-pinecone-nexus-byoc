@@ -1,0 +1,31 @@
+{{- if .Values.overprovision.enabled }}
+{{- $fullname := include "nexus.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-overprovision
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "overprovision") | nindent 4 }}
+spec:
+  replicas: {{ .Values.overprovision.replicas }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "overprovision") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "overprovision") | nindent 8 }}
+    spec:
+      priorityClassName: {{ $fullname }}-overprovision
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              cpu: {{ .Values.overprovision.resources.requests.cpu | quote }}
+              memory: {{ .Values.overprovision.resources.requests.memory | quote }}
+      nodeSelector:
+        {{- toYaml .Values.scheduling.jobs.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.scheduling.jobs.tolerations | nindent 8 }}
+{{- end }}

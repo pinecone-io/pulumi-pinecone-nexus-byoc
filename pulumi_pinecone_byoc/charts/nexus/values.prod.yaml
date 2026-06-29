@@ -1,0 +1,89 @@
+## Prod environment overrides
+
+env: prod
+
+## pc-settings: load config/production.toml on top of config/default.toml.
+configProfiles: "production"
+
+## Set to true when ready to point at production Pinecone.
+config:
+  pineconeProd: false
+  host:
+    url: "https://prod.nexus.pinecone.io"
+    name: "Nexus"
+  storage:
+    source: "nexus-alpha-source-prod"
+    knowledge: "nexus-alpha-knowledge-prod"
+    archive: "nexus-alpha-archive-prod"
+
+## 2 replicas for user-facing services to eliminate downtime during
+## rolling updates (always at least one pod serving while the other rolls).
+api:
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 5
+
+## Higher concurrency ceiling for prod; jobs node pool should be sized
+## to accommodate (e2-standard-8 recommended, min 2 nodes).
+orchestrator:
+  maxConcurrentTasks: 40
+  ## Push cutover (#828): task pods push their outputs to the file-proxy before
+  ## terminate and the orchestrator skips the exec pull (falling back to the
+  ## now-safe exec pull only when a push is not signalled). Flip to false to roll
+  ## back to the pure orchestrator-led exec pull.
+  runtimePushFiles: true
+  ## Incremental curates fetch only changed source bodies on demand instead of
+  ## hydrating the whole tree. Flip to false to roll back.
+  runtimeCurateSourceOnDemand: true
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+  runtime:
+    ## overprovision.resources.requests.{cpu,memory} below must stay >= the largest
+    ## cpuRequest/memoryRequest of any workflow here. CI checks both invariants.
+    ## Change both together.
+    curate:
+      cpuRequest: "1000m"
+      memoryRequest: "512Mi"
+    optimize:
+      cpuRequest: "500m"
+      memoryRequest: "640Mi"
+
+## Match Pulumi PV sizes for the Zonal 5 TiB Filestore instance.
+volumes:
+  tasks:
+    size: 500Gi
+  source:
+    size: 1000Gi
+  knowledge:
+    size: 500Gi
+  contexts:
+    size: 125Gi
+
+## Reserve warm capacity on the jobs node pool so task pods start faster.
+## Replicas sized so a burst schedules on warm nodes instead of waiting on
+## cold scale-up. The orchestrator's Pending timeout is configurable via
+## NEXUS_TASK_SCHEDULE_TIMEOUT_SECS (default 300s).
+overprovision:
+  enabled: true
+  replicas: 20
+  resources:
+    requests:
+      # Must be >= the largest cpuRequest/memoryRequest of any workflow above
+      # (currently curate at 1000m cpu, optimize at 640Mi memory).
+      # See README § Configuration and CI check.
+      cpu: "1000m"
+      memory: "768Mi"
+
+## DD identity tags for the prod stack. Cluster/region values are placeholders
+## until the prod GKE cluster lands; update to match the prod Pulumi stack.
+metrics-collector:
+  enabled: true
+
+datadog:
+  enabled: true
+  env: prod
+  tags: "region:us-east1,kube_cluster_name:nexus-alpha-prod-cluster"

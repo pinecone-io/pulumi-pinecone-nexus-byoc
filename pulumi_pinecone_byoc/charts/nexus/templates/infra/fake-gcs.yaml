@@ -1,0 +1,65 @@
+{{- if .Values.fakeGcs.enabled }}
+# In-cluster fake-gcs-server for local (kind) blob testing. Enabled by
+# k8s-local.sh when the resolved config is blob + gcp; never in deployed
+# clusters, which use real GCS. The app reaches it via
+# PINECONE_STORAGE__ENDPOINT=http://<release>-fake-gcs:4443.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "nexus.fullname" . }}-fake-gcs
+  labels:
+    app: {{ include "nexus.fullname" . }}-fake-gcs
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: {{ include "nexus.fullname" . }}-fake-gcs
+  template:
+    metadata:
+      labels:
+        app: {{ include "nexus.fullname" . }}-fake-gcs
+    spec:
+      initContainers:
+        # Seed the three buckets as filesystem subdirs so no API calls are needed.
+        - name: seed-buckets
+          image: {{ .Values.fakeGcs.busyboxImage }}
+          command: ["sh", "-c", "mkdir -p /data/source /data/knowledge /data/archive"]
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      containers:
+        - name: fake-gcs
+          image: {{ .Values.fakeGcs.image }}
+          args:
+            - "-scheme"
+            - "http"
+            - "-port"
+            - "4443"
+            - "-backend"
+            - "filesystem"
+            - "-data"
+            - "/data"
+            - "-public-host"
+            - "{{ include "nexus.fullname" . }}-fake-gcs:4443"
+          ports:
+            - containerPort: 4443
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "nexus.fullname" . }}-fake-gcs
+  labels:
+    app: {{ include "nexus.fullname" . }}-fake-gcs
+spec:
+  selector:
+    app: {{ include "nexus.fullname" . }}-fake-gcs
+  ports:
+    - port: 4443
+      targetPort: 4443
+{{- end }}

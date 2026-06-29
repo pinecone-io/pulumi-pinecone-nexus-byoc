@@ -52,7 +52,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: testpypi
-      url: https://test.pypi.org/project/pulumi-pinecone-byoc/
+      url: https://test.pypi.org/project/pulumi-pinecone-nexus-byoc/
 
     steps:
       - name: Download artifacts
@@ -72,7 +72,7 @@ jobs:
     runs-on: ubuntu-latest
     environment:
       name: pypi
-      url: https://pypi.org/project/pulumi-pinecone-byoc/
+      url: https://pypi.org/project/pulumi-pinecone-nexus-byoc/
 
     steps:
       - name: Download artifacts

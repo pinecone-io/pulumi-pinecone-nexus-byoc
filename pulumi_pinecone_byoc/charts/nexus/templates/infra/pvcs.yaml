@@ -1,0 +1,17 @@
+{{- if eq (include "nexus.usesFsStorage" .) "true" }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "nexus.pvc" (dict "root" . "volume" "data") }}
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "data") | nindent 4 }}
+spec:
+  accessModes:
+    {{- toYaml .Values.fsPersistence.accessModes | nindent 4 }}
+  {{- if .Values.fsPersistence.storageClass }}
+  storageClassName: {{ .Values.fsPersistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.fsPersistence.size }}
+{{- end }}

@@ -1,0 +1,58 @@
+{{- $fullname := include "nexus.fullname" . -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ $fullname }}-gateway-conf
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "gateway") | nindent 4 }}
+data:
+  default.conf: |
+    map $http_upgrade $connection_upgrade {
+      default upgrade;
+      ''      '';
+    }
+
+    server {
+      listen 80;
+      server_name _;
+
+      # Kubernetes CoreDNS — substituted at startup from /etc/resolv.conf
+      resolver __RESOLVER__ valid=5s;
+
+      proxy_set_header Host $host;
+      proxy_set_header X-Real-IP $remote_addr;
+      proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+      proxy_set_header X-Forwarded-Proto $scheme;
+      proxy_http_version 1.1;
+      proxy_set_header Connection "";
+      proxy_connect_timeout 10s;
+      proxy_read_timeout 86400s;
+      proxy_send_timeout 86400s;
+      client_max_body_size 2048m;
+      proxy_next_upstream error timeout http_503;
+      proxy_next_upstream_tries 2;
+
+      location /api/ {
+        set $api_upstream http://{{ $fullname }}-api.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.api.service.port }};
+        proxy_pass $api_upstream;
+        proxy_request_buffering off;
+      }
+      location = /api { return 301 /api/; }
+
+{{- if .Values.apps.enabled }}
+      location /apps/ {
+        set $apps_upstream http://{{ .Values.apps.host }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.apps.port }};
+        proxy_pass $apps_upstream;
+        proxy_buffering off;
+        proxy_cache off;
+      }
+{{- end }}
+
+      location / {
+        set $console_upstream http://{{ $fullname }}-console.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.console.service.port }};
+        proxy_pass $console_upstream;
+
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection $connection_upgrade;
+      }
+    }

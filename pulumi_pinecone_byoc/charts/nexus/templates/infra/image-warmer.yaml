@@ -1,0 +1,47 @@
+{{- if .Values.taskImageWarmer.enabled }}
+{{- $runtimeImage := include "nexus.runtimeImage" . }}
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: {{ include "nexus.fullname" . }}-task-image-warmer
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" "task-image-warmer") | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" "task-image-warmer") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" "task-image-warmer") | nindent 8 }}
+    spec:
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      initContainers:
+        - name: warm-runtime
+          image: {{ $runtimeImage | quote }}
+          command: ["true"]
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "1Mi"
+            limits:
+              cpu: "10m"
+              memory: "16Mi"
+      containers:
+        - name: pause
+          image: registry.k8s.io/pause:3.9
+          resources:
+            requests:
+              cpu: "1m"
+              memory: "1Mi"
+            limits:
+              cpu: "10m"
+              memory: "16Mi"
+      nodeSelector:
+        {{- toYaml .Values.scheduling.jobs.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.scheduling.jobs.tolerations | nindent 8 }}
+{{- end }}

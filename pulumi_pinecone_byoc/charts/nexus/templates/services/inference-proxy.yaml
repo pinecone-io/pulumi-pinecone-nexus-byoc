@@ -1,0 +1,124 @@
+{{- $fullname := include "nexus.fullname" . -}}
+{{- $component := "inference-proxy" -}}
+{{- $cfg := index .Values "inference-proxy" -}}
+{{- if and $cfg.byocConfigMap (not $cfg.configChecksum) }}
+{{- fail "inference-proxy.configChecksum is required when inference-proxy.byocConfigMap is set: the byoc.toml subPath mount is not re-projected on ConfigMap change, so the checksum/byoc-config annotation is the only thing that rolls the pod" }}
+{{- end }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $fullname }}-inference-proxy
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "nexus.selectorLabels" (dict "root" . "component" $component) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ $cfg.service.port }}
+      targetPort: 9400
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}-inference-proxy
+  labels:
+    {{- include "nexus.componentLabels" (dict "root" . "component" $component) | nindent 4 }}
+spec:
+  replicas: {{ $cfg.replicaCount }}
+  {{- include "nexus.deployStrategy" $cfg.strategy | nindent 2 }}
+  selector:
+    matchLabels:
+      {{- include "nexus.selectorLabels" (dict "root" . "component" $component) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "nexus.selectorLabels" (dict "root" . "component" $component) | nindent 8 }}
+      annotations:
+        ad.datadoghq.com/inference-proxy.logs: '[{"source": "python", "service": "{{ $fullname }}-inference-proxy"}]'
+        {{- if $cfg.configChecksum }}
+        checksum/byoc-config: {{ $cfg.configChecksum }}
+        {{- end }}
+    spec:
+      {{- include "nexus.servicesScheduling" . | nindent 6 }}
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: inference-proxy
+          image: {{ include "nexus.image" (dict "root" . "component" $component) }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["sleep", "10"]
+          ports:
+            - name: http
+              containerPort: 9400
+          # HTTP probes hit /healthz (matches admin + file-proxy; api uses
+          # /api/v0/healthz because it sits behind the gateway prefix, the
+          # proxy doesn't). The route has no auth or app.state dependencies
+          # and answers as soon as uvicorn finishes routing setup -- which
+          # is exactly what we want kubelet to gate on.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: {{ $cfg.readinessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $cfg.readinessProbe.periodSeconds }}
+            timeoutSeconds: {{ $cfg.readinessProbe.timeoutSeconds }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: {{ $cfg.livenessProbe.initialDelaySeconds }}
+            periodSeconds: {{ $cfg.livenessProbe.periodSeconds }}
+            failureThreshold: {{ $cfg.livenessProbe.failureThreshold }}
+          env:
+            # The routing table lives in config/svc-nexus-inference-proxy/default.toml
+            # baked into the image (see nexus-inference-proxy/Dockerfile). The cascade
+            # resolves it via CONFIG_PATH_PREFIX=. + PINECONE_CONFIG_PROFILES; the
+            # only things this Deployment injects are secrets and per-deploy overrides.
+            - name: LOG_LEVEL
+              value: {{ .Values.rustLog | quote }}
+            - name: PINECONE_AUTH__JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: jwt-secret
+            # Provider api_keys. List is the LLM keys defined in
+            # secret-config.yaml; each Secret key (`gemini-api-key`) is
+            # projected onto the pod as its linux-shape env name
+            # (`GEMINI_API_KEY`) so callers don't have to deal with
+            # dashed env vars. The proxy validator reads each model's
+            # `api_key_ref` AND the uppercase-underscore form of it, so
+            # the TOML can keep the k8s-shape spelling. New provider key:
+            # add the Secret key in secret-config.yaml, the
+            # `[llm_models.<id>]` entry with matching `api_key_ref`, and
+            # one more entry to the list below.
+            {{- range $key := list "gemini-api-key" "claude-api-key" "nebius-api-key" }}
+            - name: {{ $key | upper | replace "-" "_" }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $fullname }}-config
+                  key: {{ $key }}
+                  optional: true
+            {{- end }}
+            {{- include "nexus.envSettings" . | nindent 12 }}
+            {{- include "nexus.datadogEnvSettings" (dict "root" . "component" $component) | nindent 12 }}
+          {{- if $cfg.byocConfigMap }}
+          volumeMounts:
+            - name: byoc-inference-config
+              mountPath: /opt/nexus-inference-proxy/config/svc-nexus-inference-proxy/byoc.toml
+              subPath: byoc.toml
+          {{- end }}
+          resources:
+            {{- toYaml $cfg.resources | nindent 12 }}
+      {{- if $cfg.byocConfigMap }}
+      volumes:
+        - name: byoc-inference-config
+          configMap:
+            name: {{ $cfg.byocConfigMap }}
+      {{- end }}
