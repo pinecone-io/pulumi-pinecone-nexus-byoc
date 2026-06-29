@@ -1,13 +1,21 @@
-# BYOC Preflight (`setup/preflight.py`)
+# BYOC Preflight (`dev/preflight.py`) — internal dev tool
 
-On-demand prerequisite checks for a Nexus + DB BYOC install iteration. It runs
-the checks the wizard would run — *before* you commit to a 25–30 min deploy —
-plus the few the wizard doesn't (live auth, `roles/owner`, Nexus secrets).
+The wizard now runs the auth/tooling/IAM preflight automatically during the
+normal install (`bootstrap.sh` → wizard → `pulumi up`): live auth, ADC, the
+Pulumi backend/SSO session, and `roles/owner` are all checked up front, so
+customers don't run anything separately.
 
-It is a thin wrapper: the GCP cloud-side checks delegate to the wizard's own
-`GCPPreflightChecker`, so they can't drift from the real install path. It only
-adds the judgment layer (an identity readout, the deploy-time IAM/CIDR rules the
-wizard skips, and a free-CIDR suggestion). **Read-only** — it never mutates
+This standalone tool is for **internal iteration**. It re-runs the full check
+set against an **already-generated** stack (`--stack-dir`) before you re-run
+`pulumi up` — without redoing the interactive wizard — and adds the deploy-time
+checks the wizard doesn't cover:
+
+  - Nexus provider secrets present in the stack yaml (`--nexus` / `--stack-dir`),
+  - the reserved-CIDR overlap guard the deploy enforces (`10.100.0.0/16`), and
+  - a free-`/12` suggestion when the configured CIDR conflicts.
+
+The GCP cloud-side checks delegate to the wizard's own `GCPPreflightChecker`, so
+they can't drift from the real install path. **Read-only** — it never mutates
 config or cloud state.
 
 ## Run it
@@ -19,7 +27,7 @@ drop the `pulumi-pinecone-nexus-byoc/` prefix.
 ```bash
 # --no-project avoids building the repo's own pulumi package.
 uv run --no-project --with rich --with pyyaml \
-  python pulumi-pinecone-nexus-byoc/setup/preflight.py
+  python pulumi-pinecone-nexus-byoc/dev/preflight.py
 ```
 
 The script resolves its `wizard` import from its own directory, so it works from
@@ -32,7 +40,7 @@ in the parent):
 
 ```bash
 uv run --no-project --with rich --with pyyaml \
-  python pulumi-pinecone-nexus-byoc/setup/preflight.py --nexus --stack-dir pinecone-byoc
+  python pulumi-pinecone-nexus-byoc/dev/preflight.py --nexus --stack-dir pinecone-byoc
 ```
 
 ### Flags
@@ -79,5 +87,5 @@ the "open a new terminal after installing a tool so PATH updates" reminder.
 ## Where it fits
 
 Step 1 of each iteration — see the iteration handoff
-([`_plans/2026-06-nexus-byoc/nexus-byoc-iteration-handoff.md`](../_plans/2026-06-nexus-byoc/nexus-byoc-iteration-handoff.md))
+([`_plans/2026-06-nexus-byoc/nexus-byoc-iteration-handoff.md`](../../_plans/2026-06-nexus-byoc/nexus-byoc-iteration-handoff.md))
 for the full preflight → wizard → deploy → verify → fix → reset loop.

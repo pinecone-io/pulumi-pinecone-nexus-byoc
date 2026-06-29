@@ -15,8 +15,8 @@ It adds, on top of the wizard's cloud-side `GCPPreflightChecker`:
     wizard's checker omits them.
 
 Usage (--no-project avoids building the repo's own pulumi package):
-    uv run --no-project --with rich --with pyyaml python setup/preflight.py
-    uv run --no-project --with rich --with pyyaml python setup/preflight.py --nexus --stack-dir ../pinecone-byoc
+    uv run --no-project --with rich --with pyyaml python dev/preflight.py
+    uv run --no-project --with rich --with pyyaml python dev/preflight.py --nexus --stack-dir ../pinecone-byoc
 
 Project/region/zones/CIDR default to the active gcloud config + the GCP wizard
 defaults; override any of them with the matching flag. The impersonation/RAPT
@@ -28,14 +28,15 @@ from __future__ import annotations
 
 import argparse
 import ipaddress
-import os
 import subprocess
 import sys
+from pathlib import Path
 
-# import shared checks + the wizard from this directory (same dir as this
-# script). preflight_checks holds the UNIQUE checks both this tool and the
-# wizard call; the wizard supplies GCPPreflightChecker for the cloud-side run.
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# This internal dev tool lives in dev/, but imports the shared checks + the
+# wizard from setup/. preflight_checks holds the UNIQUE checks both this tool
+# and the wizard call; the wizard supplies GCPPreflightChecker for the
+# cloud-side run. Put setup/ on sys.path so the flat imports below resolve.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "setup"))
 from preflight_checks import (  # noqa: E402
     adc_is_impersonated,
     check_auth,

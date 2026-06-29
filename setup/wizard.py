@@ -9,7 +9,7 @@ import sys
 from dataclasses import dataclass
 
 # shared UNIQUE preflight checks -- single source of truth, also used by the
-# standalone setup/preflight.py so the two never drift. First-party module in
+# standalone dev/preflight.py so the two never drift. First-party module in
 # this same directory (added to sys.path when run as a script / by preflight.py).
 import preflight_checks
 import yaml

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Shared BYOC preflight checks — single source of truth.
 
-These are the UNIQUE up-front checks the standalone `setup/preflight.py` adds on
+These are the UNIQUE up-front checks the standalone `dev/preflight.py` adds on
 top of the wizard's cloud-side `GCPPreflightChecker` (quotas / APIs / CIDR). They
 live here, separate from both, so the wizard and the standalone tool call ONE
 implementation instead of duplicating it:
