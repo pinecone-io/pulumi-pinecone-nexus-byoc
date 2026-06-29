@@ -12,6 +12,7 @@ from ..common.k8s_secrets import K8sSecrets
 from ..common.naming import cell_name as _cell_name
 from ..common.pinetools import Pinetools
 from ..common.providers import (
+    DATADOG_DISABLED_PLACEHOLDER,
     AmpAccess,
     AmpAccessArgs,
     ApiKey,
@@ -156,14 +157,17 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._service_account]),
         )
 
-        self._datadog_api_key = DatadogApiKey(
-            f"{config.resource_prefix}-datadog-api-key",
-            DatadogApiKeyArgs(
-                api_url=args.api_url,
-                cpgw_api_key=self._cpgw_api_key.key,
-            ),
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
-        )
+        if config.datadog_enabled:
+            self._datadog_api_key = DatadogApiKey(
+                f"{config.resource_prefix}-datadog-api-key",
+                DatadogApiKeyArgs(
+                    api_url=args.api_url,
+                    cpgw_api_key=self._cpgw_api_key.key,
+                ),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
+            )
+        else:
+            self._datadog_api_key = None
 
         self._vpc = VPC(f"{config.resource_prefix}-vpc", config, opts=child_opts)
 
@@ -328,12 +332,25 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             k8s_provider=self._eks.provider,
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
-            dd_api_key=self._datadog_api_key.api_key,
+            dd_api_key=(
+                self._datadog_api_key.api_key
+                if self._datadog_api_key is not None
+                else DATADOG_DISABLED_PLACEHOLDER
+            ),
             control_db=self._rds.control_db,
             system_db=self._rds.system_db,
             opts=pulumi.ResourceOptions(
                 parent=self,
-                depends_on=[self._eks, self._api_key, self._datadog_api_key, self._rds],
+                depends_on=[
+                    r
+                    for r in [
+                        self._eks,
+                        self._api_key,
+                        self._datadog_api_key,
+                        self._rds,
+                    ]
+                    if r is not None
+                ],
             ),
         )
 
@@ -456,6 +473,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             k8s_provider=self._eks.provider,
             pinecone_version=args.pinecone_version,
             pinetools_image=AWS_REGISTRY.pinetools_image(args.pinecone_version),
+            config_map_dependencies=self._k8s_configmaps.config_maps,
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._eks, self._k8s_configmaps]),
         )
 
@@ -505,7 +523,9 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 "sli_checkers_project_id": self._api_key.project_id,
                 "cpgw_api_key": self._k8s_secrets.cpgw_api_key,
                 "cpgw_admin_api_key_id": self._cpgw_api_key.key_id,
-                "datadog_api_key_id": self._datadog_api_key.key_id,
+                "datadog_api_key_id": (
+                    self._datadog_api_key.key_id if self._datadog_api_key is not None else None
+                ),
                 "customer_tags": args.tags or {},
                 "pulumi_backend_url": self._pulumi_operator.backend_url,
                 "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,
@@ -713,15 +733,19 @@ class PineconeAWSCluster(pulumi.ComponentResource):
         return self.args.tags or {}
 
     @property
-    def datadog_api_key(self) -> DatadogApiKey:
+    def datadog_api_key(self) -> DatadogApiKey | None:
         return self._datadog_api_key
 
     @property
-    def datadog_api_key_value(self) -> pulumi.Output[str]:
+    def datadog_api_key_value(self) -> pulumi.Output[str] | None:
+        if self._datadog_api_key is None:
+            return None
         return self._datadog_api_key.api_key
 
     @property
-    def datadog_api_key_id(self) -> pulumi.Output[str]:
+    def datadog_api_key_id(self) -> pulumi.Output[str] | None:
+        if self._datadog_api_key is None:
+            return None
         return self._datadog_api_key.key_id
 
     @property

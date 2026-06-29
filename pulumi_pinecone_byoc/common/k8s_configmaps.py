@@ -42,7 +42,7 @@ class K8sConfigMaps(pulumi.ComponentResource):
             ),
         )
 
-        k8s.core.v1.ConfigMap(
+        cluster_info_config = k8s.core.v1.ConfigMap(
             f"{name}-pc-cluster-information-config",
             metadata=k8s.meta.v1.ObjectMetaArgs(
                 name="config",
@@ -87,7 +87,7 @@ class K8sConfigMaps(pulumi.ComponentResource):
             lambda outputs: json.dumps({k: v for k, v in dict(outputs).items() if v is not None})
         )
 
-        k8s.core.v1.ConfigMap(
+        pulumi_outputs_config = k8s.core.v1.ConfigMap(
             f"{name}-pc-pulumi-outputs-config",
             metadata=k8s.meta.v1.ObjectMetaArgs(
                 name="config",
@@ -102,6 +102,11 @@ class K8sConfigMaps(pulumi.ComponentResource):
                 depends_on=[pulumi_outputs_ns],
             ),
         )
+
+        # Exposed so dependents (e.g. the pinetools install Job, which reads the
+        # pc-cluster-information configmaps when templating helmfile) can declare an
+        # explicit depends_on and avoid racing these on a cold-cluster deploy.
+        self.config_maps = [cluster_info_config, pulumi_outputs_config]
 
         self.register_outputs(
             {

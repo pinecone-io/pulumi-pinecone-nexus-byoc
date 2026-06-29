@@ -10,14 +10,62 @@ import pulumi_kubernetes as k8s
 from pulumi_azure_native import authorization, containerservice, managedidentity
 
 from config.azure import AzureConfig
-from config.base import NodePoolConfig
+from config.base import NodePoolConfig, NodePoolTaint
 
 _AGENT_POOL_NAME_MAX_LEN = 12
+
+# Nexus schedules its pods onto pools labeled `nexus-role: services` (long-lived
+# services) and `nexus-role: jobs` (ephemeral task pods) via nodeSelector +
+# tolerations. The label key/value and matching NoSchedule taint match the nexus
+# Helm chart (nexus/deploy/helm/nexus/values.yaml `scheduling.services`/
+# `scheduling.jobs`). Mirrors pulumi_pinecone_byoc/gcp/gke.py:nexus_node_pools.
+# The taint effect from the shared NodePool config is in GCP enum form
+# (e.g. NO_SCHEDULE); Kubernetes/AKS requires CamelCase, so it is translated via
+# _K8S_TAINT_EFFECT when building the AKS node-taint strings.
+_NEXUS_ROLE_LABEL = "nexus-role"
+
+# Translate GCP-flavored taint effects (from the shared NodePoolConfig) to the
+# CamelCase forms Kubernetes/AKS require. Defensive: already-CamelCase values
+# pass through unchanged.
+_K8S_TAINT_EFFECT = {
+    "NO_SCHEDULE": "NoSchedule",
+    "NO_EXECUTE": "NoExecute",
+    "PREFER_NO_SCHEDULE": "PreferNoSchedule",
+}
 
 
 def _pool_name(name: str) -> str:
     """Sanitize node pool name to max 12 alphanumeric chars."""
     return name.replace("-", "").replace("_", "")[:_AGENT_POOL_NAME_MAX_LEN]
+
+
+def nexus_node_pools() -> list[NodePoolConfig]:
+    """Node pools for the Nexus workloads (services + jobs).
+
+    Azure mirror of gcp/gke.py:nexus_node_pools — same labels/taints (matching
+    the nexus chart's nodeSelector/tolerations) but with Azure VM sizing. Gated
+    by `nexus_enabled` upstream so DB-only deploys are unaffected.
+    """
+    return [
+        NodePoolConfig(
+            name="nexus-services",
+            vm_size="Standard_D4s_v7",
+            min_size=1,
+            max_size=10,
+            disk_size_gb=100,
+            labels={_NEXUS_ROLE_LABEL: "services"},
+            taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="services", effect="NO_SCHEDULE")],
+        ),
+        NodePoolConfig(
+            name="nexus-jobs",
+            vm_size="Standard_D4s_v7",
+            min_size=1,
+            max_size=10,
+            disk_size_gb=100,
+            labels={_NEXUS_ROLE_LABEL: "jobs"},
+            taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="jobs", effect="NO_SCHEDULE")],
+        ),
+    ]
 
 
 class AKS(pulumi.ComponentResource):
@@ -200,7 +248,7 @@ class AKS(pulumi.ComponentResource):
         np_config: NodePoolConfig | None,
         subnet_id: pulumi.Input[str],
     ) -> containerservice.ManagedClusterAgentPoolProfileArgs:
-        vm_size = np_config.vm_size if np_config else "Standard_D4s_v5"
+        vm_size = np_config.vm_size if np_config else "Standard_D4s_v7"
         min_count = np_config.min_size if np_config else 1
         max_count = np_config.max_size if np_config else 10
         disk_size_gb = np_config.disk_size_gb if np_config else 100
@@ -209,7 +257,10 @@ class AKS(pulumi.ComponentResource):
         if np_config and np_config.labels:
             labels.update(np_config.labels)
         taints = (
-            [f"{t.key}={t.value}:{t.effect}" for t in np_config.taints]
+            [
+                f"{t.key}={t.value}:{_K8S_TAINT_EFFECT.get(t.effect, t.effect)}"
+                for t in np_config.taints
+            ]
             if np_config and np_config.taints
             else None
         )
@@ -245,7 +296,10 @@ class AKS(pulumi.ComponentResource):
             labels.update(np_config.labels)
 
         taints = (
-            [f"{t.key}={t.value}:{t.effect}" for t in np_config.taints]
+            [
+                f"{t.key}={t.value}:{_K8S_TAINT_EFFECT.get(t.effect, t.effect)}"
+                for t in np_config.taints
+            ]
             if np_config.taints
             else None
         )

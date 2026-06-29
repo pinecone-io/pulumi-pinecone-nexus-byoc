@@ -64,6 +64,11 @@ class GCPConfig(BaseConfig):
     database: AlloyDBConfig = Field(default_factory=AlloyDBConfig)
     custom_tags: dict[str, str] = Field(default_factory=dict)
 
+    # When true, the GKE node-pool set includes the Nexus `services`/`jobs` pools
+    # (see pulumi_pinecone_byoc/gcp/gke.py:nexus_node_pools). DB-only deploys keep
+    # this false so no extra pools are created.
+    nexus_enabled: bool = False
+
     def labels(self, **extra: str) -> dict[str, str]:
         base_labels = {
             "pinecone-managed-by": "pulumi",
