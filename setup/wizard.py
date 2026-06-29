@@ -8,6 +8,10 @@ import subprocess
 import sys
 from dataclasses import dataclass
 
+# shared UNIQUE preflight checks -- single source of truth, also used by the
+# standalone setup/preflight.py so the two never drift. First-party module in
+# this same directory (added to sys.path when run as a script / by preflight.py).
+import preflight_checks
 import yaml
 from rich.console import Console
 from rich.panel import Panel
@@ -1933,6 +1937,12 @@ class GCPSetupWizard(BaseSetupWizard):
 
         self._print_header()
 
+        # Fail-fast: input-independent auth/tooling checks run BEFORE the long
+        # interactive flow, so stale/missing auth fails in seconds instead of
+        # after the operator fills in the whole wizard.
+        if not self._run_early_auth_checks():
+            return False
+
         api_key = self._get_api_key()
         if not api_key:
             return False
@@ -2069,6 +2079,38 @@ class GCPSetupWizard(BaseSetupWizard):
             {},
             nexus,
         )
+
+    def _run_early_auth_checks(self) -> bool:
+        """Input-independent fail-fast checks (host tools, live GCP ADC, Pulumi
+        backend/SSO session).
+
+        These need no operator input, so they run up front: a customer with a
+        missing tool or a stale auth session fails here, not after filling in
+        the whole wizard. The impersonation/RAPT check is OFF by default and
+        only runs when ADC is already impersonation-based.
+        """
+        console.print()
+        console.print(f"  {self._step('Auth & tooling preflight')}")
+
+        tools_ok = preflight_checks.check_host_tools()
+        auth_ok = preflight_checks.check_auth()
+
+        # RAPT is meaningful only for impersonation-based ADC; never run by
+        # default for plain user/SA-key auth.
+        if preflight_checks.adc_is_impersonated():
+            preflight_checks.check_gcp_rapt()
+
+        # No stack dir yet (the project isn't generated); this warns rather than
+        # fails, but still surfaces an obviously-dead backend session early.
+        preflight_checks.check_pulumi_session(None)
+
+        if not (tools_ok and auth_ok):
+            console.print()
+            console.print(
+                "  [red]Auth/tooling checks failed. Fix the issues above before proceeding.[/]"
+            )
+            return False
+        return True
 
     def _validate_gcp_creds(self) -> str | None:
         console.print()
@@ -2288,8 +2330,16 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print(f"  {self._step('Preflight Checks')}")
         console.print()
 
+        # IAM roles/owner is input-dependent (needs the project) and the
+        # cloud-side checker never tests it -- run it here alongside the quota/
+        # API/CIDR checks. BYOC creates IAM SAs + bindings, so roles/editor is
+        # insufficient.
+        iam_ok = preflight_checks.check_iam_owner(project_id)
+
         checker = GCPPreflightChecker(project_id, region, zones, cidr)
-        if not checker.run_checks():
+        cloud_ok = checker.run_checks()
+
+        if not (iam_ok and cloud_ok):
             console.print()
             console.print(
                 "  [red]Preflight checks failed. Fix the issues above before proceeding.[/]"
