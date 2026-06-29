@@ -77,7 +77,7 @@ support is coming soon.)
 | **Pinecone API key** | All BYOC | Requires a Pinecone **Enterprise plan** |
 | **GCP project** | All BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
-| **Gemini API key** (BYOM) | **Nexus only** | The bring-your-own **generation LLM** (curation + search). Embedding (`multilingual-e5-large`) and rerank (`bge-reranker-v2-m3`) are **Pinecone-hosted** — no extra key needed |
+| **Gemini API key** (BYOM) | **Nexus only** | From [Google AI Studio](https://aistudio.google.com/apikey) — the bring-your-own **generation LLM** (curation + search). Embedding (`multilingual-e5-large`) and rerank (`bge-reranker-v2-m3`) are **Pinecone-hosted** — no extra key needed |
 
 > **Create a dedicated GCP project.** BYOC provisions project-level infrastructure
 > (VPC, GKE, AlloyDB, GCS, DNS), enables several GCP APIs, and creates service accounts
@@ -89,7 +89,10 @@ support is coming soon.)
 > **Nexus model capacity:** Gemini is the only model you bring. Its quota is per Google
 > Cloud project and best-effort (no reserved capacity), so a low free-tier project will
 > throttle real curation workloads — use a billing-enabled project/tier sized to your
-> ingest volume.
+> ingest volume. Create the key in [Google AI Studio](https://aistudio.google.com/apikey);
+> associating it with the **same GCP project** as the deployment keeps Gemini
+> cost-tracking unified (the key may live in any project, but a shared one consolidates
+> billing).
 
 ### Common Tools (Required for All Clouds)
 
