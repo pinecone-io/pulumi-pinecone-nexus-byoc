@@ -8,7 +8,36 @@ Deploy Pinecone in your own cloud account (AWS, GCP, or Azure) with full control
 
 ## Quick Start
 
-### Interactive Setup
+### 1. Authenticate
+
+The setup script **checks** your credentials but does not log you in, so authenticate
+to your cloud and to Pulumi first.
+
+**GCP** (Pulumi deploys using your Application Default Credentials):
+```bash
+gcloud auth login
+gcloud auth application-default login
+```
+
+**AWS:**
+```bash
+aws configure          # or: aws sso login
+```
+
+**Azure:**
+```bash
+az login
+```
+
+**Pulumi** (state backend — Pulumi Cloud, or `pulumi login --local` for local state):
+```bash
+pulumi login
+```
+
+You will also need a **Pinecone API key** (BYOC requires an Enterprise plan). If you
+enable **Nexus**, have a **Gemini API key** ready as well — the wizard prompts for both.
+
+### 2. Run the interactive setup
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash
@@ -18,10 +47,10 @@ This will:
 1. Select your cloud provider (AWS, GCP, or Azure)
 2. Check that required tools are installed (Python 3.12+, uv, cloud CLI, Pulumi, kubectl)
 3. Verify your cloud credentials
-4. Run an interactive setup wizard
+4. Run an interactive setup wizard (collects your project, region, network, and API keys)
 5. Generate a complete Pulumi project
 
-Then deploy:
+### 3. Deploy
 
 ```bash
 cd pinecone-byoc
@@ -29,6 +58,19 @@ pulumi up
 ```
 
 Provisioning takes approximately 25-30 minutes.
+
+### 4. Connect to your cluster
+
+`pulumi up` prints an `update_kubeconfig_command` output — run it to point `kubectl`
+at your new cluster. On GCP:
+
+```bash
+gcloud container clusters get-credentials <cluster-name> --region <region> --project <project>
+kubectl get pods -A
+```
+
+(AWS uses `aws eks update-kubeconfig …`; Azure uses `az aks get-credentials …` — see the
+stack output. GKE access also requires the `gke-gcloud-auth-plugin` component.)
 
 ## Prerequisites
 
