@@ -75,9 +75,16 @@ support is coming soon.)
 | Requirement | Needed for | Notes |
 |-------------|-----------|-------|
 | **Pinecone API key** | All BYOC | Requires a Pinecone **Enterprise plan** |
-| **Cloud account** (GCP) | All BYOC | A GCP project with owner/billing — the setup wizard checks for `roles/owner` |
+| **GCP project** | All BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
 | **Gemini API key** (BYOM) | **Nexus only** | The bring-your-own **generation LLM** (curation + search). Embedding (`multilingual-e5-large`) and rerank (`bge-reranker-v2-m3`) are **Pinecone-hosted** — no extra key needed |
+
+> **Create a dedicated GCP project.** BYOC provisions project-level infrastructure
+> (VPC, GKE, AlloyDB, GCS, DNS), enables several GCP APIs, and creates service accounts
+> and IAM bindings, so a fresh project gives clean isolation and a clean teardown. You
+> must have the **Owner** role (`roles/owner`) on it — `roles/editor` is **not**
+> sufficient, because the deploy sets project and service-account IAM policy — and
+> **billing must be enabled**.
 
 > **Nexus model capacity:** Gemini is the only model you bring. Its quota is per Google
 > Cloud project and best-effort (no reserved capacity), so a low free-tier project will
