@@ -70,6 +70,20 @@ support is coming soon.)
 
 ## Prerequisites
 
+### Accounts & API Keys
+
+| Requirement | Needed for | Notes |
+|-------------|-----------|-------|
+| **Pinecone API key** | All BYOC | Requires a Pinecone **Enterprise plan** |
+| **Cloud account** (GCP) | All BYOC | A GCP project with owner/billing — the setup wizard checks for `roles/owner` |
+| **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
+| **Gemini API key** (BYOM) | **Nexus only** | The bring-your-own **generation LLM** (curation + search). Embedding (`multilingual-e5-large`) and rerank (`bge-reranker-v2-m3`) are **Pinecone-hosted** — no extra key needed |
+
+> **Nexus model capacity:** Gemini is the only model you bring. Its quota is per Google
+> Cloud project and best-effort (no reserved capacity), so a low free-tier project will
+> throttle real curation workloads — use a billing-enabled project/tier sized to your
+> ingest volume.
+
 ### Common Tools (Required for All Clouds)
 
 | Tool | Purpose | Install |
