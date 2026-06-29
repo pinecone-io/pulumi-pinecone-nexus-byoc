@@ -143,7 +143,7 @@ class NexusConfig:
     backend; set provisions blob containers.
     """
 
-    version: str | None = None  # falls back to pinecone_version
+    version: str | None = None  # falls back to installed_charts_version()
     byoc_env: pulumi.Input[str] | None = None  # falls back to minted env name
     image_registry: str | None = None  # falls back to cloud-specific default
     gemini_api_key: pulumi.Input[str] | None = None

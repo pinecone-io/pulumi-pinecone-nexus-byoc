@@ -1,6 +1,5 @@
 """Pinecone BYOC setup wizard."""
 
-import importlib.metadata
 import json
 import os
 import platform
@@ -59,11 +58,11 @@ def _is_storage_bucket_prefix(value: str) -> bool:
 
 PINECONE_VERSION = "main-94a9e90"
 
-# Nexus image tag (proposal §10 `nexus-version`). Nexus is versioned
-# independently of PINECONE_VERSION: the default comes from the installed
-# pinecone-nexus-charts package so the image and charts always move together.
-# Override at runtime with PINECONE_NEXUS_VERSION.
-NEXUS_VERSION = importlib.metadata.version("pinecone-nexus-charts")
+# Nexus image tag is NOT pinned here. The cluster component defaults to the
+# installed charts version at `pulumi up` time via installed_charts_version()
+# (see pulumi_pinecone_byoc/common/nexus.py), so the image and charts always
+# move together without requiring a wizard-time lookup.
+# Override at deploy time via PINECONE_NEXUS_VERSION env or nexus-version config.
 
 # Nexus images live in their own Artifact Registry repo (`nexus`), co-located on
 # the DB registry host; DB/pinetools images stay in the `unstable` repo.
@@ -2051,7 +2050,10 @@ class GCPSetupWizard(BaseSetupWizard):
             nexus = {
                 "enabled": True,
                 "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
-                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                # nexus_version is intentionally left unset when PINECONE_NEXUS_VERSION
+                # is absent: the cluster component defaults to installed_charts_version()
+                # at deploy time so the image and charts always move together.
+                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", ""),
                 "image_registry": os.environ.get(
                     "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_IMAGE_REGISTRY
                 ),
@@ -2283,7 +2285,13 @@ class GCPSetupWizard(BaseSetupWizard):
                 " 63).[/]"
             )
 
-        nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
+        # nexus-version is left blank by default: the cluster component defaults
+        # to installed_charts_version() at deploy time (see installed_charts_version()
+        # in pulumi_pinecone_byoc/common/nexus.py) so the image and charts always
+        # move together. Only set this to pin to a specific tag.
+        nexus_version = self._prompt(
+            "Enter nexus-version (blank = use installed charts version)", ""
+        )
 
         console.print()
         console.print(
@@ -2318,7 +2326,7 @@ class GCPSetupWizard(BaseSetupWizard):
             "byoc_env": byoc_env.strip(),
             "byoc_project_id": byoc_project_id,
             "storage_bucket_prefix": storage_bucket_prefix,
-            "nexus_version": nexus_version.strip() or NEXUS_VERSION,
+            "nexus_version": nexus_version.strip(),
             "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
             "inference_models_toml": inference_models_toml,
@@ -2496,9 +2504,12 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
         # stacks omit these keys entirely and `nexus_enabled` stays False.
         if nexus.get("enabled"):
             config_content += f"  {project_name}:nexus-enabled: true\n"
-            config_content += (
-                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
-            )
+            # nexus-version is omitted when blank: the cluster component defaults to
+            # installed_charts_version() at deploy time (see installed_charts_version()
+            # in pulumi_pinecone_byoc/common/nexus.py) so the image and charts always
+            # move together without pinning a version here.
+            if nexus.get("nexus_version"):
+                config_content += f"  {project_name}:nexus-version: {nexus['nexus_version']}\n"
             config_content += (
                 f"  {project_name}:nexus-image-registry: "
                 f"{nexus.get('image_registry', NEXUS_IMAGE_REGISTRY)}\n"
@@ -3162,7 +3173,10 @@ class AzureSetupWizard(BaseSetupWizard):
             nexus = {
                 "enabled": True,
                 "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
-                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                # nexus_version is intentionally left unset when PINECONE_NEXUS_VERSION
+                # is absent: the cluster component defaults to installed_charts_version()
+                # at deploy time so the image and charts always move together.
+                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", ""),
                 "image_registry": os.environ.get(
                     "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_AZURE_IMAGE_REGISTRY
                 ),
@@ -3470,9 +3484,12 @@ dependencies = ["pulumi-pinecone-nexus-byoc[azure]"]
         # wizard.
         if nexus.get("enabled"):
             config_content += f"  {project_name}:nexus-enabled: true\n"
-            config_content += (
-                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
-            )
+            # nexus-version is omitted when blank: the cluster component defaults to
+            # installed_charts_version() at deploy time (see installed_charts_version()
+            # in pulumi_pinecone_byoc/common/nexus.py) so the image and charts always
+            # move together without pinning a version here.
+            if nexus.get("nexus_version"):
+                config_content += f"  {project_name}:nexus-version: {nexus['nexus_version']}\n"
             config_content += (
                 f"  {project_name}:nexus-image-registry: "
                 f"{nexus.get('image_registry', NEXUS_AZURE_IMAGE_REGISTRY)}\n"
