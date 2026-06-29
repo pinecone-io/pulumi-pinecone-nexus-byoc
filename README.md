@@ -1,6 +1,6 @@
 # Pinecone BYOC
 
-[![PyPI version](https://img.shields.io/pypi/v/pulumi-pinecone-byoc)](https://pypi.org/project/pulumi-pinecone-byoc/)
+[![PyPI version](https://img.shields.io/pypi/v/pulumi-pinecone-nexus-byoc)](https://pypi.org/project/pulumi-pinecone-nexus-byoc/)
 
 Deploy Pinecone in your own cloud account with full control over your infrastructure.
 
@@ -36,7 +36,7 @@ enable **Nexus**, have a **Gemini API key** ready as well — the wizard prompts
 ### 2. Run the interactive setup
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-nexus-byoc/main/bootstrap.sh | bash
 ```
 
 This will:
@@ -266,11 +266,11 @@ Install from PyPI with cloud-specific dependencies:
 
 ```bash
 # GCP (supported)
-uv add 'pulumi-pinecone-byoc[gcp]'
+uv add 'pulumi-pinecone-nexus-byoc[gcp]'
 
 # AWS and Azure — coming soon (not yet supported)
-# uv add 'pulumi-pinecone-byoc[aws]'
-# uv add 'pulumi-pinecone-byoc[azure]'
+# uv add 'pulumi-pinecone-nexus-byoc[aws]'
+# uv add 'pulumi-pinecone-nexus-byoc[azure]'
 ```
 
 ## Troubleshooting
@@ -335,4 +335,4 @@ Note: If `deletion_protection` is enabled (default), you'll need to disable it f
 ## Support
 
 - [Documentation](https://docs.pinecone.io/guides/production/bring-your-own-cloud)
-- [GitHub Issues](https://github.com/pinecone-io/pulumi-pinecone-byoc/issues)
+- [GitHub Issues](https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc/issues)

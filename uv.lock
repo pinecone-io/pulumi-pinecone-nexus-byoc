@@ -508,7 +508,7 @@ wheels = [
 ]
 
 [[package]]
-name = "pulumi-pinecone-byoc"
+name = "pulumi-pinecone-nexus-byoc"
 source = { editable = "." }
 dependencies = [
     { name = "kubernetes" },

@@ -1,5 +1,5 @@
 """
-pulumi-pinecone-byoc - Pulumi components for Pinecone BYOC clusters.
+pulumi-pinecone-nexus-byoc - Pulumi components for Pinecone BYOC clusters.
 
 Multi-cloud support: AWS, GCP, and Azure.
 

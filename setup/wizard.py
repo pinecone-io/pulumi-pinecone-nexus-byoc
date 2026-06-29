@@ -1481,7 +1481,7 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[aws]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[aws]"]
 """
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
@@ -1538,7 +1538,7 @@ dependencies = ["pulumi-pinecone-byoc[aws]"]
         if result.returncode == 0:
             # get installed version
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -1549,7 +1549,7 @@ dependencies = ["pulumi-pinecone-byoc[aws]"]
                     pkg_version = line.split(":", 1)[1].strip()
                     break
             console.print(
-                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")
@@ -2452,7 +2452,7 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[gcp]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
 """
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
@@ -2540,7 +2540,7 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
         if result.returncode == 0:
             # get installed version
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -2551,7 +2551,7 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
                     pkg_version = line.split(":", 1)[1].strip()
                     break
             console.print(
-                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")
@@ -3427,7 +3427,7 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[azure]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[azure]"]
 """
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
@@ -3512,7 +3512,7 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
 
         if result.returncode == 0:
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -3524,7 +3524,7 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
                     break
             console.print(
                 f"  [green]✓[/] Dependencies installed "
-                f"[dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"[dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")

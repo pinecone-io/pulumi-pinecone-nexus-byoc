@@ -3,12 +3,12 @@
 # Pinecone BYOC Bootstrap Script
 #
 # Usage:
-#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-nexus-byoc/main/bootstrap.sh | bash
 #
 # With cloud pre-selected:
-#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash -s -- --cloud aws
-#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash -s -- --cloud gcp
-#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash -s -- --cloud azure
+#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-nexus-byoc/main/bootstrap.sh | bash -s -- --cloud aws
+#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-nexus-byoc/main/bootstrap.sh | bash -s -- --cloud gcp
+#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-nexus-byoc/main/bootstrap.sh | bash -s -- --cloud azure
 #
 set -e
 
@@ -19,7 +19,7 @@ DIM='\033[2m'
 RESET='\033[0m'
 
 CLOUD=""
-REPO_BASE="https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main"
+REPO_BASE="https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-nexus-byoc/main"
 
 # parse arguments
 while [[ $# -gt 0 ]]; do
