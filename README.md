@@ -2,7 +2,11 @@
 
 [![PyPI version](https://img.shields.io/pypi/v/pulumi-pinecone-byoc)](https://pypi.org/project/pulumi-pinecone-byoc/)
 
-Deploy Pinecone in your own cloud account (AWS, GCP, or Azure) with full control over your infrastructure.
+Deploy Pinecone in your own cloud account with full control over your infrastructure.
+
+> **Supported clouds:** **GCP** is supported today. **AWS** and **Azure** are
+> **coming soon** — the wizard and docs may reference them, but they are not yet
+> supported for production deployments.
 
 ![Demo](./assets/demo.gif)
 
@@ -19,15 +23,7 @@ gcloud auth login
 gcloud auth application-default login
 ```
 
-**AWS:**
-```bash
-aws configure          # or: aws sso login
-```
-
-**Azure:**
-```bash
-az login
-```
+_AWS and Azure authentication: coming soon (not yet supported)._
 
 **Pulumi** (state backend — Pulumi Cloud, or `pulumi login --local` for local state):
 ```bash
@@ -44,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/ma
 ```
 
 This will:
-1. Select your cloud provider (AWS, GCP, or Azure)
+1. Select your cloud provider (**GCP** — AWS and Azure coming soon)
 2. Check that required tools are installed (Python 3.12+, uv, cloud CLI, Pulumi, kubectl)
 3. Verify your cloud credentials
 4. Run an interactive setup wizard (collects your project, region, network, and API keys)
@@ -69,8 +65,8 @@ gcloud container clusters get-credentials <cluster-name> --region <region> --pro
 kubectl get pods -A
 ```
 
-(AWS uses `aws eks update-kubeconfig …`; Azure uses `az aks get-credentials …` — see the
-stack output. GKE access also requires the `gke-gcloud-auth-plugin` component.)
+(GKE access also requires the `gke-gcloud-auth-plugin` component. AWS and Azure
+support is coming soon.)
 
 ## Prerequisites
 
@@ -85,20 +81,13 @@ stack output. GKE access also requires the `gke-gcloud-auth-plugin` component.)
 
 ### Cloud-Specific Tools
 
-**AWS**
-| Tool | Purpose | Install |
-|------|---------|---------|
-| AWS CLI | AWS access | [AWS docs](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) |
-
-**GCP**
+**GCP** (supported)
 | Tool | Purpose | Install |
 |------|---------|---------|
 | gcloud CLI | GCP access | [GCP docs](https://cloud.google.com/sdk/docs/install) |
+| gke-gcloud-auth-plugin | GKE cluster access | `gcloud components install gke-gcloud-auth-plugin` |
 
-**Azure**
-| Tool | Purpose | Install |
-|------|---------|---------|
-| Azure CLI | Azure access | [Azure docs](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) |
+**AWS** _(coming soon)_ · **Azure** _(coming soon)_
 
 ## Architecture
 
@@ -144,17 +133,17 @@ This architecture ensures:
 
 After deployment, configure kubectl:
 
-**AWS:**
-```bash
-aws eks update-kubeconfig --region <region> --name <cluster-name>
-```
-
 **GCP:**
 ```bash
 gcloud container clusters get-credentials <cluster-name> --region <region> --project <project-id>
 ```
 
-**Azure:**
+**AWS** _(coming soon)_:
+```bash
+aws eks update-kubeconfig --region <region> --name <cluster-name>
+```
+
+**Azure** _(coming soon)_:
 ```bash
 az aks get-credentials --resource-group <resource-group> --name <cluster-name>
 ```
@@ -175,7 +164,7 @@ Replace `<new-version>` with the target Pinecone version (e.g., `main-abc1234`).
 
 The setup wizard creates a Pulumi stack with these configurable options:
 
-**AWS Configuration Options:**
+**AWS Configuration Options** _(coming soon — not yet supported)_**:**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -200,7 +189,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | `public_access_enabled` | Enable public endpoint (false = Private Service Connect only) | `true` |
 | `labels` | Custom labels to apply to all resources | `{}` |
 
-**Azure Configuration Options:**
+**Azure Configuration Options** _(coming soon — not yet supported)_**:**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -217,7 +206,9 @@ Edit `Pulumi.<stack>.yaml` to modify these values.
 
 ## Programmatic Usage
 
-For advanced users who want to integrate into existing infrastructure:
+For advanced users who want to integrate into existing infrastructure. GCP is the
+supported cloud today (the setup wizard generates the project for you); the AWS
+example below is illustrative — AWS and Azure are coming soon.
 
 ```python
 import pulumi
@@ -250,14 +241,12 @@ pulumi.export("kubeconfig", cluster.eks.kubeconfig)
 Install from PyPI with cloud-specific dependencies:
 
 ```bash
-# For AWS
-uv add 'pulumi-pinecone-byoc[aws]'
-
-# For GCP
+# GCP (supported)
 uv add 'pulumi-pinecone-byoc[gcp]'
 
-# For Azure
-uv add 'pulumi-pinecone-byoc[azure]'
+# AWS and Azure — coming soon (not yet supported)
+# uv add 'pulumi-pinecone-byoc[aws]'
+# uv add 'pulumi-pinecone-byoc[azure]'
 ```
 
 ## Troubleshooting
@@ -266,7 +255,7 @@ uv add 'pulumi-pinecone-byoc[azure]'
 
 The setup wizard runs preflight checks for cloud quotas. If these fail:
 
-**AWS:**
+**AWS** _(coming soon)_:
 1. **VPC Quota** - Request a limit increase via AWS Service Quotas
 2. **Elastic IPs** - Release unused EIPs or request a limit increase
 3. **NAT Gateways** - Request a limit increase
@@ -278,7 +267,7 @@ The setup wizard runs preflight checks for cloud quotas. If these fail:
 3. **GKE Clusters** - Request a limit increase if at quota
 4. **IP Addresses** - Release unused static IPs or request more
 
-**Azure:**
+**Azure** _(coming soon)_:
 1. **Resource Providers** - Register required providers (Microsoft.Compute, Microsoft.ContainerService, etc.)
 2. **vCPU Quotas** - Request vCPU quota increases via Azure Portal
 3. **AKS Clusters** - Request a limit increase if at quota
