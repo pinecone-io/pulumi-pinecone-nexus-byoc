@@ -1,6 +1,6 @@
 """Nexus deployment component.
 
-Installs the vendored Nexus Helm releases into the BYOC cluster after the
+Installs the Nexus Helm releases into the BYOC cluster after the
 Pinecone DB stack is up. Two releases are installed in order:
 
   1. ``nexus-fdb`` — FoundationDB for Nexus. The app release references its
@@ -8,21 +8,38 @@ Pinecone DB stack is up. Two releases are installed in order:
   2. ``nexus`` — the app services (api, orchestrator, knowql, file-proxy,
      console, gateway). Depends on the fdb release and the DB stack bootstrap.
 
-Charts are the vendored copies at ``<repo>/nexus/deploy/helm/{nexus,nexus-fdb}``.
+Charts come from the installed ``pinecone-nexus-charts`` package. For local
+chart development, set ``PINECONE_NEXUS_CHARTS_PATH`` to the ``deploy/helm``
+directory of a local Nexus checkout; that path takes precedence over the package.
 """
 
 import hashlib
+import os
 import tomllib
 from dataclasses import dataclass
+from importlib.resources import files
 from pathlib import Path
 
 import pulumi
 import pulumi_kubernetes as k8s
 from pulumi_kubernetes.helm.v3 import Release, ReleaseArgs
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_NEXUS_CHART = str(_REPO_ROOT / "nexus" / "deploy" / "helm" / "nexus")
-_NEXUS_FDB_CHART = str(_REPO_ROOT / "nexus" / "deploy" / "helm" / "nexus-fdb")
+
+def _resolve_charts_root() -> Path:
+    """Root holding the `nexus` and `nexus-fdb` chart dirs.
+
+    Prod: the installed ``pinecone_nexus_charts`` package. Dev: set
+    ``PINECONE_NEXUS_CHARTS_PATH`` to a local ``deploy/helm`` checkout.
+    """
+    override = os.environ.get("PINECONE_NEXUS_CHARTS_PATH")
+    if override:
+        return Path(override)
+    return Path(str(files("pinecone_nexus_charts")))
+
+
+_CHARTS = _resolve_charts_root()
+_NEXUS_CHART = str(_CHARTS / "nexus")
+_NEXUS_FDB_CHART = str(_CHARTS / "nexus-fdb")
 
 _NEXUS_NAMESPACE = "nexus"
 _NEXUS_TASKS_NAMESPACE = "nexus-tasks"
