@@ -1,5 +1,6 @@
 """Pinecone BYOC setup wizard."""
 
+import importlib.metadata
 import json
 import os
 import platform
@@ -58,11 +59,11 @@ def _is_storage_bucket_prefix(value: str) -> bool:
 
 PINECONE_VERSION = "main-94a9e90"
 
-# Nexus image tag (proposal §10 `nexus-version`). Coordinated with
-# PINECONE_VERSION as a combined release manifest; the wizard writes it only
-# for a "Nexus BYOC" install. When unset in config the GCP component falls back
-# to `pinecone-version` so a single combined manifest still works.
-NEXUS_VERSION = PINECONE_VERSION
+# Nexus image tag (proposal §10 `nexus-version`). Nexus is versioned
+# independently of PINECONE_VERSION: the default comes from the installed
+# pinecone-nexus-charts package so the image and charts always move together.
+# Override at runtime with PINECONE_NEXUS_VERSION.
+NEXUS_VERSION = importlib.metadata.version("pinecone-nexus-charts")
 
 # Nexus images live in their own Artifact Registry repo (`nexus`), co-located on
 # the DB registry host; DB/pinetools images stay in the `unstable` repo.

@@ -17,12 +17,21 @@ import hashlib
 import os
 import tomllib
 from dataclasses import dataclass
+from importlib.metadata import version as _pkg_version
 from importlib.resources import files
 from pathlib import Path
 
 import pulumi
 import pulumi_kubernetes as k8s
 from pulumi_kubernetes.helm.v3 import Release, ReleaseArgs
+
+
+def installed_charts_version() -> str:
+    """Version of the installed ``pinecone-nexus-charts`` package.
+
+    Used as the default Nexus image tag so image and charts move together.
+    """
+    return _pkg_version("pinecone-nexus-charts")
 
 
 def _resolve_charts_root() -> Path:

@@ -8,7 +8,13 @@ from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
-from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
+from ..common.nexus import (
+    Nexus,
+    NexusBlobStorage,
+    NexusConfig,
+    derive_api_key_refs,
+    installed_charts_version,
+)
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     DATADOG_DISABLED_PLACEHOLDER,
@@ -408,7 +414,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._gke.k8s_provider,
                 image_registry=(nx.image_registry or NEXUS_GCP_REGISTRY.base_url),
-                nexus_version=nx.version or args.pinecone_version,
+                nexus_version=nx.version or installed_charts_version(),
                 byoc_env=nx.byoc_env or self._environment.env_name,
                 cloud="gcp",
                 region=args.region,
