@@ -64,14 +64,16 @@ RESERVED_SUBNETS = ["10.100.1.0/24", "10.100.2.0/24"]  # PSC, regional managed p
 RESERVED_BLOCK = "10.100.0.0/16"  # broader guard used when suggesting a free range
 
 
-def _in_region_subnet_ranges(project: str, region: str) -> list[ipaddress.IPv4Network]:
+def _in_region_subnet_ranges(
+    project: str, region: str
+) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
     """Primary + secondary subnet ranges in-region, across all networks.
 
     Used only to compute a suggestion -- the conflict *decision* stays with the
     wizard's checker. Including secondary ranges (GKE pods/services) keeps the
     suggestion clear of ranges a future cluster might auto-allocate.
     """
-    ranges: list[ipaddress.IPv4Network] = []
+    ranges: list[ipaddress.IPv4Network | ipaddress.IPv6Network] = []
     try:
         r = subprocess.run(
             [
