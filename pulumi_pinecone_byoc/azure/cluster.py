@@ -8,10 +8,12 @@ import pulumi_azuread as azuread
 
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
-from ..common.k8s_secrets import K8sSecrets
+from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
+from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
 from ..common.pinetools import Pinetools
 from ..common.providers import (
+    DATADOG_DISABLED_PLACEHOLDER,
     AmpAccess,
     AmpAccessArgs,
     ApiKey,
@@ -25,12 +27,13 @@ from ..common.providers import (
     ServiceAccount,
     ServiceAccountArgs,
 )
-from ..common.registry import AZURE_REGISTRY
+from ..common.registry import AZURE_REGISTRY, NEXUS_AZURE_REGISTRY
 from ..common.uninstaller import ClusterUninstaller
 from .aks import AKS
 from .database import Database
 from .dns import DNS
 from .k8s_addons import K8sAddons
+from .nexus_storage import NexusBlobContainers
 from .nlb import InternalLoadBalancer
 from .pulumi_operator import PulumiOperator
 from .storage import BlobStorage
@@ -40,7 +43,7 @@ from .vnet import VNet
 @dataclass
 class NodePool:
     name: str
-    vm_size: str = "Standard_D4s_v5"
+    vm_size: str = "Standard_D4s_v7"
     min_size: int = 1
     max_size: int = 10
     disk_size_gb: int = 100
@@ -72,6 +75,14 @@ class PineconeAzureClusterArgs:
     # features
     public_access_enabled: bool = True
     deletion_protection: bool = True
+    # when True, provision the Azure AD Application + ServicePrincipal (and the
+    # subscription-scoped Storage Blob Data Reader role) that the data-importer
+    # uses for cross-account blob reads. Requires the deploying identity to hold
+    # the Entra directory permission to create a ServicePrincipal. Defaults to
+    # False; DB + Nexus ingest->query does not need it.
+    storage_integration_enabled: bool = False
+    # Set to a NexusConfig to deploy Nexus alongside the DB stack. None = DB-only.
+    nexus: NexusConfig | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -107,7 +118,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
         client_config = azure_native.authorization.get_client_config()
         tenant_id = client_config.tenant_id
 
-        # phase 1: authentication
         self._environment = Environment(
             f"{config.resource_prefix}-environment",
             EnvironmentArgs(
@@ -158,16 +168,18 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._service_account]),
         )
 
-        self._datadog_api_key = DatadogApiKey(
-            f"{config.resource_prefix}-datadog-api-key",
-            DatadogApiKeyArgs(
-                api_url=args.api_url,
-                cpgw_api_key=self._cpgw_api_key.key,
-            ),
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
-        )
+        if config.datadog_enabled:
+            self._datadog_api_key = DatadogApiKey(
+                f"{config.resource_prefix}-datadog-api-key",
+                DatadogApiKeyArgs(
+                    api_url=args.api_url,
+                    cpgw_api_key=self._cpgw_api_key.key,
+                ),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
+            )
+        else:
+            self._datadog_api_key = None
 
-        # phase 2: infrastructure
         self._vnet = VNet(
             f"{config.resource_prefix}-vnet",
             config,
@@ -202,7 +214,6 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vnet]),
         )
 
-        # phase 3: dns & networking
         self._subdomain = self._environment.env_name
 
         self._dns = DNS(
@@ -247,62 +258,95 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             ),
         )
 
-        # storage integration: Azure AD app for data-importer blob access
-        storage_integration_app = azuread.Application(
-            f"{config.resource_prefix}-storage-integration-app",
-            display_name=self._cell_name.apply(lambda cn: f"{cn}-storage-integration"),
-            opts=child_opts,
-        )
-        storage_integration_sp = azuread.ServicePrincipal(
-            f"{config.resource_prefix}-storage-integration-sp",
-            client_id=storage_integration_app.client_id,
-            opts=child_opts,
-        )
-        storage_integration_password = azuread.ServicePrincipalPassword(
-            f"{config.resource_prefix}-storage-integration-password",
-            service_principal_id=storage_integration_sp.id,
-            opts=child_opts,
-        )
-        # Storage Blob Data Reader at subscription scope so the data-importer
-        # can read from any storage account the customer points their import URI at.
-        STORAGE_BLOB_DATA_READER_ROLE = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
-        azure_native.authorization.RoleAssignment(
-            f"{config.resource_prefix}-storage-integration-role",
-            principal_id=storage_integration_sp.object_id,
-            principal_type="ServicePrincipal",
-            role_definition_id=pulumi.Output.from_input(config.subscription_id).apply(
-                lambda sid: (
-                    f"/subscriptions/{sid}/providers/Microsoft.Authorization"
-                    f"/roleDefinitions/{STORAGE_BLOB_DATA_READER_ROLE}"
-                )
-            ),
-            scope=pulumi.Output.from_input(config.subscription_id).apply(
-                lambda sid: f"/subscriptions/{sid}"
-            ),
-            opts=child_opts,
-        )
+        # Storage integration: Azure AD app for data-importer blob access.
+        # Gated on storage_integration_enabled (default False) — requires Entra
+        # directory permission the deploying identity may lack.
+        storage_integration_app_client_id: pulumi.Input[str] | None = None
+        storage_integration_password_value: pulumi.Input[str] | None = None
+        if args.storage_integration_enabled:
+            storage_integration_app = azuread.Application(
+                f"{config.resource_prefix}-storage-integration-app",
+                display_name=self._cell_name.apply(lambda cn: f"{cn}-storage-integration"),
+                opts=child_opts,
+            )
+            storage_integration_sp = azuread.ServicePrincipal(
+                f"{config.resource_prefix}-storage-integration-sp",
+                client_id=storage_integration_app.client_id,
+                opts=child_opts,
+            )
+            storage_integration_password = azuread.ServicePrincipalPassword(
+                f"{config.resource_prefix}-storage-integration-password",
+                service_principal_id=storage_integration_sp.id,
+                opts=child_opts,
+            )
+            # Storage Blob Data Reader at subscription scope so the data-importer
+            # can read from any storage account the customer points their import URI at.
+            STORAGE_BLOB_DATA_READER_ROLE = "2a2b9908-6ea1-4ae2-8e65-a410df84e7d1"
+            azure_native.authorization.RoleAssignment(
+                f"{config.resource_prefix}-storage-integration-role",
+                principal_id=storage_integration_sp.object_id,
+                principal_type="ServicePrincipal",
+                role_definition_id=pulumi.Output.from_input(config.subscription_id).apply(
+                    lambda sid: (
+                        f"/subscriptions/{sid}/providers/Microsoft.Authorization"
+                        f"/roleDefinitions/{STORAGE_BLOB_DATA_READER_ROLE}"
+                    )
+                ),
+                scope=pulumi.Output.from_input(config.subscription_id).apply(
+                    lambda sid: f"/subscriptions/{sid}"
+                ),
+                opts=child_opts,
+            )
+            storage_integration_app_client_id = storage_integration_app.client_id
+            storage_integration_password_value = storage_integration_password.value
 
-        # phase 4: k8s configuration
         self._k8s_secrets = K8sSecrets(
             f"{config.resource_prefix}-k8s-secrets",
             k8s_provider=self._aks.k8s_provider,
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
-            dd_api_key=self._datadog_api_key.api_key,
+            dd_api_key=(
+                self._datadog_api_key.api_key
+                if self._datadog_api_key is not None
+                else DATADOG_DISABLED_PLACEHOLDER
+            ),
+            nexus=NexusSecretConfig(
+                api_key=args.pinecone_api_key,
+                gemini_api_key=args.nexus.gemini_api_key,
+                azure_storage_access_key=(
+                    self._storage.access_key
+                    if args.nexus.storage_bucket_prefix is not None
+                    else None
+                ),
+                provider_keys=args.nexus.provider_keys,
+                provider_key_refs=(
+                    derive_api_key_refs(args.nexus.inference_models_toml)
+                    if args.nexus.inference_models_toml is not None
+                    else None
+                ),
+            )
+            if args.nexus is not None
+            else None,
             control_db=self._database.control_db,
             system_db=self._database.system_db,
             azure_storage_access_key=self._storage.access_key,
-            storage_integration_credentials={
-                "client-secret": storage_integration_password.value,
-            },
+            storage_integration_credentials=(
+                {"client-secret": storage_integration_password_value}
+                if storage_integration_password_value is not None
+                else None
+            ),
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[
-                    self._aks,
-                    self._cpgw_api_key,
-                    self._api_key,
-                    self._datadog_api_key,
-                    self._database,
+                    r
+                    for r in [
+                        self._aks,
+                        self._cpgw_api_key,
+                        self._api_key,
+                        self._datadog_api_key,
+                        self._database,
+                    ]
+                    if r is not None
                 ],
             ),
         )
@@ -363,8 +407,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             "aws_amp_remote_write_url": self._amp_access.amp_remote_write_endpoint,
             "aws_amp_sigv4_role_arn": self._amp_access.pinecone_role_arn,
             "aws_amp_ingest_role_arn": "",
-            "azure_storage_integration_tenant_id": tenant_id,
-            "azure_storage_integration_client_id": storage_integration_app.client_id,
+            # None when storage integration is disabled; the configmap component
+            # omits None-valued entries.
+            "azure_storage_integration_tenant_id": (
+                tenant_id if storage_integration_app_client_id is not None else None
+            ),
+            "azure_storage_integration_client_id": storage_integration_app_client_id,
         }
 
         self._k8s_configmaps = K8sConfigMaps(
@@ -397,10 +445,69 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             k8s_provider=self._aks.k8s_provider,
             pinecone_version=args.pinecone_version,
             pinetools_image=AZURE_REGISTRY.pinetools_image(args.pinecone_version),
+            config_map_dependencies=self._k8s_configmaps.config_maps,
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._aks, self._k8s_configmaps]),
         )
 
-        # phase 5: cleanup
+        # Install Nexus after the DB stack is ready.
+        self._nexus = None
+        self._nexus_containers = None
+        if args.nexus is not None:
+            nx = args.nexus
+            blob_storage = None
+            if nx.storage_bucket_prefix is not None:
+                self._nexus_containers = NexusBlobContainers(
+                    f"{config.resource_prefix}-nexus-containers",
+                    prefix=nx.storage_bucket_prefix,
+                    storage_account_name=self._storage.storage_account.name,
+                    resource_group_name=self._vnet.resource_group_name,
+                    opts=pulumi.ResourceOptions(parent=self, depends_on=[self._storage]),
+                )
+                blob_storage = NexusBlobStorage(
+                    source=self._nexus_containers.source,
+                    knowledge=self._nexus_containers.knowledge,
+                    archive=self._nexus_containers.archive,
+                    account_name=self._storage.account_name,
+                )
+            self._nexus = Nexus(
+                f"{config.resource_prefix}-nexus",
+                k8s_provider=self._aks.k8s_provider,
+                image_registry=(nx.image_registry or NEXUS_AZURE_REGISTRY.base_url),
+                nexus_version=nx.version or args.pinecone_version,
+                byoc_env=nx.byoc_env or self._environment.env_name,
+                cloud="azure",
+                region=args.region,
+                pinecone_prod=args.global_env == "prod",
+                byoc_project_id=nx.byoc_project_id or self._api_key.project_id,
+                byoc_vault_id=(
+                    nx.byoc_vault_id or self._resource_suffix.apply(lambda s: f"byoc{s}")
+                ),
+                storage_class="managed-csi",
+                ingress_class=None,
+                blob_storage=blob_storage,
+                # CPGW index client: Nexus reaches the control-plane gateway at
+                # {api_url}/internal/cpgw (synchronous CPS db_index_id on create).
+                # Paired with the cpgw-api-key in the nexus-config secret.
+                cpgw_api_url=f"{args.api_url}/internal/cpgw",
+                inference_models_toml=nx.inference_models_toml,
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    depends_on=[
+                        r
+                        for r in [
+                            self._aks,
+                            self._k8s_secrets,
+                            self._k8s_configmaps,
+                            self._acr_refresher,
+                            self._pinetools,
+                            self._nlb,
+                            self._nexus_containers,
+                        ]
+                        if r is not None
+                    ],
+                ),
+            )
+
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
             kubeconfig=self._aks.kubeconfig,
@@ -442,7 +549,9 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 "sli_checkers_project_id": self._api_key.project_id,
                 "cpgw_api_key": self._k8s_secrets.cpgw_api_key,
                 "cpgw_admin_api_key_id": self._cpgw_api_key.key_id,
-                "datadog_api_key_id": self._datadog_api_key.key_id,
+                "datadog_api_key_id": (
+                    self._datadog_api_key.key_id if self._datadog_api_key is not None else None
+                ),
                 "customer_tags": config.custom_tags,
                 "pulumi_backend_url": self._pulumi_operator.backend_url,
                 "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,
@@ -475,12 +584,18 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             node_pools = [
                 NodePoolConfig(
                     name="default",
-                    vm_size="Standard_D4s_v5",
+                    vm_size="Standard_D4s_v7",
                     min_size=1,
                     max_size=10,
                     disk_size_gb=100,
                 ),
             ]
+
+        # Add Nexus node pools when enabled; DB-only deploys are unaffected.
+        if args.nexus is not None:
+            from .aks import nexus_node_pools
+
+            node_pools.extend(nexus_node_pools())
 
         return AzureConfig(
             region=args.region,
@@ -525,6 +640,20 @@ class PineconeAzureCluster(pulumi.ComponentResource):
     @property
     def dns(self) -> DNS:
         return self._dns
+
+    @property
+    def nexus(self) -> Nexus | None:
+        return self._nexus
+
+    @property
+    def nexus_byoc_project_id(self) -> pulumi.Input[str] | None:
+        """The BYOC single-tenant project id Nexus runs under, or None on DB-only deploys."""
+        return self._nexus.byoc_project_id if self._nexus is not None else None
+
+    @property
+    def nexus_byoc_session_credential(self) -> pulumi.Output[str] | None:
+        """The seeded BYOC login credential, or None on DB-only deploys. Marked secret."""
+        return self._k8s_secrets.byoc_session_credential
 
     @property
     def private_link_service_name(self) -> pulumi.Output[str]:

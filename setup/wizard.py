@@ -1,11 +1,17 @@
 """Pinecone BYOC setup wizard."""
 
+import json
 import os
 import platform
+import re
 import subprocess
 import sys
 from dataclasses import dataclass
 
+# shared UNIQUE preflight checks -- single source of truth, also used by the
+# standalone dev/preflight.py so the two never drift. First-party module in
+# this same directory (added to sys.path when run as a script / by preflight.py).
+import preflight_checks
 import yaml
 from rich.console import Console
 from rich.panel import Panel
@@ -20,7 +26,248 @@ if not IS_WINDOWS:
 # pinecone blue
 BLUE = "#002BFF"
 
+# Canonical UUID form (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2). The Nexus BYOC
+# project id is the Pinecone gCPS project UUID (matched against `projects.id` by
+# CPGW), NOT the GCP project name -- so it must validate as a UUID.
+_UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
+
+
+def _is_uuid(value: str) -> bool:
+    return bool(_UUID_RE.match(value.strip()))
+
+
+# GCS bucket-name prefix for Nexus storage. The cluster provisions
+# `{prefix}-source`, `{prefix}-knowledge`, `{prefix}-archive`; the longest
+# suffix is `-knowledge` (10 chars). GCS bucket names (and the derived DNS
+# labels) must stay <= 63 chars, so the prefix itself must be <= 53. Bucket
+# names are lowercase letters/digits/hyphens and must start and end with an
+# alphanumeric character.
+_STORAGE_PREFIX_MAX_LEN = 53
+_STORAGE_PREFIX_RE = re.compile(r"^[a-z0-9]([a-z0-9-]*[a-z0-9])?$")
+
+
+def _is_storage_bucket_prefix(value: str) -> bool:
+    value = value.strip()
+    if not value or len(value) > _STORAGE_PREFIX_MAX_LEN:
+        return False
+    return bool(_STORAGE_PREFIX_RE.match(value))
+
+
 PINECONE_VERSION = "main-94a9e90"
+
+# Nexus image tag (proposal §10 `nexus-version`). Coordinated with
+# PINECONE_VERSION as a combined release manifest; the wizard writes it only
+# for a "Nexus BYOC" install. When unset in config the GCP component falls back
+# to `pinecone-version` so a single combined manifest still works.
+NEXUS_VERSION = PINECONE_VERSION
+
+# Nexus images live in their own Artifact Registry repo (`nexus`), co-located on
+# the DB registry host; DB/pinetools images stay in the `unstable` repo.
+NEXUS_IMAGE_REGISTRY = "us-docker.pkg.dev/pinecone-artifacts/nexus"
+
+# Azure analogue: Nexus images in the `nexus` repo co-located on the ACR host.
+NEXUS_AZURE_IMAGE_REGISTRY = "pinecone.azurecr.io/nexus"
+
+# Inference-proxy model-routing template written into the generated project when
+# Nexus is enabled. It's layered onto the proxy's baked default as the `byoc`
+# config profile; the customer edits it, then `pulumi up` ships it as a
+# ConfigMap. Gemini + Pinecone only (the keys a BYOC deploy reliably has) and a
+# complete `default` profile -- project/phase overrides are intentionally out of
+# scope. Keep every api_key_ref's secret wired via `nexus-provider-keys.<ref>`.
+NEXUS_INFERENCE_MODELS_TEMPLATE = """\
+# Inference models for this BYOC deployment.
+#
+# These are the models the deployment serves and how the lite / standard / pro
+# (chat) and default (embedding / rerank) tiers route to them. Edit to taste,
+# then run `pulumi up`. This config fully defines the catalog -- only the models
+# listed here are served.
+#
+# For every `api_key_ref` below, set its secret value (the wizard printed the
+# exact commands):
+#   pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <value>
+# Pinecone embed/rerank models need NO api_key_ref -- the caller supplies the
+# key per request via the Api-Key header.
+#
+# Keep it complete: chat tiers lite/standard/pro, plus one embedding default and
+# one rerank default. Each tier's model_ref must be one of the ids defined below
+# (and listed in the matching supported_*_models).
+
+# --- Model catalog -------------------------------------------------------
+[llm_models."gemini-3.1-flash-lite"]
+api_style      = "litellm"
+model          = "gemini/gemini-3.1-flash-lite"
+api_key_ref    = "gemini-api-key"
+label          = "Gemini 3.1 Flash Lite"
+provider       = "gemini"
+max_retries    = 2
+context_window = 1_000_000
+
+[llm_models."gemini-3.5-flash"]
+api_style      = "litellm"
+model          = "gemini/gemini-3.5-flash"
+api_key_ref    = "gemini-api-key"
+label          = "Gemini 3.5 Flash"
+provider       = "gemini"
+max_retries    = 2
+context_window = 1_000_000
+
+[llm_models."gemini-3.1-pro-preview"]
+api_style      = "litellm"
+model          = "gemini/gemini-3.1-pro-preview"
+api_key_ref    = "gemini-api-key"
+label          = "Gemini 3.1 Pro"
+provider       = "gemini"
+max_retries    = 5
+context_window = 1_000_000
+
+# FIXED -- do not change. The embedding model is locked platform-wide (the
+# nexus index dimension is frozen to it); pointing the embedding tier elsewhere
+# fails deploy validation.
+[embedding_models.multilingual-e5-large]
+api_style       = "pinecone"
+model           = "multilingual-e5-large"
+max_retries     = 2
+max_input_chars = 1000
+max_batch_size  = 96
+
+[rerank_models.bge-reranker-v2-m3]
+api_style            = "pinecone"
+model                = "bge-reranker-v2-m3"
+max_retries          = 2
+max_query_chars      = 1000
+max_doc_chars        = 800
+max_docs_per_request = 100
+
+# --- Default profile (the deployment baseline) ---------------------------
+[default]
+supported_llm_models       = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview"]
+supported_embedding_models = ["multilingual-e5-large"]
+supported_rerank_models    = ["bge-reranker-v2-m3"]
+
+[default.llm.tiers.lite]
+model_ref = "gemini-3.1-flash-lite"
+
+[default.llm.tiers.standard]
+model_ref = "gemini-3.5-flash"
+
+[default.llm.tiers.pro]
+model_ref = "gemini-3.1-pro-preview"
+
+[default.embedding.tiers.default]
+model_ref = "multilingual-e5-large"
+
+[default.rerank.tiers.default]
+model_ref = "bge-reranker-v2-m3"
+
+# Override the image default's search.standard phase, which otherwise inherits
+# claude-sonnet-4-6 (not in this deployment's gemini-only supported_llm_models).
+[default.llm.phase_overrides.search.standard]
+model_ref = "gemini-3.5-flash"
+"""
+
+# Filename of the routing overlay written into the generated project.
+NEXUS_INFERENCE_MODELS_FILENAME = "inference-proxy-models.toml"
+
+# Header comment for wizard/headless-built model TOML (mirrors the template).
+_INFERENCE_MODELS_HEADER = """\
+# Inference models for this BYOC deployment (generated by the setup wizard).
+#
+# These are the chat (lite/standard/pro) and rerank models the deployment
+# serves. Edit to taste, then run `pulumi up`. This config fully defines the
+# catalog -- only the models listed here are served.
+#
+# The embedding model is FIXED platform-wide (the nexus index dimension is
+# frozen to it) and is injected automatically -- it is not operator-configurable.
+#
+# For every `api_key_ref` below, set its secret value:
+#   pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <value>
+# Pinecone embed/rerank models need NO api_key_ref (caller supplies it per request).
+"""
+
+# Embedding is fixed platform-wide: every embedding tier must resolve to this
+# exact pinecone model or the proxy refuses to start (the nexus index dimension
+# is frozen to it -- see nexus-inference-proxy EXPECTED_EMBEDDING_MODEL). The
+# wizard never prompts for it; it's injected into every built catalog here.
+LOCKED_EMBEDDING_MODEL_ID = "multilingual-e5-large"
+_LOCKED_EMBEDDING_TABLE = (
+    f'[embedding_models."{LOCKED_EMBEDDING_MODEL_ID}"]\n'
+    'api_style       = "pinecone"\n'
+    f'model           = "{LOCKED_EMBEDDING_MODEL_ID}"\n'
+    "max_retries     = 2\n"
+    "max_input_chars = 1000\n"
+    "max_batch_size  = 96\n"
+)
+
+
+def _toml_scalar(v) -> str:
+    """Serialize a scalar (str / bool / int) as a TOML value."""
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, int):
+        return str(v)
+    if isinstance(v, str):
+        return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    raise ValueError(f"unsupported TOML scalar type for value {v!r}")
+
+
+def _emit_model_table(map_name: str, model_id: str, fields: dict) -> str:
+    # Quote the id key: catalog ids legitimately contain dots / slashes / hyphens.
+    lines = [f'[{map_name}."{model_id}"]']
+    for key, value in fields.items():
+        if value is None or value == "":
+            continue
+        lines.append(f"{key} = {_toml_scalar(value)}")
+    return "\n".join(lines)
+
+
+def build_inference_models_toml(
+    llm_models: dict[str, dict],
+    rerank_models: dict[str, dict],
+    tiers: dict[str, str],
+) -> str:
+    """Render a complete inference-routing TOML from operator-chosen catalogs.
+
+    Only chat + rerank are operator-configurable. ``tiers`` keys:
+    ``lite`` / ``standard`` / ``pro`` (llm ids) and ``rerank`` (a rerank id).
+    The embedding model is fixed platform-wide and injected here (it is not a
+    parameter). ``supported_<surface>_models`` is auto-set to every defined id.
+    The clean-slate sentinel is NOT emitted here -- it's injected at deploy time
+    by the Nexus component so this file stays purely about models.
+    """
+    if not llm_models or not rerank_models:
+        raise ValueError("llm and rerank must each have at least one model")
+
+    parts: list[str] = [_INFERENCE_MODELS_HEADER, "# --- Model catalog ---"]
+    for model_id, fields in llm_models.items():
+        parts.append(_emit_model_table("llm_models", model_id, fields))
+    # Embedding is fixed -- inject it rather than taking it from the operator.
+    parts.append("# Embedding is fixed platform-wide and managed by Pinecone BYOC.")
+    parts.append(_LOCKED_EMBEDDING_TABLE.rstrip())
+    for model_id, fields in rerank_models.items():
+        parts.append(_emit_model_table("rerank_models", model_id, fields))
+
+    supported_llm = "[" + ", ".join(_toml_scalar(i) for i in llm_models) + "]"
+    supported_rr = "[" + ", ".join(_toml_scalar(i) for i in rerank_models) + "]"
+    parts.append(
+        "# --- Default profile (supported_* = every model defined above) ---\n"
+        "[default]\n"
+        f"supported_llm_models = {supported_llm}\n"
+        f"supported_embedding_models = [{_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}]\n"
+        f"supported_rerank_models = {supported_rr}\n\n"
+        f"[default.llm.tiers.lite]\nmodel_ref = {_toml_scalar(tiers['lite'])}\n\n"
+        f"[default.llm.tiers.standard]\nmodel_ref = {_toml_scalar(tiers['standard'])}\n\n"
+        f"[default.llm.tiers.pro]\nmodel_ref = {_toml_scalar(tiers['pro'])}\n\n"
+        f"[default.embedding.tiers.default]\nmodel_ref = {_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}\n\n"
+        f"[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers['rerank'])}\n\n"
+        "# Override the image default's search.standard phase, which otherwise\n"
+        "# inherits claude-sonnet-4-6 (not in this deployment's supported_llm_models).\n"
+        f"[default.llm.phase_overrides.search.standard]\nmodel_ref = {_toml_scalar(tiers['standard'])}"
+    )
+    return "\n\n".join(parts) + "\n"
+
 
 console = Console()
 
@@ -399,6 +646,182 @@ class BaseSetupWizard:
             console.print(f"  [dim]{name.title()} to apply: {metadata}[/]")
 
         return metadata
+
+    # ----- Inference model catalog (interactive guided entry) -------------
+
+    def _prompt_int(self, message: str, default: int | None = None) -> int:
+        while True:
+            raw = self._prompt(message, "" if default is None else str(default)).strip()
+            try:
+                return int(raw)
+            except ValueError:
+                console.print("  [red]Enter a whole number.[/]")
+
+    def _choose_from(self, message: str, options: list[str]) -> str:
+        """Prompt the user to pick one id from `options` (defaults to the first)."""
+        console.print(f"  [dim]Available: {', '.join(options)}[/]")
+        while True:
+            choice = self._prompt(message, options[0]).strip()
+            if choice in options:
+                return choice
+            console.print(f"  [red]Pick one of: {', '.join(options)}[/]")
+
+    def _collect_inference_models(self) -> str | None:
+        """Guided catalog entry + tier selection -> routing TOML.
+
+        Returns None to fall back to the default (Gemini + Pinecone) template.
+        The clean-slate sentinel is injected later by the Nexus component, so the
+        operator only ever deals with models and tiers here.
+        """
+        console.print()
+        console.print(
+            "  [dim]Define the chat + rerank models this deployment serves, or use"
+            " the default Gemini + Pinecone set. The embedding model is fixed"
+            f" ({LOCKED_EMBEDDING_MODEL_ID}) and configured automatically.[/]"
+        )
+        if self._prompt("Customize inference models? (y/N)", "N").strip().lower() not in (
+            "y",
+            "yes",
+        ):
+            return None
+
+        llm = self._collect_surface_models("llm")
+        rerank = self._collect_surface_models("rerank")
+
+        console.print()
+        console.print("  [dim]Now map the tiers to models you defined.[/]")
+        tiers = {
+            "lite": self._choose_from("Chat 'lite' model", list(llm)),
+            "standard": self._choose_from("Chat 'standard' model", list(llm)),
+            "pro": self._choose_from("Chat 'pro' model", list(llm)),
+            "rerank": self._choose_from("Rerank model", list(rerank)),
+        }
+        return build_inference_models_toml(llm, rerank, tiers)
+
+    def _collect_surface_models(self, surface: str) -> dict[str, dict]:
+        """Loop collecting >=1 model for one surface (llm / rerank)."""
+        console.print()
+        console.print(f"  {self._step(f'{surface.title()} models')}")
+        models: dict[str, dict] = {}
+        while True:
+            verb = "another" if models else "a"
+            ask = self._prompt(f"Add {verb} {surface} model? (Y/n)", "Y").strip().lower()
+            if ask not in ("y", "yes", ""):
+                if models:
+                    return models
+                console.print(f"  [red]At least one {surface} model is required.[/]")
+                continue
+            model_id = self._prompt("  Model id (catalog key, e.g. my-flash)").strip()
+            if not model_id:
+                console.print("  [red]Model id is required.[/]")
+                continue
+            if surface == "llm":
+                models[model_id] = self._collect_llm_model()
+            else:
+                models[model_id] = self._collect_rerank_model()
+
+    def _collect_llm_model(self) -> dict:
+        console.print(
+            "  [dim]api_style: 'litellm' (a model LiteLLM knows) or 'openai'"
+            " (any OpenAI-compatible endpoint).[/]"
+        )
+        api_style = self._choose_from("  api_style", ["litellm", "openai"])
+        if api_style == "litellm":
+            console.print(
+                "  [dim]model must match LiteLLM EXACTLY (e.g. gemini/gemini-2.5-flash,"
+                " anthropic/claude-...). See https://models.litellm.ai/[/]"
+            )
+        fields: dict = {
+            "api_style": api_style,
+            "model": self._prompt("  model").strip(),
+            "label": self._prompt("  label (shown in console)").strip(),
+            "provider": self._prompt("  provider tag (gemini / claude / openai / ...)").strip(),
+            "api_key_ref": self._prompt(
+                "  api_key_ref (provider key env var, e.g. gemini-api-key)"
+            ).strip(),
+            "max_retries": self._prompt_int("  max_retries", 2),
+        }
+        if api_style == "openai":
+            # base_url + token budgets are required for openai-compat (no LiteLLM
+            # registry to infer them from).
+            fields["base_url"] = self._prompt("  base_url (required)").strip()
+            fields["context_window"] = self._prompt_int("  context_window (required)")
+            fields["max_output_tokens"] = self._prompt_int("  max_output_tokens (required)")
+        else:
+            base_url = self._prompt(
+                "  base_url (optional, Enter for LiteLLM's default endpoint)", ""
+            ).strip()
+            if base_url:
+                fields["base_url"] = base_url
+            cw = self._prompt(
+                "  context_window (optional, Enter to let LiteLLM decide)", ""
+            ).strip()
+            if cw:
+                fields["context_window"] = int(cw)
+            mot = self._prompt("  max_output_tokens (optional, Enter to skip)", "").strip()
+            if mot:
+                fields["max_output_tokens"] = int(mot)
+        return fields
+
+    def _collect_rerank_model(self) -> dict:
+        console.print(
+            "  [dim]api_style: 'pinecone' (Pinecone-hosted, key supplied per request)"
+            " or 'litellm'.[/]"
+        )
+        api_style = self._choose_from("  api_style", ["pinecone", "litellm"])
+        fields: dict = {"api_style": api_style, "model": self._prompt("  model").strip()}
+        if api_style == "litellm":
+            fields["api_key_ref"] = self._prompt("  api_key_ref (provider key env var)").strip()
+            base_url = self._prompt(
+                "  base_url (optional, Enter for LiteLLM's default endpoint)", ""
+            ).strip()
+            if base_url:
+                fields["base_url"] = base_url
+        fields["max_retries"] = self._prompt_int("  max_retries", 2)
+        fields["max_query_chars"] = self._prompt_int("  max_query_chars", 1000)
+        fields["max_doc_chars"] = self._prompt_int("  max_doc_chars", 800)
+        fields["max_docs_per_request"] = self._prompt_int("  max_docs_per_request", 100)
+        return fields
+
+    def _headless_inference_models_toml(self) -> str | None:
+        """Build the routing TOML from env vars (headless mode), or None to use
+        the default template when none are set.
+
+        Only chat + rerank are operator-configurable (the embedding model is
+        fixed platform-wide and injected automatically). Env contract (JSON object
+        is id -> model-definition, fields exactly as in nexus-inference-proxy's
+        [<surface>_models.<id>] tables):
+          PINECONE_NEXUS_LLM_MODELS / _RERANK_MODELS   (JSON)
+          PINECONE_NEXUS_LLM_LITE / _STANDARD / _PRO    (model id)
+          PINECONE_NEXUS_RERANK_MODEL                   (model id)
+        """
+        if not os.environ.get("PINECONE_NEXUS_LLM_MODELS"):
+            console.print(
+                "  [dim]Inference models: using the default Gemini + Pinecone catalog."
+                " To customize, set PINECONE_NEXUS_LLM_MODELS / _RERANK_MODELS"
+                " (JSON id->definition) plus the tier ids PINECONE_NEXUS_LLM_LITE /"
+                " _STANDARD / _PRO and PINECONE_NEXUS_RERANK_MODEL. The embedding"
+                f" model is fixed ({LOCKED_EMBEDDING_MODEL_ID}).[/]"
+            )
+            return None
+        try:
+            llm = json.loads(os.environ["PINECONE_NEXUS_LLM_MODELS"])
+            rerank = json.loads(os.environ["PINECONE_NEXUS_RERANK_MODELS"])
+            tiers = {
+                "lite": os.environ["PINECONE_NEXUS_LLM_LITE"],
+                "standard": os.environ["PINECONE_NEXUS_LLM_STANDARD"],
+                "pro": os.environ["PINECONE_NEXUS_LLM_PRO"],
+                "rerank": os.environ["PINECONE_NEXUS_RERANK_MODEL"],
+            }
+        except KeyError as exc:
+            raise ValueError(
+                f"PINECONE_NEXUS_LLM_MODELS is set but {exc} is missing -- set "
+                "PINECONE_NEXUS_RERANK_MODELS and the tier ids "
+                "PINECONE_NEXUS_LLM_{LITE,STANDARD,PRO} / PINECONE_NEXUS_RERANK_MODEL."
+            ) from exc
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON in PINECONE_NEXUS_*_MODELS: {exc}") from exc
+        return build_inference_models_toml(llm, rerank, tiers)
 
     def _get_project_name(self) -> str:
         console.print()
@@ -855,7 +1278,7 @@ class AWSSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "us-east-1")
         azs_str = os.environ.get("PINECONE_AZS", f"{region}a,{region}b")
-        azs = [az.strip() for az in azs_str.split(",")]
+        azs = [az.strip() for az in azs_str.split(",") if az.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
@@ -1500,6 +1923,8 @@ class GCPPreflightChecker:
 class GCPSetupWizard(BaseSetupWizard):
     HEADER_TITLE = "Pinecone BYOC Setup Wizard - GCP"
     HEADER_SUBTITLE = "This wizard will set up everything you need to deploy Pinecone BYOC on GCP."
+    # one more than the base flow: GCP adds a Nexus enablement step (task 2.7).
+    TOTAL_STEPS = 14
     DEFAULT_CIDR = "10.112.0.0/12"
     DELETION_PROTECTION_DESC = "Protect AlloyDB databases and GCS buckets from accidental deletion"
     PRIVATE_ACCESS_DESC = "Private access requires Private Service Connect (more secure)"
@@ -1511,6 +1936,12 @@ class GCPSetupWizard(BaseSetupWizard):
             return self._run_headless(output_dir)
 
         self._print_header()
+
+        # Fail-fast: input-independent auth/tooling checks run BEFORE the long
+        # interactive flow, so stale/missing auth fails in seconds instead of
+        # after the operator fills in the whole wizard.
+        if not self._run_early_auth_checks():
+            return False
 
         api_key = self._get_api_key()
         if not api_key:
@@ -1530,6 +1961,7 @@ class GCPSetupWizard(BaseSetupWizard):
         deletion_protection = self._get_deletion_protection()
         public_access = self._get_public_access()
         labels = self._get_custom_metadata()
+        nexus = self._get_nexus_config()
 
         if not self._run_preflight_checks(project_id, region, zones, cidr):
             return False
@@ -1550,6 +1982,7 @@ class GCPSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             labels,
+            nexus,
         )
 
     def _run_headless(self, output_dir: str) -> bool:
@@ -1567,13 +2000,71 @@ class GCPSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "us-central1")
         zones_str = os.environ.get("PINECONE_AZS", f"{region}-a,{region}-b")
-        zones = [z.strip() for z in zones_str.split(",")]
+        zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
         )
         public_access = os.environ.get("PINECONE_PUBLIC_ACCESS", "true").lower() == "true"
         project_name = os.environ.get("PINECONE_PROJECT_NAME", "pinecone-byoc")
+
+        # Nexus is opt-in; default off so headless DB-only installs are unchanged.
+        if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
+            # The Pinecone gCPS project UUID the BYOC vault belongs to (matched
+            # against projects.id by CPGW). Required, and must NOT be the GCP
+            # project name -- pass it as its own var, distinct from GCP_PROJECT.
+            byoc_project_id = os.environ.get("PINECONE_BYOC_PROJECT_ID", "").strip()
+            if not byoc_project_id:
+                console.print(
+                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID environment variable is required"
+                    " when Nexus is enabled (the Pinecone gCPS project UUID)"
+                )
+                return False
+            if not _is_uuid(byoc_project_id):
+                console.print(
+                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID must be a Pinecone gCPS project"
+                    " UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2), not the GCP"
+                    " project name"
+                )
+                return False
+            # The GCS bucket-name prefix Nexus storage is provisioned under.
+            # OPTIONAL override on GCP: when unset, the package derives it from
+            # the cell name (`pc-nexus-{cell}`), which is minted server-side
+            # mid-deploy and so can't be supplied in advance. Accepts the
+            # canonical PINECONE_NEXUS_STORAGE_BUCKET_PREFIX, falling back to the
+            # shorter PINECONE_STORAGE_BUCKET_PREFIX alias.
+            storage_bucket_prefix = (
+                os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX")
+                or os.environ.get("PINECONE_STORAGE_BUCKET_PREFIX")
+                or ""
+            ).strip()
+            if storage_bucket_prefix and not _is_storage_bucket_prefix(storage_bucket_prefix):
+                console.print(
+                    "  [red]✗[/] PINECONE_NEXUS_STORAGE_BUCKET_PREFIX must be a valid"
+                    " GCS bucket name prefix: lowercase letters, digits and hyphens,"
+                    " starting and ending alphanumeric, and at most"
+                    f" {_STORAGE_PREFIX_MAX_LEN} chars (so {{prefix}}-knowledge stays"
+                    " <= 63)"
+                )
+                return False
+            nexus = {
+                "enabled": True,
+                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
+                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                "image_registry": os.environ.get(
+                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_IMAGE_REGISTRY
+                ),
+                "inference_base": os.environ.get(
+                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
+                ),
+                "byoc_project_id": byoc_project_id,
+                # Optional override; blank => package derives `pc-nexus-{cell}`.
+                "storage_bucket_prefix": storage_bucket_prefix,
+                # Inference models from env JSON, or None -> default template.
+                "inference_models_toml": self._headless_inference_models_toml(),
+            }
+        else:
+            nexus = {"enabled": False}
 
         return self._generate_project(
             output_dir,
@@ -1586,7 +2077,40 @@ class GCPSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             {},
+            nexus,
         )
+
+    def _run_early_auth_checks(self) -> bool:
+        """Input-independent fail-fast checks (host tools, live GCP ADC, Pulumi
+        backend/SSO session).
+
+        These need no operator input, so they run up front: a customer with a
+        missing tool or a stale auth session fails here, not after filling in
+        the whole wizard. The impersonation/RAPT check is OFF by default and
+        only runs when ADC is already impersonation-based.
+        """
+        console.print()
+        console.print(f"  {self._step('Auth & tooling preflight')}")
+
+        tools_ok = preflight_checks.check_host_tools()
+        auth_ok = preflight_checks.check_auth()
+
+        # RAPT is meaningful only for impersonation-based ADC; never run by
+        # default for plain user/SA-key auth.
+        if preflight_checks.adc_is_impersonated():
+            preflight_checks.check_gcp_rapt()
+
+        # No stack dir yet (the project isn't generated); this warns rather than
+        # fails, but still surfaces an obviously-dead backend session early.
+        preflight_checks.check_pulumi_session(None)
+
+        if not (tools_ok and auth_ok):
+            console.print()
+            console.print(
+                "  [red]Auth/tooling checks failed. Fix the issues above before proceeding.[/]"
+            )
+            return False
+        return True
 
     def _validate_gcp_creds(self) -> str | None:
         console.print()
@@ -1699,6 +2223,106 @@ class GCPSetupWizard(BaseSetupWizard):
         zones = [zone.strip() for zone in zones_input.split(",")]
         return zones
 
+    def _get_nexus_config(self) -> dict:
+        """Prompt for Nexus enablement and inference config (proposal §4.6/§4.7,
+        task 2.7). Default is a DB-only install (nexus_enabled=False) so the
+        generated project is byte-for-byte unchanged unless Nexus is requested.
+
+        For a "Nexus BYOC" install the wizard collects the BYOC env id
+        (PINECONE_BYOC_ENV), the Nexus image tag (nexus-version), and the
+        inference base (INFERENCE_BASE). The inference key is not prompted: it
+        defaults to the minted deployment key per §10.
+        """
+        console.print()
+        console.print(f"  {self._step('Nexus')}")
+        console.print()
+        console.print("  [dim]Deploy Nexus alongside the Pinecone DB stack in the same cluster.[/]")
+
+        response = self._prompt("Enable Nexus? (y/N)", "N")
+        if response.strip().lower() not in ("y", "yes"):
+            return {"enabled": False}
+
+        console.print()
+        console.print(
+            "  [dim]The `.byoc` deployment environment id Nexus targets for index CRUD.[/]"
+        )
+        byoc_env = self._prompt(
+            "Enter PINECONE_BYOC_ENV (or press Enter to use the minted env)", ""
+        )
+
+        console.print()
+        console.print("  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]")
+        console.print(
+            "  [dim]This is NOT the GCP project name -- it is the gCPS project id"
+            " (matched against projects.id), e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2.[/]"
+        )
+        while True:
+            byoc_project_id = self._prompt("Enter Pinecone gCPS project UUID").strip()
+            if _is_uuid(byoc_project_id):
+                break
+            console.print(
+                "  [red]Enter a valid UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2);"
+                " this is the Pinecone gCPS project id, not the GCP project name.[/]"
+            )
+
+        console.print()
+        console.print("  [dim]Optional override for the Nexus storage bucket prefix. Leave[/]")
+        console.print("  [dim]blank to auto-derive it from the cell name (pc-nexus-<cell>);[/]")
+        console.print("  [dim]the cluster provisions {prefix}-source/-knowledge/-archive.[/]")
+        while True:
+            storage_bucket_prefix = self._prompt(
+                "Enter a Nexus storage bucket prefix override (blank = auto-derive)"
+            ).strip()
+            if not storage_bucket_prefix or _is_storage_bucket_prefix(storage_bucket_prefix):
+                break
+            console.print(
+                "  [red]Enter a valid GCS bucket name prefix: lowercase letters,"
+                " digits and hyphens, starting and ending alphanumeric, and at most"
+                f" {_STORAGE_PREFIX_MAX_LEN} chars (so {{prefix}}-knowledge stays <="
+                " 63).[/]"
+            )
+
+        nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
+
+        console.print()
+        console.print(
+            "  [dim]Container registry for the Nexus images (the `nexus` repo, co-located on the DB registry host).[/]"
+        )
+        image_registry = self._prompt("Enter nexus image registry", NEXUS_IMAGE_REGISTRY)
+
+        console.print()
+        console.print(
+            "  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]"
+        )
+        inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
+
+        # Guided model catalog + tier selection. None => default template is
+        # written and the operator can edit it before `pulumi up`.
+        inference_models_toml = self._collect_inference_models()
+
+        console.print()
+        if inference_models_toml is None:
+            console.print(
+                f"  [dim]Using the default Gemini + Pinecone models. Edit [/]"
+                f"{NEXUS_INFERENCE_MODELS_FILENAME}[dim] in the generated project to change them.[/]"
+            )
+        console.print(
+            "  [dim]Each model's api_key_ref is a secret; set one per provider before"
+            " `pulumi up`:[/]\n"
+            "  [dim]pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <key>[/]"
+        )
+
+        return {
+            "enabled": True,
+            "byoc_env": byoc_env.strip(),
+            "byoc_project_id": byoc_project_id,
+            "storage_bucket_prefix": storage_bucket_prefix,
+            "nexus_version": nexus_version.strip() or NEXUS_VERSION,
+            "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
+            "inference_base": inference_base.strip() or "https://api.pinecone.io",
+            "inference_models_toml": inference_models_toml,
+        }
+
     def _run_preflight_checks(
         self, project_id: str, region: str, zones: list[str], cidr: str
     ) -> bool:
@@ -1706,8 +2330,16 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print(f"  {self._step('Preflight Checks')}")
         console.print()
 
+        # IAM roles/owner is input-dependent (needs the project) and the
+        # cloud-side checker never tests it -- run it here alongside the quota/
+        # API/CIDR checks. BYOC creates IAM SAs + bindings, so roles/editor is
+        # insufficient.
+        iam_ok = preflight_checks.check_iam_owner(project_id)
+
         checker = GCPPreflightChecker(project_id, region, zones, cidr)
-        if not checker.run_checks():
+        cloud_ok = checker.run_checks()
+
+        if not (iam_ok and cloud_ok):
             console.print()
             console.print(
                 "  [red]Preflight checks failed. Fix the issues above before proceeding.[/]"
@@ -1728,7 +2360,9 @@ class GCPSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         labels: dict[str, str],
+        nexus: dict | None = None,
     ):
+        nexus = nexus or {"enabled": False}
         console.print()
 
         if not self._check_pulumi_installed():
@@ -1755,12 +2389,20 @@ class GCPSetupWizard(BaseSetupWizard):
         # create __main__.py
         main_py = '''"""Pinecone BYOC deployment on GCP."""
 
+import pathlib
+
 import pulumi
 from pulumi_pinecone_byoc.gcp import PineconeGCPCluster, PineconeGCPClusterArgs
+from pulumi_pinecone_byoc.common.nexus import NexusConfig
 
 config = pulumi.Config()
 gcp_config = pulumi.Config("gcp")
 
+_nexus_enabled = config.get_bool("nexus-enabled")
+# Inference-proxy model routing: the wizard-generated, customer-edited overlay
+# next to this file. Shipped to the proxy as the `byoc` config profile.
+_models_toml_path = pathlib.Path(__file__).parent / "inference-proxy-models.toml"
+_nexus_models_toml = _models_toml_path.read_text() if _models_toml_path.exists() else None
 cluster = PineconeGCPCluster(
     "pinecone-byoc",
     PineconeGCPClusterArgs(
@@ -1773,14 +2415,29 @@ cluster = PineconeGCPCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         labels=config.get_object("labels") or {},
+        nexus=NexusConfig(
+            version=config.get("nexus-version"),
+            byoc_env=config.get("nexus-byoc-env"),
+            image_registry=config.get("nexus-image-registry"),
+            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
+            byoc_project_id=config.get("nexus-byoc-project-id"),
+            byoc_vault_id=config.get("nexus-byoc-vault-id"),
+            byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
+            storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+            inference_models_toml=_nexus_models_toml,
+            provider_keys=config.get_secret_object("nexus-provider-keys"),
+        ) if _nexus_enabled else None,
     ),
 )
 
 update_kubeconfig_command = cluster.name.apply(
-    lambda name: f"gcloud container clusters get-credentials {name} --region {config.require('region')} --project {gcp_config.require('project')}"
+    lambda name: f"gcloud container clusters get-credentials {name} --region {config.require(\'region\')} --project {gcp_config.require(\'project\')}"
 )
 pulumi.export("environment", cluster.environment.env_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
+if _nexus_enabled:
+    pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
+    pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("psc_service_attachment", cluster.psc_service_attachment)
 '''
@@ -1801,6 +2458,16 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
         with open(pyproject_path, "w") as f:
             f.write(pyproject_content)
         console.print("  [green]✓[/] Created pyproject.toml")
+
+        # Nexus inference-proxy model-routing config. Written only when Nexus is
+        # enabled; __main__.py reads it into NexusConfig.inference_models_toml.
+        # Use the wizard/headless-built catalog when present, else the editable
+        # default template.
+        if nexus.get("enabled"):
+            models_path = os.path.join(output_dir, NEXUS_INFERENCE_MODELS_FILENAME)
+            with open(models_path, "w") as f:
+                f.write(nexus.get("inference_models_toml") or NEXUS_INFERENCE_MODELS_TEMPLATE)
+            console.print(f"  [green]✓[/] Created {NEXUS_INFERENCE_MODELS_FILENAME}")
 
         # create stack config
         stack_name = self._stack_name
@@ -1823,6 +2490,35 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
             config_content += f"  {project_name}:labels:\n"
             for key, value in labels.items():
                 config_content += f'    {key}: "{value}"\n'
+
+        # Nexus BYOC install (task 2.7). Written only when enabled, so DB-only
+        # stacks omit these keys entirely and `nexus_enabled` stays False.
+        if nexus.get("enabled"):
+            config_content += f"  {project_name}:nexus-enabled: true\n"
+            config_content += (
+                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
+            )
+            config_content += (
+                f"  {project_name}:nexus-image-registry: "
+                f"{nexus.get('image_registry', NEXUS_IMAGE_REGISTRY)}\n"
+            )
+            if nexus.get("byoc_env"):
+                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
+            if nexus.get("byoc_project_id"):
+                config_content += (
+                    f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
+                )
+            config_content += (
+                f"  {project_name}:nexus-inference-base: "
+                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
+            )
+            if nexus.get("storage_bucket_prefix"):
+                config_content += (
+                    f"  {project_name}:nexus-storage-bucket-prefix: "
+                    f"{nexus['storage_bucket_prefix']}\n"
+                )
+            # nexus-gemini-api-key is a secret; set it out-of-band:
+            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
@@ -2137,7 +2833,7 @@ class AzurePreflightChecker:
 
     def _check_vm_skus(self):
         vm_skus = [
-            "Standard_D4s_v5",
+            "Standard_D4s_v7",
             "Standard_L2aos_v4",
             "Standard_L2s_v4",
             "Standard_L4s_v4",
@@ -2217,7 +2913,7 @@ class AzurePreflightChecker:
 
             data = json.loads(result.stdout)
             required_skus = [
-                "Standard_D4s_v5",
+                "Standard_D4s_v7",
                 "Standard_L2aos_v4",
                 "Standard_L2s_v4",
                 "Standard_L4s_v4",
@@ -2441,13 +3137,52 @@ class AzureSetupWizard(BaseSetupWizard):
 
         region = os.environ.get("PINECONE_REGION", "eastus")
         zones_str = os.environ.get("PINECONE_AZS", "1,2")
-        zones = [z.strip() for z in zones_str.split(",")]
+        zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
             os.environ.get("PINECONE_DELETION_PROTECTION", "true").lower() == "true"
         )
         public_access = os.environ.get("PINECONE_PUBLIC_ACCESS", "true").lower() == "true"
         project_name = os.environ.get("PINECONE_PROJECT_NAME", "pinecone-byoc")
+
+        # Nexus is opt-in; default off so headless DB-only installs are unchanged.
+        # Uses the SAME env var names as the GCP wizard, except the image registry
+        # defaults to the Azure ACR `nexus` repo.
+        if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
+            # The Pinecone gCPS project UUID the BYOC vault belongs to (matched
+            # against projects.id by CPGW). Required, and must NOT be the cloud
+            # project/subscription -- pass it as its own var.
+            byoc_project_id = os.environ.get("PINECONE_BYOC_PROJECT_ID", "").strip()
+            if not byoc_project_id:
+                console.print(
+                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID environment variable is required"
+                    " when Nexus is enabled (the Pinecone gCPS project UUID)"
+                )
+                return False
+            if not _is_uuid(byoc_project_id):
+                console.print(
+                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID must be a Pinecone gCPS project"
+                    " UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2)"
+                )
+                return False
+            nexus = {
+                "enabled": True,
+                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
+                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+                "image_registry": os.environ.get(
+                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_AZURE_IMAGE_REGISTRY
+                ),
+                "inference_base": os.environ.get(
+                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
+                ),
+                "byoc_project_id": byoc_project_id,
+                # Opt-in blob backend: unset = fs (PVC); set = provision blob containers.
+                "storage_bucket_prefix": os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""),
+                # Inference models from env JSON, or None -> default template.
+                "inference_models_toml": self._headless_inference_models_toml(),
+            }
+        else:
+            nexus = {"enabled": False}
 
         return self._generate_project(
             output_dir,
@@ -2460,6 +3195,7 @@ class AzureSetupWizard(BaseSetupWizard):
             deletion_protection,
             public_access,
             {},
+            nexus,
         )
 
     def _validate_azure_creds(self) -> str | None:
@@ -2534,7 +3270,7 @@ class AzureSetupWizard(BaseSetupWizard):
             if result.returncode == 0:
                 data = _json.loads(result.stdout)
                 required_skus = [
-                    "Standard_D4s_v5",
+                    "Standard_D4s_v7",
                     "Standard_L2aos_v4",
                     "Standard_L2s_v4",
                     "Standard_L4s_v4",
@@ -2608,7 +3344,9 @@ class AzureSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         tags: dict[str, str],
+        nexus: dict | None = None,
     ):
+        nexus = nexus or {"enabled": False}
         console.print()
 
         if not self._check_pulumi_installed():
@@ -2633,11 +3371,19 @@ class AzureSetupWizard(BaseSetupWizard):
 
         main_py = '''"""Pinecone BYOC deployment on Azure."""
 
+import pathlib
+
 import pulumi
 from pulumi_pinecone_byoc.azure import PineconeAzureCluster, PineconeAzureClusterArgs
+from pulumi_pinecone_byoc.common.nexus import NexusConfig
 
 config = pulumi.Config()
 
+_nexus_enabled = config.get_bool("nexus-enabled")
+# Inference-proxy model routing: the wizard-generated, customer-edited overlay
+# next to this file. Shipped to the proxy as the `byoc` config profile.
+_models_toml_path = pathlib.Path(__file__).parent / "inference-proxy-models.toml"
+_nexus_models_toml = _models_toml_path.read_text() if _models_toml_path.exists() else None
 cluster = PineconeAzureCluster(
     "pinecone-byoc",
     PineconeAzureClusterArgs(
@@ -2650,15 +3396,30 @@ cluster = PineconeAzureCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         tags=config.get_object("tags"),
+        nexus=NexusConfig(
+            version=config.get("nexus-version"),
+            byoc_env=config.get("nexus-byoc-env"),
+            image_registry=config.get("nexus-image-registry"),
+            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
+            byoc_project_id=config.get("nexus-byoc-project-id"),
+            byoc_vault_id=config.get("nexus-byoc-vault-id"),
+            byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
+            storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+            inference_models_toml=_nexus_models_toml,
+            provider_keys=config.get_secret_object("nexus-provider-keys"),
+        ) if _nexus_enabled else None,
     ),
 )
 
 region = config.require("region")
 update_kubeconfig_command = cluster.name.apply(
-    lambda name: f"az aks get-credentials --resource-group {name.removeprefix('cluster-')}-{region}-rg --name {name}"
+    lambda name: f"az aks get-credentials --resource-group {name.removeprefix(\'cluster-\')}-{region}-rg --name {name}"
 )
 pulumi.export("environment", cluster.environment.env_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
+if _nexus_enabled:
+    pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
+    pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("private_link_service_name", cluster.private_link_service_name)
     pulumi.export("private_link_service_resource_group", cluster.private_link_service_resource_group)
@@ -2680,6 +3441,16 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
             f.write(pyproject_content)
         console.print("  [green]✓[/] Created pyproject.toml")
 
+        # Nexus inference-proxy model-routing config. Written only when Nexus is
+        # enabled; __main__.py reads it into NexusConfig.inference_models_toml.
+        # Use the wizard/headless-built catalog when present, else the editable
+        # default template.
+        if nexus.get("enabled"):
+            models_path = os.path.join(output_dir, NEXUS_INFERENCE_MODELS_FILENAME)
+            with open(models_path, "w") as f:
+                f.write(nexus.get("inference_models_toml") or NEXUS_INFERENCE_MODELS_TEMPLATE)
+            console.print(f"  [green]✓[/] Created {NEXUS_INFERENCE_MODELS_FILENAME}")
+
         stack_name = self._stack_name
         deletion_protection_str = str(deletion_protection).lower()
         public_access_str = str(public_access).lower()
@@ -2699,6 +3470,36 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
             config_content += f"  {project_name}:tags:\n"
             for key, value in tags.items():
                 config_content += f'    {key}: "{value}"\n'
+
+        # Nexus BYOC install. Written only when enabled, so DB-only stacks omit
+        # these keys entirely and `nexus_enabled` stays False. Mirrors the GCP
+        # wizard.
+        if nexus.get("enabled"):
+            config_content += f"  {project_name}:nexus-enabled: true\n"
+            config_content += (
+                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
+            )
+            config_content += (
+                f"  {project_name}:nexus-image-registry: "
+                f"{nexus.get('image_registry', NEXUS_AZURE_IMAGE_REGISTRY)}\n"
+            )
+            if nexus.get("byoc_env"):
+                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
+            if nexus.get("byoc_project_id"):
+                config_content += (
+                    f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
+                )
+            config_content += (
+                f"  {project_name}:nexus-inference-base: "
+                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
+            )
+            if nexus.get("storage_bucket_prefix"):
+                config_content += (
+                    f"  {project_name}:nexus-storage-bucket-prefix: "
+                    f"{nexus['storage_bucket_prefix']}\n"
+                )
+            # nexus-gemini-api-key is a secret; set it out-of-band:
+            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:

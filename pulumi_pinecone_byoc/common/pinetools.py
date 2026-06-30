@@ -5,15 +5,15 @@ import pulumi_kubernetes as k8s
 
 WAIT_FOR_REGCRED_SCRIPT = """
 echo "Waiting for regcred secret in pc-control-plane namespace..."
-for i in $(seq 1 60); do
+for i in $(seq 1 240); do
   if kubectl get secret regcred -n pc-control-plane >/dev/null 2>&1; then
     echo "regcred secret found!"
     exit 0
   fi
-  echo "Attempt $i/60: regcred not found, waiting 10s..."
+  echo "Attempt $i/240: regcred not found, waiting 10s..."
   sleep 10
 done
-echo "ERROR: regcred secret not found after 10 minutes"
+echo "ERROR: regcred secret not found after 40 minutes"
 exit 1
 """
 
@@ -32,6 +32,7 @@ class Pinetools(pulumi.ComponentResource):
         pinecone_version: pulumi.Input[str],
         pinetools_image: str,
         schedule: str = "0 * * * *",
+        config_map_dependencies: list[pulumi.Resource] | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
         super().__init__("pinecone:byoc:Pinetools", name, None, opts)
@@ -142,7 +143,9 @@ class Pinetools(pulumi.ComponentResource):
         ) -> k8s.batch.v1.JobSpecArgs:
             return k8s.batch.v1.JobSpecArgs(
                 backoff_limit=1,
-                active_deadline_seconds=1800,
+                # 70 min = 40 min regcred wait (ESO can take ~31 min on a cold
+                # cluster) + ~30 min install/check budget.
+                active_deadline_seconds=4200,
                 ttl_seconds_after_finished=300,
                 template=k8s.core.v1.PodTemplateSpecArgs(
                     spec=make_pod_spec(init_containers),
@@ -166,6 +169,12 @@ class Pinetools(pulumi.ComponentResource):
         # job name includes version suffix: same version = skip, new version = replace
         version_output = pulumi.Output.from_input(pinecone_version)
         job_name = version_output.apply(_job_name)
+        # On a cold cluster the install Job must not start until the
+        # pc-cluster-information base configmaps (pc-cluster-information/config and
+        # pc-pulumi-outputs/config) and the namespace exist. This guards that
+        # Pulumi-managed ordering race; it does NOT address the foundationdb per-service
+        # nil-template crash (those per-service service.values.yaml configmaps are
+        # generated at runtime by `pinetools cluster install` itself).
         install_job = k8s.batch.v1.Job(
             f"{name}-install-job",
             metadata=k8s.meta.v1.ObjectMetaArgs(name=job_name, namespace=namespace),
@@ -173,7 +182,7 @@ class Pinetools(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(
                 parent=self,
                 provider=k8s_provider,
-                depends_on=[self.sa, cronjob],
+                depends_on=[self.sa, cronjob, *(config_map_dependencies or [])],
             ),
         )
         self.install_job_name = install_job.metadata.name

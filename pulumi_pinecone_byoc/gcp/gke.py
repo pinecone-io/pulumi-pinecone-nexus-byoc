@@ -6,10 +6,48 @@ import pulumi
 import pulumi_gcp as gcp
 import pulumi_kubernetes as k8s
 
-from config.base import NodePoolConfig
+from config.base import NodePoolConfig, NodePoolTaint
 from config.gcp import GCPConfig
 
 _GCP_SA_MAX_LEN = 30
+
+# Nexus schedules its pods onto pools labeled `nexus-role: services` (long-lived
+# services: api, orchestrator, console, gateway) and `nexus-role: jobs` (ephemeral
+# task pods: query/curate/optimize) via nodeSelector + tolerations. The label
+# key/value and the matching NoSchedule taint are tolerated by the chart at
+# nexus/deploy/helm/nexus/values.yaml:93-109 (`scheduling.services`/`scheduling.jobs`).
+# Both pools carry the taint so only nexus workloads land there.
+_NEXUS_ROLE_LABEL = "nexus-role"
+
+
+def nexus_node_pools() -> list[NodePoolConfig]:
+    """Node pools for the Nexus workloads (services + jobs).
+
+    Mirrors the existing DB pool conventions (machine type / autoscaling); the
+    labels and taints match the nexus Helm chart's nodeSelector/tolerations so
+    only nexus pods schedule onto them. Gated by `nexus_enabled` upstream so
+    DB-only deploys are unaffected.
+    """
+    return [
+        NodePoolConfig(
+            name="nexus-services",
+            machine_type="n2-standard-4",
+            min_size=1,
+            max_size=10,
+            disk_size_gb=100,
+            labels={_NEXUS_ROLE_LABEL: "services"},
+            taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="services", effect="NO_SCHEDULE")],
+        ),
+        NodePoolConfig(
+            name="nexus-jobs",
+            machine_type="n2-standard-4",
+            min_size=1,
+            max_size=10,
+            disk_size_gb=100,
+            labels={_NEXUS_ROLE_LABEL: "jobs"},
+            taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="jobs", effect="NO_SCHEDULE")],
+        ),
+    ]
 
 
 def _sa_id(prefix: str, cell_name: str) -> str:
@@ -81,6 +119,12 @@ class GKE(pulumi.ComponentResource):
             subnetwork=subnet_id,
             networking_mode="VPC_NATIVE",
             datapath_provider="ADVANCED_DATAPATH",
+            # Pin the control plane to a specific patched GKE build (see
+            # config/base.py / gcp/cluster.py kubernetes_version) instead of letting
+            # the UNSPECIFIED release channel pick a drifting default that may be an
+            # affected Cilium-endpoint-deletion-race build. UNSPECIFIED channel +
+            # min_master_version is the standard way to pin to an exact version.
+            min_master_version=config.kubernetes_version,
             initial_node_count=1,
             remove_default_node_pool=True,
             ip_allocation_policy=gcp.container.ClusterIpAllocationPolicyArgs(
@@ -409,6 +453,11 @@ users:
         node_pool = gcp.container.NodePool(
             node_pool_name,
             cluster=cluster_id,
+            # Pin nodes to the same patched build as the control plane. With
+            # auto_upgrade=False (below) nodes won't drift on their own, so we set
+            # `version` explicitly to keep control-plane and node versions consistent
+            # and on the Cilium-race fix build.
+            version=config.kubernetes_version,
             autoscaling=autoscaling,
             node_config=gcp.container.NodePoolNodeConfigArgs(
                 machine_type=np_config.machine_type,

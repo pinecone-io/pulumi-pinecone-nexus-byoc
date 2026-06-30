@@ -6,10 +6,12 @@ import pulumi
 
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
-from ..common.k8s_secrets import K8sSecrets
+from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
+from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
 from ..common.pinetools import Pinetools
 from ..common.providers import (
+    DATADOG_DISABLED_PLACEHOLDER,
     AmpAccess,
     AmpAccessArgs,
     ApiKey,
@@ -23,13 +25,14 @@ from ..common.providers import (
     ServiceAccount,
     ServiceAccountArgs,
 )
-from ..common.registry import GCP_REGISTRY
+from ..common.registry import GCP_REGISTRY, NEXUS_GCP_REGISTRY
 from ..common.uninstaller import ClusterUninstaller
 from .alloydb import AlloyDB
 from .dns import DNS
 from .gcs import GCSBuckets
 from .gke import GKE
 from .k8s_addons import K8sAddons
+from .nexus_gcs import NexusGCSBuckets
 from .nlb import InternalLoadBalancer
 from .pulumi_operator import PulumiOperator
 from .vpc import VPC
@@ -63,7 +66,13 @@ class PineconeGCPClusterArgs:
     vpc_cidr: str = "10.112.0.0/12"
 
     # kubernetes
-    kubernetes_version: str = "1.33"
+    # Pinned to a specific patched GKE build (not a channel-tracked minor) to avoid
+    # the Cilium endpoint-deletion race present in affected 1.33/1.34/1.35 builds.
+    # Fix floor is 1.33.11-gke.1137000; this build is >= the floor and verified
+    # available in us-central1. Pin both the control plane (min_master_version) and
+    # node pools (NodePool.version) in gke.py so nodes match and don't drift
+    # (node pools run with auto_upgrade=False).
+    kubernetes_version: str = "1.33.12-gke.1208000"
     node_pools: list[NodePool] | None = None
 
     # dns
@@ -72,6 +81,8 @@ class PineconeGCPClusterArgs:
     # features
     public_access_enabled: bool = True
     deletion_protection: bool = True
+    # Set to a NexusConfig to deploy Nexus alongside the DB stack. None = DB-only.
+    nexus: NexusConfig | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -117,8 +128,6 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         )
 
         self._cell_name = _cell_name(self._environment)
-
-        # resource_suffix for unique GCP resource names (last 4 chars of cell_name)
         self._resource_suffix = self._cell_name.apply(lambda cn: cn[-4:])
 
         self._cpgw_api_key = CpgwApiKey(
@@ -155,14 +164,17 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._service_account]),
         )
 
-        self._datadog_api_key = DatadogApiKey(
-            f"{config.resource_prefix}-datadog-api-key",
-            DatadogApiKeyArgs(
-                api_url=args.api_url,
-                cpgw_api_key=self._cpgw_api_key.key,
-            ),
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
-        )
+        if config.datadog_enabled:
+            self._datadog_api_key = DatadogApiKey(
+                f"{config.resource_prefix}-datadog-api-key",
+                DatadogApiKeyArgs(
+                    api_url=args.api_url,
+                    cpgw_api_key=self._cpgw_api_key.key,
+                ),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
+            )
+        else:
+            self._datadog_api_key = None
 
         self._vpc = VPC(
             f"{config.resource_prefix}-vpc",
@@ -236,7 +248,23 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             k8s_provider=self._gke.k8s_provider,
             cpgw_api_key=self._cpgw_api_key.key,
             gcps_api_key=self._api_key.value,
-            dd_api_key=self._datadog_api_key.api_key,
+            dd_api_key=(
+                self._datadog_api_key.api_key
+                if self._datadog_api_key is not None
+                else DATADOG_DISABLED_PLACEHOLDER
+            ),
+            nexus=NexusSecretConfig(
+                api_key=args.pinecone_api_key,
+                gemini_api_key=args.nexus.gemini_api_key,
+                provider_keys=args.nexus.provider_keys,
+                provider_key_refs=(
+                    derive_api_key_refs(args.nexus.inference_models_toml)
+                    if args.nexus.inference_models_toml is not None
+                    else None
+                ),
+            )
+            if args.nexus is not None
+            else None,
             control_db=self._alloydb.control_db,
             system_db=self._alloydb.system_db,
             storage_integration_credentials=(
@@ -247,11 +275,15 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[
-                    self._gke,
-                    self._cpgw_api_key,
-                    self._api_key,
-                    self._datadog_api_key,
-                    self._alloydb,
+                    r
+                    for r in [
+                        self._gke,
+                        self._cpgw_api_key,
+                        self._api_key,
+                        self._datadog_api_key,
+                        self._alloydb,
+                    ]
+                    if r is not None
                 ],
             ),
         )
@@ -337,8 +369,78 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             k8s_provider=self._gke.k8s_provider,
             pinecone_version=args.pinecone_version,
             pinetools_image=GCP_REGISTRY.pinetools_image(args.pinecone_version),
+            config_map_dependencies=self._k8s_configmaps.config_maps,
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gke, self._k8s_configmaps]),
         )
+
+        # Install Nexus after the DB stack is ready.
+        self._nexus = None
+        self._nexus_gcs = None
+        if args.nexus is not None:
+            nx = args.nexus
+            # Durable GCS storage is always provisioned for GCP+Nexus (the `fs`
+            # default isn't durable and file upload needs object storage). The
+            # bucket prefix is derived from the cell name (`pc-nexus-{cell}`),
+            # mirroring the vault-id derivation -- the cell name is minted
+            # server-side mid-deploy, so the operator can't supply it in advance.
+            # `storage_bucket_prefix` is an optional override, not a gate.
+            storage_prefix = nx.storage_bucket_prefix or self._cell_name.apply(
+                lambda cn: f"pc-nexus-{cn}"
+            )
+            self._nexus_gcs = NexusGCSBuckets(
+                f"{config.resource_prefix}-nexus-gcs",
+                config,
+                cell_name=self._cell_name,
+                prefix=storage_prefix,
+                force_destroy=not args.deletion_protection,
+                opts=pulumi.ResourceOptions(parent=self),
+            )
+            blob_storage = NexusBlobStorage(
+                source=self._nexus_gcs.source,
+                knowledge=self._nexus_gcs.knowledge,
+                archive=self._nexus_gcs.archive,
+            )
+            # Annotate the Nexus KSAs so the pods assume the GCS SA via WI.
+            nexus_sa_annotations = self._nexus_gcs.gcs_sa_email.apply(
+                lambda email: {"iam.gke.io/gcp-service-account": email}
+            )
+            self._nexus = Nexus(
+                f"{config.resource_prefix}-nexus",
+                k8s_provider=self._gke.k8s_provider,
+                image_registry=(nx.image_registry or NEXUS_GCP_REGISTRY.base_url),
+                nexus_version=nx.version or args.pinecone_version,
+                byoc_env=nx.byoc_env or self._environment.env_name,
+                cloud="gcp",
+                region=args.region,
+                pinecone_prod=args.global_env == "prod",
+                byoc_project_id=nx.byoc_project_id or self._api_key.project_id,
+                byoc_vault_id=(
+                    nx.byoc_vault_id or self._resource_suffix.apply(lambda s: f"byoc{s}")
+                ),
+                blob_storage=blob_storage,
+                service_account_annotations=nexus_sa_annotations,
+                # CPGW index client: Nexus reaches the control-plane gateway at
+                # {api_url}/internal/cpgw (synchronous CPS db_index_id on create).
+                # Paired with the cpgw-api-key in the nexus-config secret.
+                cpgw_api_url=f"{args.api_url}/internal/cpgw",
+                inference_models_toml=nx.inference_models_toml,
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    depends_on=[
+                        r
+                        for r in [
+                            self._gke,
+                            self._k8s_secrets,
+                            self._k8s_configmaps,
+                            self._gcr_refresher,
+                            self._pinetools,
+                            self._nlb,
+                            self._nexus_gcs,
+                        ]
+                        if r is not None
+                    ],
+                ),
+            )
 
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
@@ -382,7 +484,9 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 "sli_checkers_project_id": self._api_key.project_id,
                 "cpgw_api_key": self._k8s_secrets.cpgw_api_key,
                 "cpgw_admin_api_key_id": self._cpgw_api_key.key_id,
-                "datadog_api_key_id": self._datadog_api_key.key_id,
+                "datadog_api_key_id": (
+                    self._datadog_api_key.key_id if self._datadog_api_key is not None else None
+                ),
                 "customer_tags": config.custom_tags,
                 "pulumi_backend_url": self._pulumi_operator.backend_url,
                 "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,
@@ -391,7 +495,6 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         )
 
     def _build_config(self, args: PineconeGCPClusterArgs):
-        # lazy import to avoid circular dependency: config imports are deferred
         from config.base import NodePoolConfig
         from config.gcp import AlloyDBConfig, AlloyDBInstanceConfig, GCPConfig
 
@@ -420,6 +523,12 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 ),
             ]
 
+        # Add Nexus node pools when enabled; DB-only deploys are unaffected.
+        if args.nexus is not None:
+            from .gke import nexus_node_pools
+
+            node_pools.extend(nexus_node_pools())
+
         control_db_cpu = 2
         system_db_cpu = 2
 
@@ -433,6 +542,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             kubernetes_version=args.kubernetes_version,
             parent_zone_name=args.parent_dns_zone_name,
             node_pools=node_pools,
+            nexus_enabled=args.nexus is not None,
             database=AlloyDBConfig(
                 control_db=AlloyDBInstanceConfig(
                     name="control-db",
@@ -493,3 +603,17 @@ class PineconeGCPCluster(pulumi.ComponentResource):
     @property
     def psc_service_attachment(self) -> pulumi.Output[str]:
         return self._nlb.service_attachment.self_link
+
+    @property
+    def nexus(self) -> Nexus | None:
+        return self._nexus
+
+    @property
+    def nexus_byoc_project_id(self) -> pulumi.Input[str] | None:
+        """The BYOC single-tenant project id Nexus runs under, or None on DB-only deploys."""
+        return self._nexus.byoc_project_id if self._nexus is not None else None
+
+    @property
+    def nexus_byoc_session_credential(self) -> pulumi.Output[str] | None:
+        """The seeded BYOC login credential, or None on DB-only deploys. Marked secret."""
+        return self._k8s_secrets.byoc_session_credential
