@@ -2466,7 +2466,12 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
         if nexus.get("enabled"):
             models_path = os.path.join(output_dir, NEXUS_INFERENCE_MODELS_FILENAME)
             with open(models_path, "w") as f:
-                f.write(nexus.get("inference_models_toml") or NEXUS_INFERENCE_MODELS_TEMPLATE)
+                inference_models_toml = nexus.get("inference_models_toml")
+                f.write(
+                    inference_models_toml
+                    if isinstance(inference_models_toml, str)
+                    else NEXUS_INFERENCE_MODELS_TEMPLATE
+                )
             console.print(f"  [green]✓[/] Created {NEXUS_INFERENCE_MODELS_FILENAME}")
 
         # create stack config
@@ -3448,7 +3453,12 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
         if nexus.get("enabled"):
             models_path = os.path.join(output_dir, NEXUS_INFERENCE_MODELS_FILENAME)
             with open(models_path, "w") as f:
-                f.write(nexus.get("inference_models_toml") or NEXUS_INFERENCE_MODELS_TEMPLATE)
+                inference_models_toml = nexus.get("inference_models_toml")
+                f.write(
+                    inference_models_toml
+                    if isinstance(inference_models_toml, str)
+                    else NEXUS_INFERENCE_MODELS_TEMPLATE
+                )
             console.print(f"  [green]✓[/] Created {NEXUS_INFERENCE_MODELS_FILENAME}")
 
         stack_name = self._stack_name
