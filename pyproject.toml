@@ -74,7 +74,7 @@ exclude = [
 ]
 
 [tool.ty.environment]
-extra-paths = ["typings"]
+extra-paths = ["typings", "setup"]
 
 [tool.ruff]
 target-version = "py312"

@@ -154,13 +154,13 @@ class K8sSecrets(pulumi.ComponentResource):
             )
 
             # Seeded login credential stored in nexus-config and surfaced as a secret output.
-            byoc_session_credential = random.RandomPassword(
+            byoc_session_password = random.RandomPassword(
                 f"{name}-nexus-byoc-session-credential",
                 length=32,
                 special=False,
                 opts=pulumi.ResourceOptions(parent=self),
             )
-            self.byoc_session_credential = pulumi.Output.secret(byoc_session_credential.result)
+            self.byoc_session_credential = byoc_session_password.result
 
             # Provider api keys projected onto the inference-proxy pod. Overlay
             # mode (a routing TOML supplied provider_key_refs) writes one key per
@@ -197,14 +197,14 @@ class K8sSecrets(pulumi.ComponentResource):
                     namespace="nexus",
                 ),
                 data={
-                    "jwt-secret": b64(pulumi.Output.secret(nexus_jwt_secret.result)),
+                    "jwt-secret": b64(nexus_jwt_secret.result),
                     **provider_data,
                     "pinecone-api-key": b64(pulumi.Output.secret(nexus.api_key)),
                     # CPGW per-(org, env) service key for the CPGW index client
                     # (Api-Key header). Paired with config.cpgwApiUrl on the Nexus
                     # component — both must be set together or Nexus panics.
                     "cpgw-api-key": b64(self.cpgw_api_key),
-                    "byoc-session-credential": b64(self.byoc_session_credential),
+                    "byoc-session-credential": b64(byoc_session_password.result),
                     "azure-storage-access-key": b64(
                         pulumi.Output.secret(nexus.azure_storage_access_key)
                         if nexus.azure_storage_access_key is not None
