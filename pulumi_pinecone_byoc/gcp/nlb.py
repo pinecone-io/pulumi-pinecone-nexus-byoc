@@ -157,6 +157,7 @@ class InternalLoadBalancer(pulumi.ComponentResource):
                             hosts=[
                                 subdomain.apply(lambda s: f"*.{s}"),
                                 subdomain.apply(lambda s: f"*.svc.{s}"),
+                                subdomain.apply(lambda s: f"*.wksp.{s}"),
                                 subdomain.apply(lambda s: f"*.private.{s}"),
                                 subdomain.apply(lambda s: f"*.svc.private.{s}"),
                             ],
