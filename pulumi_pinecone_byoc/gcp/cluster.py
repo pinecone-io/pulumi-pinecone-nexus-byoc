@@ -379,6 +379,15 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         self._nexus_gcs = None
         if args.nexus is not None:
             nx = args.nexus
+            # Nexus versions independently of the DB stack (separate repo, separate
+            # image tags), so there is no meaningful fallback to pinecone_version --
+            # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
+            # rather than producing an unpullable image ref.
+            if nx.version is None:
+                raise ValueError(
+                    "nexus.version must be set to the Nexus image tag (the nexus "
+                    "images.yml build tag). It is unrelated to the DB pinecone_version."
+                )
             # Durable GCS storage is always provisioned for GCP+Nexus (the `fs`
             # default isn't durable and file upload needs object storage). The
             # bucket prefix is derived from the cell name (`pc-nexus-{cell}`),
@@ -409,7 +418,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._gke.k8s_provider,
                 image_registry=(nx.image_registry or NEXUS_GCP_REGISTRY.base_url),
-                nexus_version=nx.version or args.pinecone_version,
+                nexus_version=nx.version,
                 byoc_env=nx.byoc_env or self._environment.env_name,
                 cloud="gcp",
                 region=args.region,

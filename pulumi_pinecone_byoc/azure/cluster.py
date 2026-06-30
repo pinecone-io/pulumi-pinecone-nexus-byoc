@@ -455,6 +455,15 @@ class PineconeAzureCluster(pulumi.ComponentResource):
         self._nexus_containers = None
         if args.nexus is not None:
             nx = args.nexus
+            # Nexus versions independently of the DB stack (separate repo, separate
+            # image tags), so there is no meaningful fallback to pinecone_version --
+            # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
+            # rather than producing an unpullable image ref.
+            if nx.version is None:
+                raise ValueError(
+                    "nexus.version must be set to the Nexus image tag (the nexus "
+                    "images.yml build tag). It is unrelated to the DB pinecone_version."
+                )
             blob_storage = None
             if nx.storage_bucket_prefix is not None:
                 self._nexus_containers = NexusBlobContainers(
@@ -474,7 +483,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._aks.k8s_provider,
                 image_registry=(nx.image_registry or NEXUS_AZURE_REGISTRY.base_url),
-                nexus_version=nx.version or args.pinecone_version,
+                nexus_version=nx.version,
                 byoc_env=nx.byoc_env or self._environment.env_name,
                 cloud="azure",
                 region=args.region,
