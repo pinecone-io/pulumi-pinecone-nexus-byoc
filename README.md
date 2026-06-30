@@ -1,4 +1,4 @@
-# Pinecone BYOC
+# Pinecone Nexus BYOC
 
 [![PyPI version](https://img.shields.io/pypi/v/pulumi-pinecone-byoc)](https://pypi.org/project/pulumi-pinecone-byoc/)
 
