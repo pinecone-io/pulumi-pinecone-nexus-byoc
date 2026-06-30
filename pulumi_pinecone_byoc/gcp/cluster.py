@@ -9,6 +9,7 @@ from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
 from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
+from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     DATADOG_DISABLED_PLACEHOLDER,
@@ -26,7 +27,6 @@ from ..common.providers import (
     ServiceAccountArgs,
 )
 from ..common.registry import GCP_REGISTRY, NEXUS_GCP_REGISTRY
-from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.uninstaller import ClusterUninstaller
 from .alloydb import AlloyDB
 from .dns import DNS
