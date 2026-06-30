@@ -1,28 +1,51 @@
 """Nexus deployment component.
 
-Installs the vendored Nexus Helm releases into the BYOC cluster after the
-Pinecone DB stack is up. Two releases are installed in order:
+Installs the Nexus Helm charts into the BYOC cluster after the Pinecone DB stack
+is up. Rather than resolving charts client-side, this delivers them the way the DB
+stack does: the two charts are baked into the ``nexus_deploy`` image and applied by
+an in-cluster Job that pulls the image with ``regcred`` and runs ``helm upgrade
+--install`` from a values file. Pulumi's only inputs to the Job are a ConfigMap of
+the computed values and the image tag.
 
-  1. ``nexus-fdb`` — FoundationDB for Nexus. The app release references its
-     resources by name, so it must come first.
-  2. ``nexus`` — the app services (api, orchestrator, knowql, file-proxy,
-     console, gateway). Depends on the fdb release and the DB stack bootstrap.
-
-Charts are the vendored copies at ``<repo>/nexus/deploy/helm/{nexus,nexus-fdb}``.
+The Job installs both charts in order — ``nexus-fdb`` (FoundationDB; the app
+references its resources by name) then ``nexus`` (api, orchestrator, knowql,
+file-proxy, console, gateway) — and Pulumi awaits the Job, so a failed install
+fails ``pulumi up``.
 """
 
 import hashlib
 import tomllib
 from dataclasses import dataclass
-from pathlib import Path
 
 import pulumi
 import pulumi_kubernetes as k8s
-from pulumi_kubernetes.helm.v3 import Release, ReleaseArgs
 
-_REPO_ROOT = Path(__file__).resolve().parents[2]
-_NEXUS_CHART = str(_REPO_ROOT / "nexus" / "deploy" / "helm" / "nexus")
-_NEXUS_FDB_CHART = str(_REPO_ROOT / "nexus" / "deploy" / "helm" / "nexus-fdb")
+# BYOC delivers the Nexus charts as image content: the two charts are baked into
+# the `nexus_deploy` image (nexus repo, deploy/docker/deploy.Dockerfile) and
+# applied by an in-cluster Job that pulls the image with `regcred`. The image
+# lives in the same AR repo as the app images (image_registry), so the host-keyed
+# pull secret covers it — no client-side chart resolution, no chart registry.
+_DEPLOY_IMAGE_NAME = "nexus_deploy"
+_DEPLOY_VALUES_CONFIGMAP = "nexus-deploy-values"
+_DEPLOY_SA = "nexus-deploy"
+# Public init image (Docker Hub, no regcred needed). It blocks until `regcred`
+# exists; the kubelet only pulls the private deploy image after init containers
+# finish, so this guarantees the pull secret is present when that pull happens.
+# Same tag the DB install Job uses for the same wait.
+_WAIT_IMAGE = "alpine/k8s:1.31.3"
+_WAIT_FOR_REGCRED_SCRIPT = """
+echo "Waiting for regcred secret in the nexus namespace..."
+for i in $(seq 1 240); do
+  if kubectl get secret regcred -n nexus >/dev/null 2>&1; then
+    echo "regcred found"
+    exit 0
+  fi
+  echo "Attempt $i/240: regcred not found, waiting 10s..."
+  sleep 10
+done
+echo "ERROR: regcred not found after 40 minutes"
+exit 1
+"""
 
 _NEXUS_NAMESPACE = "nexus"
 _NEXUS_TASKS_NAMESPACE = "nexus-tasks"
@@ -46,7 +69,7 @@ _DEFAULT_INGRESS_CLASS = "gce-internal"
 # grant; the upstream public image is identical and needs no extra IAM.
 _FDB_IMAGE_REPOSITORY = "foundationdb/foundationdb"
 
-# In-cluster svc-docs-api base for the keyless BYOC data path (#548): the DB
+# In-cluster svc-docs-api base for the keyless BYOC data path: the DB
 # platform is co-located, so task pods reach its docs-api over cluster-internal DNS.
 # TODO: these coords belong to the DB platform (separate repo) -- confirm the svc
 # name / namespace / port there, and that they don't differ by cloud.
@@ -117,7 +140,7 @@ class NexusConfig:
     backend; set provisions blob containers.
     """
 
-    version: str | None = None  # falls back to pinecone_version
+    version: str | None = None  # REQUIRED: the Nexus image tag; no DB-version fallback
     byoc_env: pulumi.Input[str] | None = None  # falls back to minted env name
     image_registry: str | None = None  # falls back to cloud-specific default
     gemini_api_key: pulumi.Input[str] | None = None
@@ -129,13 +152,8 @@ class NexusConfig:
     # Short DNS-safe vault id; forms the index host's leftmost label
     # `nexus-{context_id}-{vault}`, which must stay <= 63 chars. None => a derived
     # `byoc{cell-suffix}` slug.
-    # TODO(temporary): every non-Nexus caller sends the project's *real* vault_id
-    # from the project record; Nexus has no project store yet, so it can't look it
-    # up and uses this slug (cpgw trusts the value, so it works). Drop the slug once
-    # Nexus can resolve the real vault -- via its own/DB auth service, or by cpgw
-    # deriving vault_id from project_info.id.
     byoc_vault_id: pulumi.Input[str] | None = None
-    # In-cluster svc-docs-api base URL for the keyless BYOC data path (#548).
+    # In-cluster svc-docs-api base URL for the keyless BYOC data path.
     # None => the co-located DB default (_DEFAULT_DOCS_API_URL).
     byoc_docs_api_url: pulumi.Input[str] | None = None
     # Override for the storage bucket prefix. GCP: None => derived `pc-nexus-{cell}`
@@ -202,7 +220,7 @@ class Nexus(pulumi.ComponentResource):
                 ``nexus-config`` secret — setting one without the other makes
                 Nexus panic at startup (partial CPGW config).
             byoc_docs_api_url: In-cluster svc-docs-api base URL for the keyless BYOC
-                data path (#548). Defaults to the co-located DB's docs-api. Only
+                data path. Defaults to the co-located DB's docs-api. Only
                 applied when ``cpgw_api_url`` is set.
             inference_models_toml: BYOC inference-proxy routing overlay. When set, a
                 ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
@@ -230,17 +248,6 @@ class Nexus(pulumi.ComponentResource):
                 "storageClass": storage_class,
             },
         }
-
-        self.fdb_release = Release(
-            f"{name}-fdb",
-            ReleaseArgs(
-                name="nexus-fdb",
-                chart=_NEXUS_FDB_CHART,
-                namespace=_NEXUS_NAMESPACE,
-                values=fdb_values,
-            ),
-            opts=provider_opts,
-        )
 
         if blob_storage is not None:
             storage_cfg: dict = {
@@ -319,7 +326,7 @@ class Nexus(pulumi.ComponentResource):
         # overlay changes -- the subPath mount doesn't live-update.
         # providerKeyRefs is derived from the same TOML so the projected env
         # vars match the catalog's api_key_refs.
-        app_release_depends_on = [self.fdb_release]
+        install_job_depends_on: list[pulumi.Resource] = []
         if inference_models_toml is not None:
             # Prepend the clean-slate sentinel here so the operator-facing TOML
             # never carries cascade plumbing. derive_api_key_refs ignores the
@@ -334,7 +341,7 @@ class Nexus(pulumi.ComponentResource):
                 data={"byoc.toml": byoc_toml},
                 opts=provider_opts,
             )
-            app_release_depends_on.append(self.inference_config)
+            install_job_depends_on.append(self.inference_config)
             checksum = hashlib.sha256(byoc_toml.encode("utf-8")).hexdigest()
             # Append byoc as the last (highest-precedence) profile, idempotently:
             # keep whatever base profiles are already selected and only add byoc
@@ -351,23 +358,130 @@ class Nexus(pulumi.ComponentResource):
                 "providerKeyRefs": derive_api_key_refs(inference_models_toml),
             }
 
-        self.app_release = Release(
-            f"{name}-app",
-            ReleaseArgs(
-                name="nexus",
-                chart=_NEXUS_CHART,
+        # Materialize the computed values for the in-cluster installer. json_dumps
+        # awaits the nested Outputs and emits JSON, which helm reads as a values
+        # file (JSON is valid YAML). This is the values-injection mechanism: Pulumi
+        # computes the values at `pulumi up`, the Job consumes them in-cluster.
+        fdb_values_json = pulumi.Output.json_dumps(fdb_values)
+        app_values_json = pulumi.Output.json_dumps(app_values)
+
+        self.deploy_values = k8s.core.v1.ConfigMap(
+            f"{name}-deploy-values",
+            metadata=k8s.meta.v1.ObjectMetaArgs(
+                name=_DEPLOY_VALUES_CONFIGMAP,
                 namespace=_NEXUS_NAMESPACE,
-                values=app_values,
-                # An image bump rolls every nexus deployment at once; the
-                # gateway pod drains slowly, so the rollout can exceed Helm's
-                # default 300s wait and false-fail the release even though the
-                # cluster converges. Give the roll generous headroom.
-                timeout=900,
             ),
+            data={
+                "fdb-values.yaml": fdb_values_json,
+                "app-values.yaml": app_values_json,
+            },
+            opts=provider_opts,
+        )
+        install_job_depends_on.append(self.deploy_values)
+
+        # The installer runs `helm upgrade --install` for both charts, which create
+        # and own workloads/RBAC across the nexus + nexus-tasks namespaces. Bind
+        # cluster-admin, matching the DB pinetools install Job (common/pinetools.py).
+        self.deploy_sa = k8s.core.v1.ServiceAccount(
+            f"{name}-deploy-sa",
+            metadata=k8s.meta.v1.ObjectMetaArgs(
+                name=_DEPLOY_SA,
+                namespace=_NEXUS_NAMESPACE,
+            ),
+            image_pull_secrets=[k8s.core.v1.LocalObjectReferenceArgs(name=_REGCRED)],
+            opts=provider_opts,
+        )
+        self.deploy_crb = k8s.rbac.v1.ClusterRoleBinding(
+            f"{name}-deploy-cluster-admin",
+            metadata=k8s.meta.v1.ObjectMetaArgs(name="nexus-deploy-cluster-admin"),
+            role_ref=k8s.rbac.v1.RoleRefArgs(
+                api_group="rbac.authorization.k8s.io",
+                kind="ClusterRole",
+                name="cluster-admin",
+            ),
+            subjects=[
+                k8s.rbac.v1.SubjectArgs(
+                    kind="ServiceAccount",
+                    name=_DEPLOY_SA,
+                    namespace=_NEXUS_NAMESPACE,
+                ),
+            ],
+            opts=provider_opts,
+        )
+        install_job_depends_on.extend([self.deploy_sa, self.deploy_crb])
+
+        deploy_image = pulumi.Output.concat(
+            image_registry, "/", _DEPLOY_IMAGE_NAME, ":", nexus_version
+        )
+        self.deploy_image = deploy_image
+        # Name carries a hash of (version + values) so a values-only change yields a
+        # new Job (helm re-applies); identical inputs keep the name, so re-running
+        # `pulumi up` is a no-op. ttl reaps the finished pod. Mirrors the DB install
+        # Job's version-keyed naming (common/pinetools.py).
+        job_name = pulumi.Output.all(
+            pulumi.Output.from_input(nexus_version), fdb_values_json, app_values_json
+        ).apply(
+            lambda parts: f"nexus-deploy-{hashlib.sha256(''.join(parts).encode()).hexdigest()[:12]}"
+        )
+
+        wait_for_regcred = k8s.core.v1.ContainerArgs(
+            name="wait-for-regcred",
+            image=_WAIT_IMAGE,
+            command=["/bin/sh", "-c"],
+            args=[_WAIT_FOR_REGCRED_SCRIPT],
+        )
+        install_container = k8s.core.v1.ContainerArgs(
+            name="deploy",
+            image=deploy_image,
+            volume_mounts=[
+                k8s.core.v1.VolumeMountArgs(
+                    name="values",
+                    mount_path="/values",
+                    read_only=True,
+                ),
+            ],
+            resources=k8s.core.v1.ResourceRequirementsArgs(
+                requests={"ephemeral-storage": "1Gi", "memory": "256Mi", "cpu": "100m"},
+                limits={"ephemeral-storage": "2Gi", "memory": "1Gi"},
+            ),
+        )
+
+        self.install_job = k8s.batch.v1.Job(
+            f"{name}-install-job",
+            metadata=k8s.meta.v1.ObjectMetaArgs(
+                name=job_name,
+                namespace=_NEXUS_NAMESPACE,
+            ),
+            spec=k8s.batch.v1.JobSpecArgs(
+                backoff_limit=1,
+                # 40 min regcred wait (ESO can take ~31 min cold) + the two helm
+                # --wait installs (fdb 600s + app 900s) with headroom.
+                active_deadline_seconds=4200,
+                ttl_seconds_after_finished=300,
+                template=k8s.core.v1.PodTemplateSpecArgs(
+                    spec=k8s.core.v1.PodSpecArgs(
+                        service_account_name=_DEPLOY_SA,
+                        restart_policy="OnFailure",
+                        init_containers=[wait_for_regcred],
+                        containers=[install_container],
+                        volumes=[
+                            k8s.core.v1.VolumeArgs(
+                                name="values",
+                                config_map=k8s.core.v1.ConfigMapVolumeSourceArgs(
+                                    name=_DEPLOY_VALUES_CONFIGMAP,
+                                ),
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+            # Plain Job, no skipAwait: the Pulumi k8s provider blocks `pulumi up`
+            # until the Job completes (success) or fails. The in-cluster helm
+            # --wait + non-zero exit on failure is what replaces the Release await.
             opts=pulumi.ResourceOptions(
                 parent=self,
                 provider=k8s_provider,
-                depends_on=app_release_depends_on,
+                depends_on=install_job_depends_on,
             ),
         )
 
@@ -380,8 +494,7 @@ class Nexus(pulumi.ComponentResource):
         self.register_outputs(
             {
                 "namespace": _NEXUS_NAMESPACE,
-                "fdb_release": self.fdb_release.name,
-                "app_release": self.app_release.name,
+                "install_job": self.install_job.metadata.name,
                 "byoc_project_id": self._byoc_project_id,
             }
         )
@@ -398,8 +511,8 @@ class Nexus(pulumi.ComponentResource):
         ``ingress_class=None`` omits the annotation (gateway exposed directly
         via LoadBalancer Services).
         """
-        # TODO(nexus-prod): HTTP-only, no TLS. The gateway is the customer front
-        # door — needs a real TLS/ingress story (cert + https) before prod.
+        # This Ingress serves HTTP (allow-http); TLS termination is out of scope
+        # for this resource.
         annotations: dict = {"kubernetes.io/ingress.allow-http": "true"}
         if ingress_class is not None:
             annotations["kubernetes.io/ingress.class"] = ingress_class
@@ -408,8 +521,6 @@ class Nexus(pulumi.ComponentResource):
             # exposed via the cluster LB / Gloo gateway-proxy), so its
             # .status.loadBalancer is never populated. Skip Pulumi's readiness
             # await so `pulumi up` doesn't hang waiting for an LB address.
-            # TODO(nexus-prod): replace skipAwait with a real readiness model
-            # (await the gateway LB / a proper Ingress controller).
             annotations["pulumi.com/skipAwait"] = "true"
 
         return k8s.networking.v1.Ingress(
@@ -430,7 +541,7 @@ class Nexus(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(
                 parent=self,
                 provider=k8s_provider,
-                depends_on=[self.app_release],
+                depends_on=[self.install_job],
             ),
         )
 
