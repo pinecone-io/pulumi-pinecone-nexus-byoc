@@ -16,6 +16,7 @@ fails ``pulumi up``.
 import hashlib
 import tomllib
 from dataclasses import dataclass
+from typing import Literal
 
 import pulumi
 import pulumi_kubernetes as k8s
@@ -166,6 +167,19 @@ class NexusConfig:
     # collects it via ``pulumi config --secret nexus-provider-keys.<ref>``.
     inference_models_toml: str | None = None
     provider_keys: pulumi.Input[dict] | None = None
+    # FoundationDB topology.
+    #   "operator" (default) => HA via fdb-kubernetes-operator: double redundancy across
+    #                           3 zones. Needs >=3 availability_zones and the fixed
+    #                           one-node-per-zone services pool (both in gcp/cluster.py).
+    #   "single"             => one FDB pod (dev opt-out).
+    # The in-cluster deploy Job installs the operator chart off these values; pulumi
+    # installs no chart itself.
+    fdb_mode: Literal["single", "operator"] = "operator"
+    # Registry/org prefix for the FDB operator + monitor images
+    # (foundationdb.operator.imageRegistry); operator mode only. None keeps the chart
+    # default ("foundationdb", public). Set to the BYOC mirror host so those pods pull
+    # via regcred (keyed by host).
+    fdb_operator_image_registry: str | None = None
 
 
 class Nexus(pulumi.ComponentResource):
@@ -188,6 +202,8 @@ class Nexus(pulumi.ComponentResource):
         cpgw_api_url: pulumi.Input[str] | None = None,
         byoc_docs_api_url: pulumi.Input[str] | None = None,
         inference_models_toml: str | None = None,
+        fdb_mode: Literal["single", "operator"] = "operator",
+        fdb_operator_image_registry: str | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
@@ -228,6 +244,9 @@ class Nexus(pulumi.ComponentResource):
                 ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
                 pointed at it (``byoc`` appended to configProfiles); leave ``None`` to
                 run the proxy on its baked default routing table.
+            fdb_mode: ``"operator"`` (default) runs HA FDB; ``"single"`` the baseline
+                one-pod FDB. See ``NexusConfig.fdb_mode``.
+            fdb_operator_image_registry: See ``NexusConfig.fdb_operator_image_registry``.
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
 
@@ -250,6 +269,24 @@ class Nexus(pulumi.ComponentResource):
                 "storageClass": storage_class,
             },
         }
+
+        # FDB HA (operator mode). When "single" the nexus-fdb values stay at the
+        # baseline above. The in-cluster deploy Job reads foundationdb.mode from these
+        # values to decide whether to install the operator; pulumi installs no chart.
+        if fdb_mode == "operator":
+            operator_values: dict = {
+                # Double redundancy, one-per-zone (3-zone fault domain). Set explicitly
+                # (chart defaults match) so pulumi's emitted values document topology.
+                "redundancyMode": "double",
+                "faultDomainKey": "topology.kubernetes.io/zone",
+                # FDB data PVCs use the deploy's storage class.
+                "storageClass": storage_class,
+            }
+            # Operator + monitor image registry; both pull via regcred (keyed by host).
+            if fdb_operator_image_registry is not None:
+                operator_values["imageRegistry"] = fdb_operator_image_registry
+            fdb_values["foundationdb"]["mode"] = "operator"
+            fdb_values["foundationdb"]["operator"] = operator_values
 
         if blob_storage is not None:
             storage_cfg: dict = {
@@ -298,6 +335,11 @@ class Nexus(pulumi.ComponentResource):
                 },
             },
         }
+
+        # Point the app at the operator-managed FDB cluster file (single mode keeps the
+        # chart's baseline wiring). Mirrors the nexus-fdb mode switch above.
+        if fdb_mode == "operator":
+            app_values["foundationdb"] = {"source": "operator"}
 
         # KSA annotations for Workload Identity (GKE: gcp-service-account=<email>).
         if service_account_annotations is not None:
