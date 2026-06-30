@@ -26,7 +26,7 @@ if not IS_WINDOWS:
 # pinecone blue
 BLUE = "#002BFF"
 
-# Canonical UUID form (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2). The Nexus BYOC
+# Canonical UUID form (e.g. 123e4567-e89b-12d3-a456-426614174000). The Nexus BYOC
 # project id is the Pinecone gCPS project UUID (matched against `projects.id` by
 # CPGW), NOT the GCP project name -- so it must validate as a UUID.
 _UUID_RE = re.compile(
@@ -2023,7 +2023,7 @@ class GCPSetupWizard(BaseSetupWizard):
             if not _is_uuid(byoc_project_id):
                 console.print(
                     "  [red]✗[/] PINECONE_BYOC_PROJECT_ID must be a Pinecone gCPS project"
-                    " UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2), not the GCP"
+                    " UUID (e.g. 123e4567-e89b-12d3-a456-426614174000), not the GCP"
                     " project name"
                 )
                 return False
@@ -2254,14 +2254,14 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print("  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]")
         console.print(
             "  [dim]This is NOT the GCP project name -- it is the gCPS project id"
-            " (matched against projects.id), e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2.[/]"
+            " (matched against projects.id), e.g. 123e4567-e89b-12d3-a456-426614174000.[/]"
         )
         while True:
             byoc_project_id = self._prompt("Enter Pinecone gCPS project UUID").strip()
             if _is_uuid(byoc_project_id):
                 break
             console.print(
-                "  [red]Enter a valid UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2);"
+                "  [red]Enter a valid UUID (e.g. 123e4567-e89b-12d3-a456-426614174000);"
                 " this is the Pinecone gCPS project id, not the GCP project name.[/]"
             )
 
@@ -3155,7 +3155,7 @@ class AzureSetupWizard(BaseSetupWizard):
             if not _is_uuid(byoc_project_id):
                 console.print(
                     "  [red]✗[/] PINECONE_BYOC_PROJECT_ID must be a Pinecone gCPS project"
-                    " UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2)"
+                    " UUID (e.g. 123e4567-e89b-12d3-a456-426614174000)"
                 )
                 return False
             nexus = {

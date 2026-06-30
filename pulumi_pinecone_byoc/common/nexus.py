@@ -69,7 +69,7 @@ _DEFAULT_INGRESS_CLASS = "gce-internal"
 # grant; the upstream public image is identical and needs no extra IAM.
 _FDB_IMAGE_REPOSITORY = "foundationdb/foundationdb"
 
-# In-cluster svc-docs-api base for the keyless BYOC data path (#548): the DB
+# In-cluster svc-docs-api base for the keyless BYOC data path: the DB
 # platform is co-located, so task pods reach its docs-api over cluster-internal DNS.
 # TODO: these coords belong to the DB platform (separate repo) -- confirm the svc
 # name / namespace / port there, and that they don't differ by cloud.
@@ -152,13 +152,8 @@ class NexusConfig:
     # Short DNS-safe vault id; forms the index host's leftmost label
     # `nexus-{context_id}-{vault}`, which must stay <= 63 chars. None => a derived
     # `byoc{cell-suffix}` slug.
-    # TODO(temporary): every non-Nexus caller sends the project's *real* vault_id
-    # from the project record; Nexus has no project store yet, so it can't look it
-    # up and uses this slug (cpgw trusts the value, so it works). Drop the slug once
-    # Nexus can resolve the real vault -- via its own/DB auth service, or by cpgw
-    # deriving vault_id from project_info.id.
     byoc_vault_id: pulumi.Input[str] | None = None
-    # In-cluster svc-docs-api base URL for the keyless BYOC data path (#548).
+    # In-cluster svc-docs-api base URL for the keyless BYOC data path.
     # None => the co-located DB default (_DEFAULT_DOCS_API_URL).
     byoc_docs_api_url: pulumi.Input[str] | None = None
     # Override for the storage bucket prefix. GCP: None => derived `pc-nexus-{cell}`
@@ -225,7 +220,7 @@ class Nexus(pulumi.ComponentResource):
                 ``nexus-config`` secret — setting one without the other makes
                 Nexus panic at startup (partial CPGW config).
             byoc_docs_api_url: In-cluster svc-docs-api base URL for the keyless BYOC
-                data path (#548). Defaults to the co-located DB's docs-api. Only
+                data path. Defaults to the co-located DB's docs-api. Only
                 applied when ``cpgw_api_url`` is set.
             inference_models_toml: BYOC inference-proxy routing overlay. When set, a
                 ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
@@ -516,8 +511,8 @@ class Nexus(pulumi.ComponentResource):
         ``ingress_class=None`` omits the annotation (gateway exposed directly
         via LoadBalancer Services).
         """
-        # TODO(nexus-prod): HTTP-only, no TLS. The gateway is the customer front
-        # door — needs a real TLS/ingress story (cert + https) before prod.
+        # This Ingress serves HTTP (allow-http); TLS termination is out of scope
+        # for this resource.
         annotations: dict = {"kubernetes.io/ingress.allow-http": "true"}
         if ingress_class is not None:
             annotations["kubernetes.io/ingress.class"] = ingress_class
@@ -526,8 +521,6 @@ class Nexus(pulumi.ComponentResource):
             # exposed via the cluster LB / Gloo gateway-proxy), so its
             # .status.loadBalancer is never populated. Skip Pulumi's readiness
             # await so `pulumi up` doesn't hang waiting for an LB address.
-            # TODO(nexus-prod): replace skipAwait with a real readiness model
-            # (await the gateway LB / a proper Ingress controller).
             annotations["pulumi.com/skipAwait"] = "true"
 
         return k8s.networking.v1.Ingress(
