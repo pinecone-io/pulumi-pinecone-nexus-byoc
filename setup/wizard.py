@@ -7,6 +7,7 @@ import re
 import subprocess
 import sys
 from dataclasses import dataclass
+from typing import TypedDict
 
 # shared UNIQUE preflight checks -- single source of truth, also used by the
 # standalone dev/preflight.py so the two never drift. First-party module in
@@ -25,6 +26,26 @@ if not IS_WINDOWS:
 
 # pinecone blue
 BLUE = "#002BFF"
+
+
+class NexusWizardConfig(TypedDict, total=False):
+    """Wizard-side Nexus answers, threaded from the prompts/headless env into
+    `_generate_project`. Distinct from the package's runtime `NexusConfig`
+    (emitted in the generated `__main__.py`). `total=False`: a DB-only install
+    is just `{"enabled": False}`; the rest are present only when Nexus is on.
+    `inference_models_toml` is `None` when no catalog was built (the default
+    template is written instead).
+    """
+
+    enabled: bool
+    byoc_env: str
+    byoc_project_id: str
+    storage_bucket_prefix: str
+    nexus_version: str
+    image_registry: str
+    inference_base: str
+    inference_models_toml: str | None
+
 
 # Canonical UUID form (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2). The Nexus BYOC
 # project id is the Pinecone gCPS project UUID (matched against `projects.id` by
@@ -2047,7 +2068,7 @@ class GCPSetupWizard(BaseSetupWizard):
                     " <= 63)"
                 )
                 return False
-            nexus = {
+            nexus: NexusWizardConfig = {
                 "enabled": True,
                 "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
@@ -2064,7 +2085,7 @@ class GCPSetupWizard(BaseSetupWizard):
                 "inference_models_toml": self._headless_inference_models_toml(),
             }
         else:
-            nexus = {"enabled": False}
+            nexus = NexusWizardConfig(enabled=False)
 
         return self._generate_project(
             output_dir,
@@ -2223,7 +2244,7 @@ class GCPSetupWizard(BaseSetupWizard):
         zones = [zone.strip() for zone in zones_input.split(",")]
         return zones
 
-    def _get_nexus_config(self) -> dict:
+    def _get_nexus_config(self) -> NexusWizardConfig:
         """Prompt for Nexus enablement and inference config (proposal §4.6/§4.7,
         task 2.7). Default is a DB-only install (nexus_enabled=False) so the
         generated project is byte-for-byte unchanged unless Nexus is requested.
@@ -2360,9 +2381,9 @@ class GCPSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         labels: dict[str, str],
-        nexus: dict | None = None,
+        nexus: NexusWizardConfig | None = None,
     ):
-        nexus = nexus or {"enabled": False}
+        nexus = nexus if nexus is not None else NexusWizardConfig(enabled=False)
         console.print()
 
         if not self._check_pulumi_installed():
@@ -2467,9 +2488,11 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
             models_path = os.path.join(output_dir, NEXUS_INFERENCE_MODELS_FILENAME)
             with open(models_path, "w") as f:
                 inference_models_toml = nexus.get("inference_models_toml")
+                # None => no catalog built, write the editable default template.
+                # A non-str value here would be a bug; let f.write surface it.
                 f.write(
                     inference_models_toml
-                    if isinstance(inference_models_toml, str)
+                    if inference_models_toml is not None
                     else NEXUS_INFERENCE_MODELS_TEMPLATE
                 )
             console.print(f"  [green]✓[/] Created {NEXUS_INFERENCE_MODELS_FILENAME}")
@@ -3170,7 +3193,7 @@ class AzureSetupWizard(BaseSetupWizard):
                     " UUID (e.g. aafe10b7-9dfe-4ac1-9fd8-e5126b8355e2)"
                 )
                 return False
-            nexus = {
+            nexus: NexusWizardConfig = {
                 "enabled": True,
                 "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
@@ -3187,7 +3210,7 @@ class AzureSetupWizard(BaseSetupWizard):
                 "inference_models_toml": self._headless_inference_models_toml(),
             }
         else:
-            nexus = {"enabled": False}
+            nexus = NexusWizardConfig(enabled=False)
 
         return self._generate_project(
             output_dir,
@@ -3349,9 +3372,9 @@ class AzureSetupWizard(BaseSetupWizard):
         deletion_protection: bool,
         public_access: bool,
         tags: dict[str, str],
-        nexus: dict | None = None,
+        nexus: NexusWizardConfig | None = None,
     ):
-        nexus = nexus or {"enabled": False}
+        nexus = nexus if nexus is not None else NexusWizardConfig(enabled=False)
         console.print()
 
         if not self._check_pulumi_installed():
@@ -3454,9 +3477,11 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
             models_path = os.path.join(output_dir, NEXUS_INFERENCE_MODELS_FILENAME)
             with open(models_path, "w") as f:
                 inference_models_toml = nexus.get("inference_models_toml")
+                # None => no catalog built, write the editable default template.
+                # A non-str value here would be a bug; let f.write surface it.
                 f.write(
                     inference_models_toml
-                    if isinstance(inference_models_toml, str)
+                    if inference_models_toml is not None
                     else NEXUS_INFERENCE_MODELS_TEMPLATE
                 )
             console.print(f"  [green]✓[/] Created {NEXUS_INFERENCE_MODELS_FILENAME}")
