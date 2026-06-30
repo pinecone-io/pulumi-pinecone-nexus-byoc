@@ -20,13 +20,22 @@ _GCP_SA_MAX_LEN = 30
 _NEXUS_ROLE_LABEL = "nexus-role"
 
 
-def nexus_node_pools() -> list[NodePoolConfig]:
+def nexus_node_pools(fdb_fixed_services_nodes: bool = False) -> list[NodePoolConfig]:
     """Node pools for the Nexus workloads (services + jobs).
 
     Mirrors the existing DB pool conventions (machine type / autoscaling); the
     labels and taints match the nexus Helm chart's nodeSelector/tolerations so
     only nexus pods schedule onto them. Gated by `nexus_enabled` upstream so
     DB-only deploys are unaffected.
+
+    Args:
+        fdb_fixed_services_nodes: Set for FDB operator HA (fdb_mode=="operator").
+            The FDB data pods schedule onto the `nexus-role: services` pool and
+            must spread one-per-zone, but the autoscaler won't eagerly add the
+            empty-zone node. So the services pool gets a FIXED count of 1 per zone
+            (=> one node in each of the 3 zones) instead of autoscaling. The
+            decision lives here at the pool's definition site -- the build loop
+            stays generic (no name matching). False keeps normal autoscaling.
     """
     return [
         NodePoolConfig(
@@ -37,6 +46,9 @@ def nexus_node_pools() -> list[NodePoolConfig]:
             disk_size_gb=100,
             labels={_NEXUS_ROLE_LABEL: "services"},
             taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="services", effect="NO_SCHEDULE")],
+            # Operator HA only: pin one node per zone so GKE eagerly creates a node
+            # in every zone for the FDB pods to spread onto.
+            fixed_node_count_per_zone=1 if fdb_fixed_services_nodes else None,
         ),
         NodePoolConfig(
             name="nexus-jobs",
@@ -442,11 +454,22 @@ users:
             for taint in (np_config.taints or [])
         ]
 
-        autoscaling = gcp.container.NodePoolAutoscalingArgs(
-            min_node_count=np_config.min_size,
-            max_node_count=np_config.max_size,
-            location_policy="BALANCED",
-        )
+        # Fixed-count vs autoscaling. When a pool sets fixed_node_count_per_zone we
+        # build it with a fixed node_count and NO autoscaling block (node_count is
+        # per-zone in GKE given multi-zone node_locations, so the pool gets that many
+        # nodes in each zone). Otherwise keep the normal min/max autoscaling path.
+        # This decouples the fixed-node decision from min_size and avoids any
+        # name-based special-casing -- the choice is set at the pool's definition.
+        if np_config.fixed_node_count_per_zone is not None:
+            autoscaling = None
+            node_count = np_config.fixed_node_count_per_zone
+        else:
+            autoscaling = gcp.container.NodePoolAutoscalingArgs(
+                min_node_count=np_config.min_size,
+                max_node_count=np_config.max_size,
+                location_policy="BALANCED",
+            )
+            node_count = None
 
         node_pool_name = f"{name}-np-{np_config.name}"[:32]
 
@@ -459,6 +482,7 @@ users:
             # and on the Cilium-race fix build.
             version=config.kubernetes_version,
             autoscaling=autoscaling,
+            node_count=node_count,
             node_config=gcp.container.NodePoolNodeConfigArgs(
                 machine_type=np_config.machine_type,
                 min_cpu_platform="Intel Ice Lake",

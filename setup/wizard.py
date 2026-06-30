@@ -2467,6 +2467,12 @@ cluster = PineconeGCPCluster(
             storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
+            # FDB topology: "single" (default) or "operator" (HA; needs 3 zones +
+            # the fixed one-node-per-zone services pool, enforced in gcp/cluster.py).
+            fdb_mode=config.get("nexus-fdb-mode") or "single",
+            # Registry/org prefix the BYOC mirror exposes the FDB operator + monitor
+            # images under (operator mode only). None keeps the public default.
+            fdb_operator_image_registry=config.get("nexus-fdb-operator-image-registry"),
         ) if _nexus_enabled else None,
     ),
 )

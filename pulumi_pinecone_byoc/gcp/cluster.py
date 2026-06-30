@@ -48,6 +48,9 @@ class NodePool:
     disk_size_gb: int = 100
     labels: dict = field(default_factory=dict)
     taints: list = field(default_factory=list)
+    # When set, the pool runs a fixed node_count per zone (autoscaling off) instead
+    # of min/max autoscaling. See config.base.NodePoolConfig.fixed_node_count_per_zone.
+    fixed_node_count_per_zone: int | None = None
 
 
 @dataclass
@@ -59,8 +62,14 @@ class PineconeGCPClusterArgs:
     # gcp specific
     project: str
     region: str = "us-central1"
+    # Three zones: required for FDB operator HA (double redundancy, 3-zone fault
+    # domain) and harmless for single mode / DB-only. In operator mode the
+    # nexus-services pool is pinned to one node per zone (so FDB pods can spread
+    # one-per-zone); in single / DB-only mode all pools autoscale, so a zone only
+    # gets a node once a Pending pod needs it. The fdb_mode=="operator" guard below
+    # enforces the >=3 minimum.
     availability_zones: list[str] = field(
-        default_factory=lambda: ["us-central1-a", "us-central1-b"]
+        default_factory=lambda: ["us-central1-a", "us-central1-b", "us-central1-c"]
     )
 
     # networking
@@ -109,6 +118,22 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         opts: pulumi.ResourceOptions | None = None,
     ):
         super().__init__("pinecone:byoc:PineconeGCPCluster", name, None, opts)
+
+        # FDB operator HA spreads FDB pods across zones (3-zone fault domain via the
+        # chart's hard topologySpreadConstraints), so it needs at least 3
+        # availability zones. Fail fast with a clear message rather than letting FDB
+        # pods sit Pending forever in an under-zoned cluster.
+        if (
+            args.nexus is not None
+            and args.nexus.fdb_mode == "operator"
+            and len(args.availability_zones) < 3
+        ):
+            raise ValueError(
+                "Nexus fdb_mode='operator' (HA) requires at least 3 availability_zones "
+                f"(got {len(args.availability_zones)}: {args.availability_zones}). "
+                "Set availability_zones to 3 distinct zones, e.g. "
+                "['us-central1-a', 'us-central1-b', 'us-central1-c']."
+            )
 
         self.args = args
         child_opts = pulumi.ResourceOptions(parent=self)
@@ -434,6 +459,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 # Paired with the cpgw-api-key in the nexus-config secret.
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
+                fdb_mode=nx.fdb_mode,
+                fdb_operator_image_registry=nx.fdb_operator_image_registry,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
@@ -530,6 +557,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                         disk_size_gb=np.disk_size_gb,
                         labels=np.labels,
                         taints=np.taints,
+                        fixed_node_count_per_zone=np.fixed_node_count_per_zone,
                     )
                 )
         else:
@@ -544,10 +572,18 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             ]
 
         # Add Nexus node pools when enabled; DB-only deploys are unaffected.
+        # For FDB operator HA (fdb_mode=="operator"), the nexus-services pool is
+        # pinned to a fixed one-node-per-zone count so GKE eagerly creates a node in
+        # each of the 3 zones for the FDB data pods to spread onto (the autoscaler
+        # won't add the empty-zone node on its own). Single mode keeps autoscaling.
         if args.nexus is not None:
             from .gke import nexus_node_pools
 
-            node_pools.extend(nexus_node_pools())
+            node_pools.extend(
+                nexus_node_pools(
+                    fdb_fixed_services_nodes=args.nexus.fdb_mode == "operator",
+                )
+            )
 
         control_db_cpu = 2
         system_db_cpu = 2

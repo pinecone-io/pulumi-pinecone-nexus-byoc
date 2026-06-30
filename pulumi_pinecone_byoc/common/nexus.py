@@ -16,6 +16,7 @@ fails ``pulumi up``.
 import hashlib
 import tomllib
 from dataclasses import dataclass
+from typing import Literal
 
 import pulumi
 import pulumi_kubernetes as k8s
@@ -166,6 +167,22 @@ class NexusConfig:
     # collects it via ``pulumi config --secret nexus-provider-keys.<ref>``.
     inference_models_toml: str | None = None
     provider_keys: pulumi.Input[dict] | None = None
+    # FoundationDB topology for Nexus.
+    #   "single"   => one FDB pod (dev/default; the baseline single-mode chart values).
+    #   "operator" => HA via the fdb-kubernetes-operator: double redundancy spread
+    #                 across 3 zones (faultDomainKey topology.kubernetes.io/zone).
+    # Opt-in and gated: only "operator" switches the nexus-fdb / app values to operator
+    # mode. The in-cluster deploy Job (not pulumi) installs the operator chart and the
+    # FoundationDBCluster CR; pulumi only sets the values that select operator mode.
+    # Operator HA needs >= 3 availability_zones (guarded in gcp/cluster.py) and a fixed
+    # one-node-per-zone services pool (gcp/gke.py) for the FDB pods to spread onto.
+    fdb_mode: Literal["single", "operator"] = "single"
+    # Registry/org prefix for the FDB operator + fdb-kubernetes-monitor images
+    # (foundationdb.operator.imageRegistry). Operator mode only. None keeps the
+    # chart/entrypoint default ("foundationdb", the public Docker Hub org, regcred-free).
+    # Set to the BYOC mirror host (where the nexus side mirrors the FDB images) so the
+    # operator + monitor pods pull through regcred, which is keyed by registry host.
+    fdb_operator_image_registry: str | None = None
 
 
 class Nexus(pulumi.ComponentResource):
@@ -188,6 +205,8 @@ class Nexus(pulumi.ComponentResource):
         cpgw_api_url: pulumi.Input[str] | None = None,
         byoc_docs_api_url: pulumi.Input[str] | None = None,
         inference_models_toml: str | None = None,
+        fdb_mode: Literal["single", "operator"] = "single",
+        fdb_operator_image_registry: str | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
@@ -226,6 +245,15 @@ class Nexus(pulumi.ComponentResource):
                 ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
                 pointed at it (``byoc`` appended to configProfiles); leave ``None`` to
                 run the proxy on its baked default routing table.
+            fdb_mode: ``"single"`` (default) keeps the baseline one-pod FDB values.
+                ``"operator"`` opts into HA: switches the nexus-fdb / app values to
+                operator mode (double redundancy across 3 zones). The in-cluster deploy
+                Job installs the fdb-kubernetes-operator and the FoundationDBCluster CR;
+                pulumi only emits the values that select it. See ``NexusConfig.fdb_mode``.
+            fdb_operator_image_registry: Registry/org prefix for the FDB operator +
+                monitor images (``foundationdb.operator.imageRegistry``), operator mode
+                only. ``None`` keeps the chart default (``foundationdb``, public). Set to
+                the BYOC mirror host so those pods pull via ``regcred`` (keyed by host).
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
 
@@ -248,6 +276,33 @@ class Nexus(pulumi.ComponentResource):
                 "storageClass": storage_class,
             },
         }
+
+        # ---- FDB HA (operator mode) -- opt-in, gated on fdb_mode == "operator" ----
+        # Operator-only: when fdb_mode == "single" the nexus-fdb values stay at the
+        # baseline above. The in-cluster deploy Job (deploy-entrypoint.sh) reads
+        # foundationdb.mode from these values to decide whether to install the
+        # fdb-kubernetes-operator before nexus-fdb -- pulumi installs no chart itself.
+        if fdb_mode == "operator":
+            operator_values: dict = {
+                # Double redundancy spread one-per-zone (3-zone fault domain). The
+                # chart also defaults these, but set them explicitly so pulumi's
+                # emitted values document the topology. processCounts / resources /
+                # version stay on the chart defaults (right-sized for nexus's FDB).
+                "redundancyMode": "double",
+                "faultDomainKey": "topology.kubernetes.io/zone",
+                # FDB data PVCs use the deploy's storage class, like the single-mode
+                # persistence.storageClass above (chart's operator block is separate).
+                "storageClass": storage_class,
+            }
+            # Registry/org prefix for the operator controller + fdb-kubernetes-monitor
+            # images. The deploy-entrypoint reads this (foundationdb.operator.imageRegistry)
+            # to install the operator chart, and the FoundationDBCluster CR uses it for the
+            # monitor baseImage; both then pull via regcred (keyed by host). None keeps the
+            # chart default ("foundationdb", public Docker Hub, regcred-free).
+            if fdb_operator_image_registry is not None:
+                operator_values["imageRegistry"] = fdb_operator_image_registry
+            fdb_values["foundationdb"]["mode"] = "operator"
+            fdb_values["foundationdb"]["operator"] = operator_values
 
         if blob_storage is not None:
             storage_cfg: dict = {
@@ -296,6 +351,13 @@ class Nexus(pulumi.ComponentResource):
                 },
             },
         }
+
+        # Point the app at the operator-managed FDB cluster file. Gated: single mode
+        # keeps the chart's baseline single-source FDB wiring (the app reads the
+        # init-db-maintained cluster ConfigMap); operator mode reads the
+        # operator-maintained one. Mirrors the nexus-fdb mode switch above.
+        if fdb_mode == "operator":
+            app_values["foundationdb"] = {"source": "operator"}
 
         # KSA annotations for Workload Identity (GKE: gcp-service-account=<email>).
         if service_account_annotations is not None:
