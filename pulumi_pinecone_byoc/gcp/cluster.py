@@ -26,6 +26,7 @@ from ..common.providers import (
     ServiceAccountArgs,
 )
 from ..common.registry import GCP_REGISTRY, NEXUS_GCP_REGISTRY
+from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.uninstaller import ClusterUninstaller
 from .alloydb import AlloyDB
 from .dns import DNS
@@ -440,6 +441,16 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                         if r is not None
                     ],
                 ),
+            )
+            # `helm uninstall` the Nexus releases on destroy (no Pulumi Release to
+            # remove them now). Depends on the component so it runs while the
+            # cluster, the nexus-deploy SA, and regcred still exist.
+            self._nexus_uninstaller = NexusUninstaller(
+                f"{config.resource_prefix}-nexus-uninstaller",
+                kubeconfig=self._gke.kubeconfig,
+                deploy_image=self._nexus.deploy_image,
+                cloud="gcp",
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
             )
 
         self._uninstaller = ClusterUninstaller(
