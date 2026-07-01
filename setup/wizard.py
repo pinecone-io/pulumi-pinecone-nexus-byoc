@@ -208,6 +208,8 @@ _INFERENCE_MODELS_HEADER = """\
 # Pinecone embed/rerank models need NO api_key_ref (caller supplies it per request).
 """
 
+LLM_MODEL_TIERS = ("lite", "standard", "pro")
+
 # Embedding is fixed platform-wide: every embedding tier must resolve to this
 # exact pinecone model or the proxy refuses to start (the nexus index dimension
 # is frozen to it -- see nexus-inference-proxy EXPECTED_EMBEDDING_MODEL). The
@@ -261,6 +263,16 @@ def build_inference_models_toml(
     if not llm_models or not rerank_models:
         raise ValueError("llm and rerank must each have at least one model")
 
+    # The proxy refuses to boot (assert_deploy_complete, nexus#1083) when any two
+    # chat tiers resolve to the same model_ref -- the tier-as-alias contract
+    # requires them distinct. Catch it here rather than at CrashLoop.
+    base_tiers = {t: tiers[t] for t in LLM_MODEL_TIERS}
+    if len(set(base_tiers.values())) < len(base_tiers):
+        raise ValueError(
+            f"chat tiers {'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model "
+            f"(got {base_tiers}); the inference proxy rejects colliding tiers"
+        )
+
     parts: list[str] = [_INFERENCE_MODELS_HEADER, "# --- Model catalog ---"]
     for model_id, fields in llm_models.items():
         parts.append(_emit_model_table("llm_models", model_id, fields))
@@ -278,10 +290,11 @@ def build_inference_models_toml(
         f"supported_llm_models = {supported_llm}\n"
         f"supported_embedding_models = [{_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}]\n"
         f"supported_rerank_models = {supported_rr}\n\n"
-        f"[default.llm.tiers.lite]\nmodel_ref = {_toml_scalar(tiers['lite'])}\n\n"
-        f"[default.llm.tiers.standard]\nmodel_ref = {_toml_scalar(tiers['standard'])}\n\n"
-        f"[default.llm.tiers.pro]\nmodel_ref = {_toml_scalar(tiers['pro'])}\n\n"
-        f"[default.embedding.tiers.default]\nmodel_ref = {_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}\n\n"
+        + "".join(
+            f"[default.llm.tiers.{t}]\nmodel_ref = {_toml_scalar(tiers[t])}\n\n"
+            for t in LLM_MODEL_TIERS
+        )
+        + f"[default.embedding.tiers.default]\nmodel_ref = {_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}\n\n"
         f"[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers['rerank'])}\n\n"
         "# Override the image default's search phase, which otherwise inherits\n"
         "# claude-sonnet-4-6 (not in this deployment's supported models).\n"
@@ -706,17 +719,31 @@ class BaseSetupWizard:
         ):
             return None
 
-        llm = self._collect_surface_models("llm")
+        while True:
+            llm = self._collect_surface_models("llm")
+            if len(llm) >= len(LLM_MODEL_TIERS):
+                break
+            console.print(
+                f"  [red]At least {len(LLM_MODEL_TIERS)} chat models are required:"
+                f" {'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model."
+                " Add more.[/]"
+            )
         rerank = self._collect_surface_models("rerank")
 
         console.print()
         console.print("  [dim]Now map the tiers to models you defined.[/]")
-        tiers = {
-            "lite": self._choose_from("Chat 'lite' model", list(llm)),
-            "standard": self._choose_from("Chat 'standard' model", list(llm)),
-            "pro": self._choose_from("Chat 'pro' model", list(llm)),
-            "rerank": self._choose_from("Rerank model", list(rerank)),
-        }
+        while True:
+            tiers = {
+                t: self._choose_from(f"Chat '{t}' model", list(llm))
+                for t in LLM_MODEL_TIERS
+            }
+            if len(set(tiers.values())) == len(LLM_MODEL_TIERS):
+                break
+            console.print(
+                f"  [red]{'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model."
+                " Please pick again.[/]"
+            )
+        tiers["rerank"] = self._choose_from("Rerank model", list(rerank))
         return build_inference_models_toml(llm, rerank, tiers)
 
     def _collect_surface_models(self, surface: str) -> dict[str, dict]:
@@ -828,12 +855,8 @@ class BaseSetupWizard:
         try:
             llm = json.loads(os.environ["PINECONE_NEXUS_LLM_MODELS"])
             rerank = json.loads(os.environ["PINECONE_NEXUS_RERANK_MODELS"])
-            tiers = {
-                "lite": os.environ["PINECONE_NEXUS_LLM_LITE"],
-                "standard": os.environ["PINECONE_NEXUS_LLM_STANDARD"],
-                "pro": os.environ["PINECONE_NEXUS_LLM_PRO"],
-                "rerank": os.environ["PINECONE_NEXUS_RERANK_MODEL"],
-            }
+            tiers = {t: os.environ[f"PINECONE_NEXUS_LLM_{t.upper()}"] for t in LLM_MODEL_TIERS}
+            tiers["rerank"] = os.environ["PINECONE_NEXUS_RERANK_MODEL"]
         except KeyError as exc:
             raise ValueError(
                 f"PINECONE_NEXUS_LLM_MODELS is set but {exc} is missing -- set "
