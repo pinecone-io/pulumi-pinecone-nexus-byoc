@@ -733,10 +733,7 @@ class BaseSetupWizard:
         console.print()
         console.print("  [dim]Now map the tiers to models you defined.[/]")
         while True:
-            tiers = {
-                t: self._choose_from(f"Chat '{t}' model", list(llm))
-                for t in LLM_MODEL_TIERS
-            }
+            tiers = {t: self._choose_from(f"Chat '{t}' model", list(llm)) for t in LLM_MODEL_TIERS}
             if len(set(tiers.values())) == len(LLM_MODEL_TIERS):
                 break
             console.print(
