@@ -236,40 +236,67 @@ class InternalLoadBalancer(pulumi.ComponentResource):
                 provider=k8s_provider,
                 delete_before_replace=True,
                 depends_on=[backend_config, placeholder_tls_secret],
-                custom_timeouts=pulumi.CustomTimeouts(create="20m", update="20m"),
+                # The GKE ingress controller only publishes status.loadBalancer
+                # once gateway-proxy (brought up by the concurrent pinetools
+                # cluster install, ~15min on a cold cluster) is a healthy backend.
+                # Pulumi's Ingress await blocks creation until then, so the window
+                # must outlast a cold install — hence 60m, not the default.
+                custom_timeouts=pulumi.CustomTimeouts(create="60m", update="60m"),
             ),
         )
 
-        def get_lb_ip_and_link(_ingress_status, cell_name_str: str, retries: int = 30):
+        def _status_lb_ip(status):
+            # status.loadBalancer.ingress[0].ip — tolerate both the typed
+            # pulumi-kubernetes object (snake_case attrs) and a plain dict.
+            if status is None:
+                return None
+            lb = getattr(status, "load_balancer", None)
+            if lb is None and isinstance(status, dict):
+                lb = status.get("load_balancer") or status.get("loadBalancer")
+            ingresses = getattr(lb, "ingress", None)
+            if ingresses is None and isinstance(lb, dict):
+                ingresses = lb.get("ingress")
+            if not ingresses:
+                return None
+            first = ingresses[0]
+            return first.get("ip") if isinstance(first, dict) else getattr(first, "ip", None)
+
+        def get_lb_ip_and_link(ingress_status, retries: int = 18):
+            # The GKE ingress controller (class gce-internal) writes the assigned
+            # IP to the Ingress status only after the LB — and its forwarding
+            # rule — exist, and Pulumi's Ingress await blocks creation until then
+            # (see the 60m create timeout above). So by the time this apply runs
+            # the forwarding rule is already present: no need to poll for the LB
+            # to come up. We read the IP straight from status, then resolve the
+            # forwarding-rule self_link (needed for the PSC ServiceAttachment,
+            # which the status does not carry) via a single IP-matched lookup.
+            # The short retry only absorbs Compute API read propagation, not the
+            # control-plane install race that the old poll had to outlast.
+            ip = _status_lb_ip(ingress_status)
+            if not ip:
+                # Status not yet populated (e.g. a pre-existing failed ingress);
+                # nothing to resolve — real values arrive once the LB comes up.
+                return ("", "")
             for attempt in range(retries):
                 try:
                     rules = gcp.compute.get_forwarding_rules(config.project, config.region)
-                    lb = next(
-                        (
-                            r
-                            for r in rules.rules
-                            if r.subnetwork and r.subnetwork.endswith(cell_name_str)
-                        ),
-                        None,
+                    lb = next((r for r in rules.rules if r.ip_address == ip), None)
+                    if lb is not None:
+                        return (lb.ip_address, lb.self_link)
+                    pulumi.log.info(
+                        f"forwarding rule for {ip} not visible yet "
+                        f"(attempt {attempt + 1}/{retries}), retrying..."
                     )
-                    if lb is None:
-                        pulumi.log.info(
-                            f"no matching LB found (attempt {attempt + 1}/{retries}), retrying..."
-                        )
-                        time.sleep(10)
-                        continue
-                    return (lb.ip_address, lb.self_link)
                 except Exception as e:
                     pulumi.log.info(
-                        f"waiting for internal lb (attempt {attempt + 1}/{retries})... {e}"
+                        f"waiting for forwarding rule for {ip} "
+                        f"(attempt {attempt + 1}/{retries})... {e}"
                     )
-                    time.sleep(10)
-            raise Exception("failed to get internal LB after retries")
+                time.sleep(10)
+            raise Exception(f"forwarding rule for internal LB IP {ip} not found after retries")
 
-        # wait for Ingress status to be ready, then query the LB
-        lb_info = pulumi.Output.all(ingress.status, self._cell_name).apply(
-            lambda args: get_lb_ip_and_link(args[0], args[1])
-        )
+        # Read the LB IP from the awaited Ingress status, then look up its link.
+        lb_info = ingress.status.apply(get_lb_ip_and_link)
 
         lb_ip = lb_info.apply(lambda info: info[0])
         lb_link = lb_info.apply(lambda info: info[1])
