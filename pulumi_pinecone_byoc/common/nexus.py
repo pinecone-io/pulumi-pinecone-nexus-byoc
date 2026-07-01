@@ -167,19 +167,23 @@ class NexusConfig:
     # collects it via ``pulumi config --secret nexus-provider-keys.<ref>``.
     inference_models_toml: str | None = None
     provider_keys: pulumi.Input[dict] | None = None
-    # FoundationDB topology.
-    #   "operator" (default) => HA via fdb-kubernetes-operator: double redundancy across
-    #                           3 zones. Needs >=3 availability_zones and the fixed
-    #                           one-node-per-zone services pool (both in gcp/cluster.py).
-    #   "single"             => one FDB pod (dev opt-out).
-    # The in-cluster deploy Job installs the operator chart off these values; pulumi
-    # installs no chart itself.
-    fdb_mode: Literal["single", "operator"] = "operator"
+    # FoundationDB topology. "single" (default) => one FDB pod. "operator" => HA via
+    # fdb-kubernetes-operator (GCP-only today; opt-in, passed explicitly by the GCP
+    # call site). The deploy Job reads mode from these values; pulumi installs no chart.
+    fdb_mode: Literal["single", "operator"] = "single"
     # Registry/org prefix for the FDB operator + monitor images
     # (foundationdb.operator.imageRegistry); operator mode only. None keeps the chart
     # default ("foundationdb", public). Set to the BYOC mirror host so those pods pull
     # via regcred (keyed by host).
     fdb_operator_image_registry: str | None = None
+
+    def __post_init__(self):
+        # Literal isn't enforced at runtime; a typo would silently fall through the
+        # `== "operator"` checks and deploy single-node FDB. Fail loudly instead.
+        if self.fdb_mode not in ("single", "operator"):
+            raise ValueError(
+                f"NexusConfig.fdb_mode must be 'single' or 'operator', got {self.fdb_mode!r}."
+            )
 
 
 class Nexus(pulumi.ComponentResource):
@@ -202,7 +206,7 @@ class Nexus(pulumi.ComponentResource):
         cpgw_api_url: pulumi.Input[str] | None = None,
         byoc_docs_api_url: pulumi.Input[str] | None = None,
         inference_models_toml: str | None = None,
-        fdb_mode: Literal["single", "operator"] = "operator",
+        fdb_mode: Literal["single", "operator"] = "single",
         fdb_operator_image_registry: str | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
@@ -244,8 +248,8 @@ class Nexus(pulumi.ComponentResource):
                 ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
                 pointed at it (``byoc`` appended to configProfiles); leave ``None`` to
                 run the proxy on its baked default routing table.
-            fdb_mode: ``"operator"`` (default) runs HA FDB; ``"single"`` the baseline
-                one-pod FDB. See ``NexusConfig.fdb_mode``.
+            fdb_mode: ``"single"`` (default) runs the baseline one-pod FDB; ``"operator"``
+                runs HA FDB (GCP-only today). See ``NexusConfig.fdb_mode``.
             fdb_operator_image_registry: See ``NexusConfig.fdb_operator_image_registry``.
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
