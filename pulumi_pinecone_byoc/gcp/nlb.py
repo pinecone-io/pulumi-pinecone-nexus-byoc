@@ -246,6 +246,16 @@ class InternalLoadBalancer(pulumi.ComponentResource):
         # ~15min, so the old 30 (5min) raised and aborted the whole program before
         # the install finished. 360 (60min) lets the concurrent install win the race.
         def get_lb_ip_and_link(_ingress_status, cell_name_str: str, retries: int = 360):
+            # The internal LB only exists after the apply-phase control-plane
+            # install brings up gloo/gateway-proxy (which programs the
+            # private-gloo-lb Ingress). During `pulumi preview`/dry-run that install
+            # has not run, and for a pre-existing (failed) ingress the status is
+            # already known — so this apply fires during preview and would poll
+            # forever, hanging/crashing the whole program before the update phase.
+            # Skip while dry-run; real values resolve during the update, where the
+            # concurrent install wins the race within the retry window below.
+            if pulumi.runtime.is_dry_run():
+                return ("", "")
             for attempt in range(retries):
                 try:
                     rules = gcp.compute.get_forwarding_rules(config.project, config.region)
