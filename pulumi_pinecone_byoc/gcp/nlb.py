@@ -240,7 +240,12 @@ class InternalLoadBalancer(pulumi.ComponentResource):
             ),
         )
 
-        def get_lb_ip_and_link(_ingress_status, cell_name_str: str, retries: int = 30):
+        # retries×10s must outlast a cold control-plane install: the internal LB
+        # only exists once `pinetools cluster install` brings up gloo/gateway-proxy
+        # (which programs the private-gloo-lb Ingress). On a fresh cluster that is
+        # ~15min, so the old 30 (5min) raised and aborted the whole program before
+        # the install finished. 360 (60min) lets the concurrent install win the race.
+        def get_lb_ip_and_link(_ingress_status, cell_name_str: str, retries: int = 360):
             for attempt in range(retries):
                 try:
                     rules = gcp.compute.get_forwarding_rules(config.project, config.region)
