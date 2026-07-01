@@ -183,10 +183,10 @@ model_ref = "multilingual-e5-large"
 [default.rerank.tiers.default]
 model_ref = "bge-reranker-v2-m3"
 
-# Override the image default's search.standard phase, which otherwise inherits
-# claude-sonnet-4-6 (not in this deployment's gemini-only supported_llm_models).
-[default.llm.phase_overrides.search.standard]
-model_ref = "gemini-3.5-flash"
+# Override the image default's search phase, which otherwise inherits
+# claude-sonnet-4-6 (not in this deployment's gemini-only supported models).
+[default.llm.phase_defaults]
+search = "gemini-3.5-flash"
 """
 
 # Filename of the routing overlay written into the generated project.
@@ -283,9 +283,9 @@ def build_inference_models_toml(
         f"[default.llm.tiers.pro]\nmodel_ref = {_toml_scalar(tiers['pro'])}\n\n"
         f"[default.embedding.tiers.default]\nmodel_ref = {_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}\n\n"
         f"[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers['rerank'])}\n\n"
-        "# Override the image default's search.standard phase, which otherwise\n"
-        "# inherits claude-sonnet-4-6 (not in this deployment's supported_llm_models).\n"
-        f"[default.llm.phase_overrides.search.standard]\nmodel_ref = {_toml_scalar(tiers['standard'])}"
+        "# Override the image default's search phase, which otherwise inherits\n"
+        "# claude-sonnet-4-6 (not in this deployment's supported models).\n"
+        f"[default.llm.phase_defaults]\nsearch = {_toml_scalar(tiers['standard'])}"
     )
     return "\n\n".join(parts) + "\n"
 
