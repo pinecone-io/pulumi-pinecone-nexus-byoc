@@ -167,8 +167,6 @@ max_docs_per_request = 100
 supported_llm_models       = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview"]
 supported_embedding_models = ["multilingual-e5-large"]
 supported_rerank_models    = ["bge-reranker-v2-m3"]
-# Restated so it overrides (not merges with) the image base's broader list;
-# must stay a subset of supported_llm_models. Off the pro tier by cost.
 supported_curate_models    = ["gemini-3.1-flash-lite", "gemini-3.5-flash"]
 
 [default.llm.tiers.lite]
@@ -287,8 +285,7 @@ def build_inference_models_toml(
 
     supported_llm = "[" + ", ".join(_toml_scalar(i) for i in llm_models) + "]"
     supported_rr = "[" + ", ".join(_toml_scalar(i) for i in rerank_models) + "]"
-    # Curate window = LLM catalog minus the pro tier. Emitted so it overrides
-    # (not merges with) the image base's broader list and stays a subset.
+    # LLM catalog minus the pro tier. Emitted so it overrides the image base's broader list and stays a subset.
     curate_ids = [i for i in llm_models if i != tiers["pro"]]
     supported_curate = "[" + ", ".join(_toml_scalar(i) for i in curate_ids) + "]"
     parts.append(
