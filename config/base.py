@@ -27,10 +27,6 @@ class NodePoolConfig(BaseModel):
     disk_size_gb: int = 100
     labels: dict[str, str] = Field(default_factory=dict)
     taints: list[NodePoolTaint] = Field(default_factory=list)
-    # Fixed node_count per zone (autoscaling off) instead of min/max. node_count is
-    # per-zone in GKE, so 1 with 3 zones = one node/zone. For FDB operator HA, where
-    # pods spread one-per-zone and the autoscaler won't add the empty-zone node.
-    fixed_node_count_per_zone: int | None = None
 
 
 class BaseConfig(BaseModel):

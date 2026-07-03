@@ -52,9 +52,6 @@ class NodePool:
     disk_size_gb: int = 100
     labels: dict = field(default_factory=dict)
     taints: list = field(default_factory=list)
-    # When set, the pool runs a fixed node_count per zone (autoscaling off) instead
-    # of min/max autoscaling. See config.base.NodePoolConfig.fixed_node_count_per_zone.
-    fixed_node_count_per_zone: int | None = None
 
 
 @dataclass
@@ -588,7 +585,6 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                         disk_size_gb=np.disk_size_gb,
                         labels=np.labels,
                         taints=np.taints,
-                        fixed_node_count_per_zone=np.fixed_node_count_per_zone,
                     )
                 )
         else:
@@ -603,16 +599,10 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             ]
 
         # Add Nexus node pools when enabled; DB-only deploys are unaffected.
-        # Operator HA pins the nexus-services pool to one node/zone so GKE fills every
-        # zone for the FDB pods (the autoscaler won't). Single mode keeps autoscaling.
         if args.nexus is not None:
             from .gke import nexus_node_pools
 
-            node_pools.extend(
-                nexus_node_pools(
-                    fdb_fixed_services_nodes=args.nexus.fdb_mode == "operator",
-                )
-            )
+            node_pools.extend(nexus_node_pools())
 
         control_db_cpu = 2
         system_db_cpu = 2
