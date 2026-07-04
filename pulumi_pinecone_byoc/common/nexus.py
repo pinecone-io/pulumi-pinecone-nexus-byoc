@@ -215,8 +215,10 @@ class Nexus(pulumi.ComponentResource):
                 the blob-storage SA via Workload Identity.
             cpgw_api_url: CPGW control-plane gateway base URL (``…/internal/cpgw``).
                 When set, Nexus uses the CPGW index client (synchronous CPS
-                ``db_index_id`` on create) instead of the managed public path.
-                Must be paired with the ``cpgw-api-key`` entry in the
+                ``db_index_id`` on create) instead of the managed public path, and
+                the workspace lifecycle is enabled (``config.workspacesEnabled`` +
+                ``gateway.workspaceAuth``) so wksp.* hosts authenticate customer
+                project keys. Must be paired with the ``cpgw-api-key`` entry in the
                 ``nexus-config`` secret — setting one without the other makes
                 Nexus panic at startup (partial CPGW config).
             byoc_docs_api_url: In-cluster svc-docs-api base URL for the keyless BYOC
@@ -315,6 +317,19 @@ class Nexus(pulumi.ComponentResource):
         if cpgw_api_url is not None:
             app_values["config"]["cpgwApiUrl"] = cpgw_api_url
             app_values["config"]["byocDocsApiUrl"] = byoc_docs_api_url or _DEFAULT_DOCS_API_URL
+            # Real CPGW is what makes the workspace lifecycle usable, so turn it on
+            # alongside the CPGW wiring (the chart defaults both off): contexts bind
+            # to a workspace + the api runs the workspace-operation poller
+            # (workspacesEnabled), and nexus-gateway runs the auth_request ->
+            # nexus-auth edge guarding wksp.* hosts (gateway.workspaceAuth). This is
+            # what lets a customer's existing project key authenticate against a
+            # workspace host without any hand-set flags.
+            # Coupled to the netstack *.wksp route (pinecone-db
+            # workspace_routing_enabled): that route must be enabled in lockstep,
+            # never before workspaceAuth — routing to nexus-api before the gateway
+            # edge is live would expose it unauthenticated.
+            app_values["config"]["workspacesEnabled"] = True
+            app_values["gateway"]["workspaceAuth"] = True
 
         # BYOC inference-proxy routing overlay. Ship the customer's model config
         # as a ConfigMap mounted as the `byoc` cascade profile. The TOML sets
