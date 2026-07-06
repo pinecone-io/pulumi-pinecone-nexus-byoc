@@ -317,17 +317,15 @@ class Nexus(pulumi.ComponentResource):
         if cpgw_api_url is not None:
             app_values["config"]["cpgwApiUrl"] = cpgw_api_url
             app_values["config"]["byocDocsApiUrl"] = byoc_docs_api_url or _DEFAULT_DOCS_API_URL
-            # Real CPGW is what makes the workspace lifecycle usable, so turn it on
-            # alongside the CPGW wiring (the chart defaults both off): contexts bind
-            # to a workspace + the api runs the workspace-operation poller
-            # (workspacesEnabled), and nexus-gateway runs the auth_request ->
-            # nexus-auth edge guarding wksp.* hosts (gateway.workspaceAuth). This is
-            # what lets a customer's existing project key authenticate against a
-            # workspace host without any hand-set flags.
-            # Coupled to the netstack *.wksp route (pinecone-db
-            # workspace_routing_enabled): that route must be enabled in lockstep,
-            # never before workspaceAuth — routing to nexus-api before the gateway
-            # edge is live would expose it unauthenticated.
+            # workspacesEnabled binds contexts to a workspace and runs the
+            # workspace-operation poller; workspaceAuth runs the nexus-gateway
+            # auth_request -> nexus-auth edge guarding wksp.* hosts. Both are
+            # coupled to real CPGW, so they track cpgwApiUrl.
+            #
+            # Ordering is security-critical: the netstack *.wksp route (pinecone-db
+            # workspace_routing_enabled) must go live in lockstep and never before
+            # workspaceAuth — routing to nexus-api before the gateway edge exists
+            # would expose it unauthenticated.
             app_values["config"]["workspacesEnabled"] = True
             app_values["gateway"]["workspaceAuth"] = True
 
