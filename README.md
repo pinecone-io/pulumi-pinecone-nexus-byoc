@@ -4,8 +4,6 @@
 |:----------------------------|
 | This repository is under active development and may introduce breaking changes.  |
 
-[!WARNING]
-This repository is under active development and may introduce breaking changes.
 
 
 [![PyPI version](https://img.shields.io/pypi/v/pulumi-pinecone-byoc)](https://pypi.org/project/pulumi-pinecone-byoc/)
