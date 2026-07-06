@@ -77,19 +77,15 @@ def _is_storage_bucket_prefix(value: str) -> bool:
     return bool(_STORAGE_PREFIX_RE.match(value))
 
 
-PINECONE_VERSION = "main-94a9e90"
+PINECONE_VERSION = "main-ecdb757"
 
-# Nexus image tag (proposal §10 `nexus-version`). Coordinated with
-# PINECONE_VERSION as a combined release manifest; the wizard writes it only
-# for a "Nexus BYOC" install. When unset in config the GCP component falls back
-# to `pinecone-version` so a single combined manifest still works.
-NEXUS_VERSION = PINECONE_VERSION
+# Independent of PINECONE_VERSION: DB and Nexus are separate repos with separate
+# CI, so their `main-<sha>` tags don't match — they are not co-tagged.
+NEXUS_VERSION = "main-b1c4c89"
 
-# Nexus images live in their own Artifact Registry repo (`nexus`), co-located on
-# the DB registry host; DB/pinetools images stay in the `unstable` repo.
+# Nexus images live in their own `nexus` repo, co-located on the registry host;
+# DB/pinetools images stay in the `unstable` repo.
 NEXUS_IMAGE_REGISTRY = "us-docker.pkg.dev/pinecone-artifacts/nexus"
-
-# Azure analogue: Nexus images in the `nexus` repo co-located on the ACR host.
 NEXUS_AZURE_IMAGE_REGISTRY = "pinecone.azurecr.io/nexus"
 
 # Inference-proxy model-routing template written into the generated project when
