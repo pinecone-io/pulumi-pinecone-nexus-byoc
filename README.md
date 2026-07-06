@@ -1,5 +1,13 @@
 # Pinecone Nexus BYOC
 
+| :warning: WARNING           |
+|:----------------------------|
+| This repository is under active development and may introduce breaking changes.  |
+
+[!WARNING]
+This repository is under active development and may introduce breaking changes.
+
+
 [![PyPI version](https://img.shields.io/pypi/v/pulumi-pinecone-byoc)](https://pypi.org/project/pulumi-pinecone-byoc/)
 
 Deploy Pinecone in your own cloud account with full control over your infrastructure.
