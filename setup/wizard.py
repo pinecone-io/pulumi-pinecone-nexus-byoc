@@ -580,12 +580,14 @@ class BaseSetupWizard:
         headless: bool = False,
         stack_name: str = "prod",
         skip_install: bool = False,
+        project_name: str | None = None,
     ):
         self.results: list[PreflightResult] = []
         self._current_step = 0
         self._headless = headless
         self._stack_name = stack_name
         self._skip_install = skip_install
+        self._project_name = project_name
 
     def _step(self, title: str) -> str:
         self._current_step += 1
@@ -913,11 +915,15 @@ class BaseSetupWizard:
         return build_inference_models_toml(llm, rerank, tiers)
 
     def _get_project_name(self) -> str:
+        # already collected in bootstrap via --project-name; don't reprompt or consume a step
+        if self._project_name:
+            return self._project_name
         console.print()
         console.print(f"  {self._step('Project Name')}")
         console.print("  [dim]A short name for this deployment (e.g., 'pinecone-prod')[/]")
         console.print()
-        return self._prompt("Enter project name", "pinecone-byoc")
+        default_name = os.path.basename(os.getcwd()) or "pinecone-nexus-byoc"
+        return self._prompt("Pulumi project name", default_name)
 
     def _setup_pulumi_backend(self) -> bool:
         console.print()
@@ -3846,6 +3852,7 @@ def run_setup(
     headless: bool = False,
     stack_name: str = "prod",
     skip_install: bool = False,
+    project_name: str | None = None,
 ) -> bool:
     try:
         if not cloud:
@@ -3856,17 +3863,26 @@ def run_setup(
 
         if cloud == "aws":
             wizard = AWSSetupWizard(
-                headless=headless, stack_name=stack_name, skip_install=skip_install
+                headless=headless,
+                stack_name=stack_name,
+                skip_install=skip_install,
+                project_name=project_name,
             )
             return wizard.run(output_dir)
         elif cloud == "gcp":
             wizard = GCPSetupWizard(
-                headless=headless, stack_name=stack_name, skip_install=skip_install
+                headless=headless,
+                stack_name=stack_name,
+                skip_install=skip_install,
+                project_name=project_name,
             )
             return wizard.run(output_dir)
         elif cloud == "azure":
             wizard = AzureSetupWizard(
-                headless=headless, stack_name=stack_name, skip_install=skip_install
+                headless=headless,
+                stack_name=stack_name,
+                skip_install=skip_install,
+                project_name=project_name,
             )
             return wizard.run(output_dir)
         else:
@@ -3905,6 +3921,11 @@ if __name__ == "__main__":
         help="Pulumi stack name (default: prod).",
     )
     parser.add_argument(
+        "--project-name",
+        default=None,
+        help="Pulumi project name. If not specified, you will be prompted.",
+    )
+    parser.add_argument(
         "--skip-install",
         action="store_true",
         help="Skip dependency installation and stack initialization.",
@@ -3917,5 +3938,6 @@ if __name__ == "__main__":
         headless=args.headless,
         stack_name=args.stack_name,
         skip_install=args.skip_install,
+        project_name=args.project_name,
     )
     sys.exit(0 if success else 1)

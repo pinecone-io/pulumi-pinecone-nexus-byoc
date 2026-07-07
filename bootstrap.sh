@@ -138,10 +138,15 @@ fi
 echo ""
 
 # get project directory (read from /dev/tty for curl pipe compatibility)
-default_dir="pinecone-byoc"
-echo -n "Project directory [$default_dir]: "
+default_dir="pinecone-nexus-byoc"
+echo -n "Pulumi project dir [$default_dir]: "
 read project_dir < /dev/tty
 project_dir="${project_dir:-$default_dir}"
+
+# get project name (defaults to the dir just entered)
+echo -n "Pulumi project name [$project_dir]: "
+read project_name < /dev/tty
+project_name="${project_name:-$project_dir}"
 
 if [ -d "$project_dir" ]; then
     echo -e "${RED}Directory '$project_dir' already exists${RESET}"
@@ -196,9 +201,9 @@ echo ""
 
 # run the wizard (generates __main__.py and pyproject.toml for pulumi)
 if [ -n "$CLOUD" ]; then
-    uv run python wizard.py --cloud "$CLOUD" ${STACK_NAME:+--stack-name "$STACK_NAME"}
+    uv run python wizard.py --cloud "$CLOUD" ${STACK_NAME:+--stack-name "$STACK_NAME"} --project-name "$project_name"
 else
-    uv run python wizard.py ${STACK_NAME:+--stack-name "$STACK_NAME"}
+    uv run python wizard.py ${STACK_NAME:+--stack-name "$STACK_NAME"} --project-name "$project_name"
 fi
 
 # cleanup wizard setup files (keep .venv, pyproject.toml, uv.lock created by wizard)
