@@ -154,11 +154,14 @@ cd "$project_dir"
 echo ""
 echo "Downloading setup wizard..."
 
-# copy wizard file from local repo or curl from GitHub
+# copy wizard files from local repo or curl from GitHub
+# (wizard.py imports the sibling module preflight_checks, so both must travel together)
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/setup/wizard.py" ]; then
     cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
+    cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py
 else
     curl -fsSL "${REPO_BASE}/setup/wizard.py" -o wizard.py
+    curl -fsSL "${REPO_BASE}/setup/preflight_checks.py" -o preflight_checks.py
 fi
 
 # create a temp pyproject.toml for the setup wizard dependencies
@@ -198,5 +201,5 @@ else
     uv run python wizard.py ${STACK_NAME:+--stack-name "$STACK_NAME"}
 fi
 
-# cleanup wizard setup file (keep .venv, pyproject.toml, uv.lock created by wizard)
-rm -f wizard.py
+# cleanup wizard setup files (keep .venv, pyproject.toml, uv.lock created by wizard)
+rm -f wizard.py preflight_checks.py
