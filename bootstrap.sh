@@ -20,6 +20,7 @@ RESET='\033[0m'
 
 CLOUD=""
 STACK_NAME=""
+LOCAL_PKG=""
 REPO_BASE="https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main"
 
 # parse arguments
@@ -164,6 +165,9 @@ echo "Downloading setup wizard..."
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/setup/wizard.py" ]; then
     cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
     cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py
+    # local fork: the package is unpublished, so consume it as an editable
+    # dependency from this checkout (SCRIPT_DIR is the fork root, absolute)
+    LOCAL_PKG="$SCRIPT_DIR"
 else
     curl -fsSL "${REPO_BASE}/setup/wizard.py" -o wizard.py
     curl -fsSL "${REPO_BASE}/setup/preflight_checks.py" -o preflight_checks.py
@@ -201,9 +205,9 @@ echo ""
 
 # run the wizard (generates __main__.py and pyproject.toml for pulumi)
 if [ -n "$CLOUD" ]; then
-    uv run python wizard.py --cloud "$CLOUD" ${STACK_NAME:+--stack-name "$STACK_NAME"} --project-name "$project_name"
+    uv run python wizard.py --cloud "$CLOUD" ${STACK_NAME:+--stack-name "$STACK_NAME"} --project-name "$project_name" ${LOCAL_PKG:+--local-package-path "$LOCAL_PKG"}
 else
-    uv run python wizard.py ${STACK_NAME:+--stack-name "$STACK_NAME"} --project-name "$project_name"
+    uv run python wizard.py ${STACK_NAME:+--stack-name "$STACK_NAME"} --project-name "$project_name" ${LOCAL_PKG:+--local-package-path "$LOCAL_PKG"}
 fi
 
 # cleanup wizard setup files (keep .venv, pyproject.toml, uv.lock created by wizard)

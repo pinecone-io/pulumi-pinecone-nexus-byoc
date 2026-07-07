@@ -581,6 +581,7 @@ class BaseSetupWizard:
         stack_name: str = "prod",
         skip_install: bool = False,
         project_name: str | None = None,
+        local_package_path: str | None = None,
     ):
         self.results: list[PreflightResult] = []
         self._current_step = 0
@@ -588,6 +589,7 @@ class BaseSetupWizard:
         self._stack_name = stack_name
         self._skip_install = skip_install
         self._project_name = project_name
+        self._local_package_path = local_package_path
 
     def _step(self, title: str) -> str:
         self._current_step += 1
@@ -1576,8 +1578,13 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[aws]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[aws]"]
 """
+        if self._local_package_path:
+            pyproject_content += (
+                "\n[tool.uv.sources]\n"
+                f'pulumi-pinecone-nexus-byoc = {{ path = "{self._local_package_path}", editable = true }}\n'
+            )
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
             f.write(pyproject_content)
@@ -1633,7 +1640,7 @@ dependencies = ["pulumi-pinecone-byoc[aws]"]
         if result.returncode == 0:
             # get installed version
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -1644,7 +1651,7 @@ dependencies = ["pulumi-pinecone-byoc[aws]"]
                     pkg_version = line.split(":", 1)[1].strip()
                     break
             console.print(
-                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")
@@ -2610,8 +2617,13 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[gcp]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
 """
+        if self._local_package_path:
+            pyproject_content += (
+                "\n[tool.uv.sources]\n"
+                f'pulumi-pinecone-nexus-byoc = {{ path = "{self._local_package_path}", editable = true }}\n'
+            )
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
             f.write(pyproject_content)
@@ -2707,7 +2719,7 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
         if result.returncode == 0:
             # get installed version
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -2718,7 +2730,7 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
                     pkg_version = line.split(":", 1)[1].strip()
                     break
             console.print(
-                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")
@@ -3647,8 +3659,13 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[azure]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[azure]"]
 """
+        if self._local_package_path:
+            pyproject_content += (
+                "\n[tool.uv.sources]\n"
+                f'pulumi-pinecone-nexus-byoc = {{ path = "{self._local_package_path}", editable = true }}\n'
+            )
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
             f.write(pyproject_content)
@@ -3739,7 +3756,7 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
 
         if result.returncode == 0:
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -3751,7 +3768,7 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
                     break
             console.print(
                 f"  [green]✓[/] Dependencies installed "
-                f"[dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"[dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")
@@ -3853,6 +3870,7 @@ def run_setup(
     stack_name: str = "prod",
     skip_install: bool = False,
     project_name: str | None = None,
+    local_package_path: str | None = None,
 ) -> bool:
     try:
         if not cloud:
@@ -3867,6 +3885,7 @@ def run_setup(
                 stack_name=stack_name,
                 skip_install=skip_install,
                 project_name=project_name,
+                local_package_path=local_package_path,
             )
             return wizard.run(output_dir)
         elif cloud == "gcp":
@@ -3875,6 +3894,7 @@ def run_setup(
                 stack_name=stack_name,
                 skip_install=skip_install,
                 project_name=project_name,
+                local_package_path=local_package_path,
             )
             return wizard.run(output_dir)
         elif cloud == "azure":
@@ -3883,6 +3903,7 @@ def run_setup(
                 stack_name=stack_name,
                 skip_install=skip_install,
                 project_name=project_name,
+                local_package_path=local_package_path,
             )
             return wizard.run(output_dir)
         else:
@@ -3930,6 +3951,15 @@ if __name__ == "__main__":
         action="store_true",
         help="Skip dependency installation and stack initialization.",
     )
+    parser.add_argument(
+        "--local-package-path",
+        default=None,
+        help=(
+            "Path to a local pulumi-pinecone-nexus-byoc checkout to consume as an "
+            "editable dependency via [tool.uv.sources]. If not specified, the "
+            "generated project depends on the published PyPI package."
+        ),
+    )
     args = parser.parse_args()
 
     success = run_setup(
@@ -3939,5 +3969,6 @@ if __name__ == "__main__":
         stack_name=args.stack_name,
         skip_install=args.skip_install,
         project_name=args.project_name,
+        local_package_path=args.local_package_path,
     )
     sys.exit(0 if success else 1)
