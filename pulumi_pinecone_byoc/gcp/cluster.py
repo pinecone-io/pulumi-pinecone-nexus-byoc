@@ -403,7 +403,12 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 cell_name=self._cell_name,
                 prefix=storage_prefix,
                 force_destroy=not args.deletion_protection,
-                opts=pulumi.ResourceOptions(parent=self),
+                # The WI binding inside references the cluster's Workload Identity
+                # pool ({project}.svc.id.goog), which only exists once a GKE cluster
+                # with WI has been created. Depend on the GKE component so a
+                # fresh-project first deploy doesn't race the binding ahead of the
+                # pool (Error 400: Identity Pool does not exist).
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gke]),
             )
             blob_storage = NexusBlobStorage(
                 source=self._nexus_gcs.source,
