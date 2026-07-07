@@ -19,6 +19,7 @@ DIM='\033[2m'
 RESET='\033[0m'
 
 CLOUD=""
+STACK_NAME=""
 REPO_BASE="https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main"
 
 # parse arguments
@@ -26,6 +27,10 @@ while [[ $# -gt 0 ]]; do
     case $1 in
         --cloud)
             CLOUD="$2"
+            shift 2
+            ;;
+        --stack-name)
+            STACK_NAME="$2"
             shift 2
             ;;
         *)
@@ -188,9 +193,9 @@ echo ""
 
 # run the wizard (generates __main__.py and pyproject.toml for pulumi)
 if [ -n "$CLOUD" ]; then
-    uv run python wizard.py --cloud "$CLOUD"
+    uv run python wizard.py --cloud "$CLOUD" ${STACK_NAME:+--stack-name "$STACK_NAME"}
 else
-    uv run python wizard.py
+    uv run python wizard.py ${STACK_NAME:+--stack-name "$STACK_NAME"}
 fi
 
 # cleanup wizard setup file (keep .venv, pyproject.toml, uv.lock created by wizard)
