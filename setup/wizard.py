@@ -1667,7 +1667,6 @@ class GCPPreflightChecker:
 
     def run_checks(self) -> bool:
         checks = [
-            ("GCP billing", self._check_billing_enabled),
             ("GCP APIs", self._check_apis_enabled),
             ("VPC Networks", self._check_vpc_quota),
             ("External IPs", self._check_external_ip_quota),
@@ -1746,42 +1745,6 @@ class GCPPreflightChecker:
             raise RuntimeError(result.stderr.strip().split("\n")[0])
 
         return json.loads(result.stdout)
-
-    def _check_billing_enabled(self):
-        try:
-            result = subprocess.run(
-                [
-                    "gcloud",
-                    "beta",
-                    "billing",
-                    "projects",
-                    "describe",
-                    self.project_id,
-                    "--format=value(billingEnabled)",
-                ],
-                capture_output=True,
-                text=True,
-                timeout=30,
-            )
-            if result.returncode != 0:
-                self._add_result(
-                    "GCP billing",
-                    False,
-                    "Could not verify billing (need billing.resourceAssociations.list "
-                    f"/ billing API): {result.stderr.strip().split(chr(10))[0]}",
-                )
-                return
-
-            if result.stdout.strip().lower() == "true":
-                self._add_result("GCP billing", True, "Billing enabled")
-            else:
-                self._add_result(
-                    "GCP billing",
-                    False,
-                    "Billing not enabled — link a billing account to the project",
-                )
-        except Exception as e:
-            self._add_result("GCP billing", False, f"Could not verify billing: {e}")
 
     def _check_apis_enabled(self):
         required_apis = [
