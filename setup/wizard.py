@@ -45,6 +45,13 @@ class NexusWizardConfig(TypedDict, total=False):
     image_registry: str
     inference_base: str
     inference_models_toml: str | None
+    # Gemini API key (the default catalog's `gemini-api-key` ref). Collected by
+    # the wizard so it can set the `nexus-gemini-api-key` /
+    # `nexus-provider-keys.gemini-api-key` secrets itself.
+    gemini_api_key: str
+    # Extra provider-key secrets for a customized catalog whose api_key_refs are
+    # not `gemini-api-key`: {ref -> value}, each set as `nexus-provider-keys.<ref>`.
+    provider_keys: dict[str, str]
 
 
 # Canonical UUID form (e.g. 123e4567-e89b-12d3-a456-426614174000). The Nexus BYOC
@@ -75,6 +82,22 @@ def _is_storage_bucket_prefix(value: str) -> bool:
     if not value or len(value) > _STORAGE_PREFIX_MAX_LEN:
         return False
     return bool(_STORAGE_PREFIX_RE.match(value))
+
+
+# `api_key_ref = "<ref>"` lines in an inference-models TOML. Used to discover
+# which provider-key secrets a (possibly customized) catalog needs.
+_API_KEY_REF_RE = re.compile(r'^\s*api_key_ref\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
+    """Distinct `api_key_ref` values referenced by an inference-models TOML.
+
+    `None` (no custom catalog -> default template) references only the default
+    `gemini-api-key`.
+    """
+    if toml_text is None:
+        return {"gemini-api-key"}
+    return set(_API_KEY_REF_RE.findall(toml_text))
 
 
 PINECONE_VERSION = "main-ecdb757"
@@ -602,6 +625,30 @@ class BaseSetupWizard:
             return None
 
         return api_key
+
+    def _get_gemini_api_key(self) -> str:
+        """Prompt for the Gemini API key (the default catalog's `gemini-api-key`
+        ref). Mirrors `_get_api_key`: reuse an env key if present, else prompt
+        hidden. Required for Nexus, so re-prompt on empty (matching the other
+        required-value loops in the wizard)."""
+        console.print()
+        console.print("  [bold]Gemini API Key[/]")
+        console.print("  [dim]Nexus uses Gemini for curation and the default inference models.[/]")
+        console.print("  [dim]Get a key at aistudio.google.com/apikey[/]")
+        console.print()
+
+        for env_var in ("PINECONE_GEMINI_API_KEY", "GEMINI_API_KEY"):
+            env_key = os.environ.get(env_var)
+            if env_key:
+                use_env = self._prompt(f"Found {env_var} in environment. Use it? (Y/n)", "Y")
+                if use_env.lower() in ("y", "yes", ""):
+                    return env_key
+
+        while True:
+            gemini_key = self._prompt("Enter your Gemini API key", password=True).strip()
+            if gemini_key:
+                return gemini_key
+            console.print("  [red]Gemini API key is required for Nexus.[/]")
 
     def _validate_api_key(self, api_key: str) -> bool:
         console.print()
@@ -2388,11 +2435,32 @@ class GCPSetupWizard(BaseSetupWizard):
                 f"  [dim]Using the default Gemini + Pinecone models. Edit [/]"
                 f"{NEXUS_INFERENCE_MODELS_FILENAME}[dim] in the generated project to change them.[/]"
             )
-        console.print(
-            "  [dim]Each model's api_key_ref is a secret; set one per provider before"
-            " `pulumi up`:[/]\n"
-            "  [dim]pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <key>[/]"
+
+        # Provider-key secrets. The default catalog (and the common custom case)
+        # uses a single `gemini-api-key` ref; collect it here so the wizard sets
+        # `nexus-gemini-api-key` and `nexus-provider-keys.gemini-api-key` itself
+        # instead of leaving the operator to `pulumi config set` them by hand.
+        gemini_api_key = self._get_gemini_api_key()
+
+        # Multi-provider edge case: a customized catalog may reference api_key_refs
+        # other than `gemini-api-key`. Prompt (hidden) for each distinct extra ref
+        # so its `nexus-provider-keys.<ref>` secret is set too; if the operator
+        # skips one, keep printing the manual instruction for that ref.
+        provider_keys: dict[str, str] = {}
+        extra_refs = sorted(
+            ref for ref in _api_key_refs_from_toml(inference_models_toml) if ref != "gemini-api-key"
         )
+        for ref in extra_refs:
+            console.print()
+            console.print(f"  [dim]Provider key for the '{ref}' api_key_ref.[/]")
+            key = self._prompt(f"Enter the {ref} provider key", password=True).strip()
+            if key:
+                provider_keys[ref] = key
+            else:
+                console.print(
+                    f"  [yellow]⚠[/] No value entered; set it before `pulumi up`:\n"
+                    f"  [dim]pulumi config set --path --secret nexus-provider-keys.{ref} <key>[/]"
+                )
 
         return {
             "enabled": True,
@@ -2403,6 +2471,8 @@ class GCPSetupWizard(BaseSetupWizard):
             "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
             "inference_models_toml": inference_models_toml,
+            "gemini_api_key": gemini_api_key,
+            "provider_keys": provider_keys,
         }
 
     def _run_preflight_checks(
@@ -2606,8 +2676,10 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
                     f"  {project_name}:nexus-storage-bucket-prefix: "
                     f"{nexus['storage_bucket_prefix']}\n"
                 )
-            # nexus-gemini-api-key is a secret; set it out-of-band:
-            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
+            # nexus-gemini-api-key / nexus-provider-keys.* are secrets; the
+            # wizard sets them itself in the secret-setting step below (mirroring
+            # pinecone-api-key), so they are intentionally omitted from this
+            # plaintext stack config.
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
@@ -2695,6 +2767,52 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
             return False
 
         console.print("  [green]✓[/] API key stored securely")
+
+        # Nexus provider-key secrets. Mirror the pinecone-api-key handling above
+        # so the operator no longer has to `pulumi config set` them out-of-band.
+        # `nexus-gemini-api-key` is read by the runtime NexusConfig directly;
+        # `nexus-provider-keys.<ref>` is read by the inference proxy (the default
+        # catalog's api_key_ref is `gemini-api-key`, so both are set from the
+        # same key).
+        if nexus.get("enabled"):
+            gemini_api_key = nexus.get("gemini_api_key")
+            provider_keys = dict(nexus.get("provider_keys") or {})
+            if gemini_api_key:
+                provider_keys.setdefault("gemini-api-key", gemini_api_key)
+
+            def _set_secret(config_args: list[str], value: str, label: str) -> None:
+                with Status(f"  [dim]Storing {label}...[/]", console=console, spinner="dots"):
+                    res = subprocess.run(
+                        [
+                            "pulumi",
+                            "config",
+                            "set",
+                            *config_args,
+                            value,
+                            "--stack",
+                            stack_name,
+                            "--cwd",
+                            output_dir,
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                if res.returncode != 0:
+                    console.print(f"  [red]✗[/] Failed to store {label}: {res.stderr.strip()}")
+                    console.print(
+                        f"  [dim]Run manually:[/] pulumi config set {' '.join(config_args)} <key>"
+                    )
+                else:
+                    console.print(f"  [green]✓[/] {label} stored securely")
+
+            if gemini_api_key:
+                _set_secret(["--secret", "nexus-gemini-api-key"], gemini_api_key, "Gemini API key")
+            for ref, value in provider_keys.items():
+                _set_secret(
+                    ["--path", "--secret", f"nexus-provider-keys.{ref}"],
+                    value,
+                    f"provider key ({ref})",
+                )
 
         self._print_success(output_dir)
         return True
