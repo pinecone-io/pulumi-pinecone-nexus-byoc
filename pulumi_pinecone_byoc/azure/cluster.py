@@ -402,6 +402,10 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             "auth0_domain": args.auth0_domain,
             "customer_tags": args.tags or {},
             "public_access_enabled": args.public_access_enabled,
+            # Enable the netstack *.wksp route only when Nexus is wired -- same
+            # condition as gateway.workspaceAuth, so routing + auth go live in
+            # lockstep (never on a non-Nexus cell with no nexus-gateway).
+            "workspace_routing_enabled": args.nexus is not None,
             "pulumi_backend_url": self._pulumi_operator.backend_url,
             "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,
             "aws_amp_region": self._amp_access.amp_region,
