@@ -2357,8 +2357,8 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print()
         console.print("  [dim]Deploy Nexus alongside the Pinecone DB stack in the same cluster.[/]")
 
-        response = self._prompt("Enable Nexus? (y/N)", "N")
-        if response.strip().lower() not in ("y", "yes"):
+        response = self._prompt("Enable Nexus? (Y/n)", "Y")
+        if response.strip().lower() in ("n", "no"):
             return {"enabled": False}
 
         console.print()
