@@ -1686,14 +1686,11 @@ class GCPPreflightChecker:
             if name == "GCP APIs" and self._missing_apis:
                 missing = self._missing_apis
                 answer = _read_input_with_placeholder(
-                    f"{len(missing)} required GCP APIs are not enabled. "
-                    "Enable them now? (Y/n)",
+                    f"{len(missing)} required GCP APIs are not enabled. Enable them now? (Y/n)",
                     "Y",
                 )
                 if answer.lower() in ("y", "yes", ""):
-                    with Status(
-                        "  [dim]Enabling APIs...[/]", console=console, spinner="dots"
-                    ):
+                    with Status("  [dim]Enabling APIs...[/]", console=console, spinner="dots"):
                         enable = subprocess.run(
                             [
                                 "gcloud",
