@@ -107,7 +107,10 @@ class Pinetools(pulumi.ComponentResource):
             ],
             resources=k8s.core.v1.ResourceRequirementsArgs(
                 requests={"ephemeral-storage": "1Gi", "memory": "512Mi", "cpu": "100m"},
-                limits={"ephemeral-storage": "5Gi", "memory": "2Gi"},
+                # 2Gi OOM-killed (exit 137) the full-platform `cluster install` on a
+                # fresh cell; raise the limit (not the request, so scheduling is
+                # unchanged) to give the install headroom.
+                limits={"ephemeral-storage": "5Gi", "memory": "4Gi"},
             ),
         )
 
