@@ -1663,9 +1663,11 @@ class GCPPreflightChecker:
         self.zones = zones
         self.cidr = cidr
         self.results: list[PreflightResult] = []
+        self._missing_apis: list[str] = []
 
     def run_checks(self) -> bool:
         checks = [
+            ("GCP billing", self._check_billing_enabled),
             ("GCP APIs", self._check_apis_enabled),
             ("VPC Networks", self._check_vpc_quota),
             ("External IPs", self._check_external_ip_quota),
@@ -1678,6 +1680,46 @@ class GCPPreflightChecker:
         for name, check_fn in checks:
             with Status(f"  [dim]Checking {name}...[/]", console=console, spinner="dots"):
                 check_fn()
+
+            # Offer to enable missing APIs -- done outside the Status spinner so
+            # the prompt/raw-terminal input isn't garbled by the live display.
+            if name == "GCP APIs" and self._missing_apis:
+                missing = self._missing_apis
+                answer = _read_input_with_placeholder(
+                    f"{len(missing)} required GCP APIs are not enabled. "
+                    "Enable them now? (Y/n)",
+                    "Y",
+                )
+                if answer.lower() in ("y", "yes", ""):
+                    with Status(
+                        "  [dim]Enabling APIs...[/]", console=console, spinner="dots"
+                    ):
+                        enable = subprocess.run(
+                            [
+                                "gcloud",
+                                "services",
+                                "enable",
+                                *missing,
+                                f"--project={self.project_id}",
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=300,
+                        )
+                    if enable.returncode == 0:
+                        self.results[-1] = PreflightResult(
+                            "GCP APIs",
+                            True,
+                            f"Enabled {len(missing)} previously-missing APIs",
+                        )
+                    else:
+                        self.results[-1] = PreflightResult(
+                            "GCP APIs",
+                            False,
+                            f"Failed to enable: {enable.stderr.strip().split(chr(10))[0]}",
+                            f"Run: gcloud services enable {' '.join(missing)} "
+                            f"--project={self.project_id}",
+                        )
 
             # print the result that was just added
             r = self.results[-1]
@@ -1707,6 +1749,42 @@ class GCPPreflightChecker:
             raise RuntimeError(result.stderr.strip().split("\n")[0])
 
         return json.loads(result.stdout)
+
+    def _check_billing_enabled(self):
+        try:
+            result = subprocess.run(
+                [
+                    "gcloud",
+                    "beta",
+                    "billing",
+                    "projects",
+                    "describe",
+                    self.project_id,
+                    "--format=value(billingEnabled)",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            if result.returncode != 0:
+                self._add_result(
+                    "GCP billing",
+                    False,
+                    "Could not verify billing (need billing.resourceAssociations.list "
+                    f"/ billing API): {result.stderr.strip().split(chr(10))[0]}",
+                )
+                return
+
+            if result.stdout.strip().lower() == "true":
+                self._add_result("GCP billing", True, "Billing enabled")
+            else:
+                self._add_result(
+                    "GCP billing",
+                    False,
+                    "Billing not enabled — link a billing account to the project",
+                )
+        except Exception as e:
+            self._add_result("GCP billing", False, f"Could not verify billing: {e}")
 
     def _check_apis_enabled(self):
         required_apis = [
@@ -1756,6 +1834,7 @@ class GCPPreflightChecker:
             missing = [api for api in required_apis if api not in enabled_apis]
 
             if missing:
+                self._missing_apis = missing
                 short_names = [api.replace(".googleapis.com", "") for api in missing]
                 self._add_result(
                     "GCP APIs",
@@ -1764,6 +1843,7 @@ class GCPPreflightChecker:
                     f"Run: gcloud services enable {' '.join(missing)} --project={self.project_id}",
                 )
             else:
+                self._missing_apis = []
                 self._add_result(
                     "GCP APIs", True, f"All {len(required_apis)} required APIs enabled"
                 )
