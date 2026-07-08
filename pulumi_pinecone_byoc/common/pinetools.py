@@ -98,7 +98,14 @@ class Pinetools(pulumi.ComponentResource):
             name="pinetools",
             image=pinetools_image,
             command=["/bin/sh", "-c"],
-            args=["pinetools cluster install && pinetools cluster check"],
+            # No `&& pinetools cluster check` here: on a Nexus cell, netstack renders
+            # upstream-nexus-gateway -> nexus-gateway (ns nexus), which Nexus creates
+            # in a LATER step that depends on this Job. `cluster check` loops waiting
+            # for that upstream to be healthy -> deadlock (Nexus can't start until this
+            # Job finishes, the Job can't finish until nexus-gateway exists). The
+            # install's own `helm --wait` validates the workloads; the gateway upstream
+            # goes healthy on its own once Nexus is up.
+            args=["pinetools cluster install"],
             env=[
                 k8s.core.v1.EnvVarArgs(
                     name="PINECONE_IMAGE_VERSION",
@@ -107,10 +114,7 @@ class Pinetools(pulumi.ComponentResource):
             ],
             resources=k8s.core.v1.ResourceRequirementsArgs(
                 requests={"ephemeral-storage": "1Gi", "memory": "512Mi", "cpu": "100m"},
-                # 2Gi OOM-killed (exit 137) the full-platform `cluster install` on a
-                # fresh cell; raise the limit (not the request, so scheduling is
-                # unchanged) to give the install headroom.
-                limits={"ephemeral-storage": "5Gi", "memory": "4Gi"},
+                limits={"ephemeral-storage": "5Gi", "memory": "2Gi"},
             ),
         )
 
