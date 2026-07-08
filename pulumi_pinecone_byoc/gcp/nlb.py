@@ -222,9 +222,15 @@ class InternalLoadBalancer(pulumi.ComponentResource):
                 ],
                 tls=[
                     k8s.networking.v1.IngressTLSArgs(
+                        # Must match the public ingress's host list exactly: both
+                        # reference the same `tls_secret_name`, so cert-manager builds
+                        # one shared cert from whichever ingress owns it. Omitting
+                        # *.wksp here dropped that SAN from the shared cert, breaking
+                        # workspace hosts (ERR_CERT_COMMON_NAME_INVALID).
                         hosts=[
                             subdomain.apply(lambda s: f"*.{s}"),
                             subdomain.apply(lambda s: f"*.svc.{s}"),
+                            subdomain.apply(lambda s: f"*.wksp.{s}"),
                             subdomain.apply(lambda s: f"*.private.{s}"),
                             subdomain.apply(lambda s: f"*.svc.private.{s}"),
                         ],
