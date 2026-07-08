@@ -144,7 +144,6 @@ echo -n "Pulumi project dir [$default_dir]: "
 read project_dir < /dev/tty
 project_dir="${project_dir:-$default_dir}"
 
-# get project name (defaults to the dir just entered)
 echo -n "Pulumi project name [$project_dir]: "
 read project_name < /dev/tty
 project_name="${project_name:-$project_dir}"
@@ -160,8 +159,7 @@ cd "$project_dir"
 echo ""
 echo "Downloading setup wizard..."
 
-# copy wizard files from local repo or curl from GitHub
-# (wizard.py imports the sibling module preflight_checks, so both must travel together)
+# wizard.py imports the sibling module preflight_checks, so both must travel together
 if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/setup/wizard.py" ]; then
     cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
     cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py

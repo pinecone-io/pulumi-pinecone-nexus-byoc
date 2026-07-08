@@ -631,10 +631,7 @@ class BaseSetupWizard:
         return api_key
 
     def _get_gemini_api_key(self) -> str:
-        """Prompt for the Gemini API key (the default catalog's `gemini-api-key`
-        ref). Mirrors `_get_api_key`: reuse an env key if present, else prompt
-        hidden. Required for Nexus, so re-prompt on empty (matching the other
-        required-value loops in the wizard)."""
+        """The Gemini API key backing the default catalog's `gemini-api-key` ref; required when Nexus is enabled."""
         console.print()
         console.print("  [bold]Gemini API Key[/]")
         console.print("  [dim]Nexus uses Gemini for curation and the default inference models.[/]")
@@ -2451,8 +2448,7 @@ class GCPSetupWizard(BaseSetupWizard):
 
         # Provider-key secrets. The default catalog (and the common custom case)
         # uses a single `gemini-api-key` ref; collect it here so the wizard sets
-        # `nexus-gemini-api-key` and `nexus-provider-keys.gemini-api-key` itself
-        # instead of leaving the operator to `pulumi config set` them by hand.
+        # `nexus-gemini-api-key` and `nexus-provider-keys.gemini-api-key` itself.
         gemini_api_key = self._get_gemini_api_key()
 
         # Multi-provider edge case: a customized catalog may reference api_key_refs
@@ -2786,12 +2782,9 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
 
         console.print("  [green]✓[/] API key stored securely")
 
-        # Nexus provider-key secrets. Mirror the pinecone-api-key handling above
-        # so the operator no longer has to `pulumi config set` them out-of-band.
-        # `nexus-gemini-api-key` is read by the runtime NexusConfig directly;
-        # `nexus-provider-keys.<ref>` is read by the inference proxy (the default
-        # catalog's api_key_ref is `gemini-api-key`, so both are set from the
-        # same key).
+        # nexus-gemini-api-key is read by NexusConfig; nexus-provider-keys.<ref>
+        # by the inference proxy (default catalog's api_key_ref is `gemini-api-key`,
+        # so both are set from the same key).
         if nexus.get("enabled"):
             gemini_api_key = nexus.get("gemini_api_key")
             provider_keys = dict(nexus.get("provider_keys") or {})
