@@ -264,7 +264,7 @@ class GKE(pulumi.ComponentResource):
                     )
                 )
             ],
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[dns_sa]),
+            opts=pulumi.ResourceOptions(parent=self, depends_on=[dns_sa, cluster]),
         )
 
         # pulumi-operator K8s SA -> Pulumi GCP SA for GCS state access
@@ -279,7 +279,7 @@ class GKE(pulumi.ComponentResource):
                     )
                 )
             ],
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[pulumi_sa]),
+            opts=pulumi.ResourceOptions(parent=self, depends_on=[pulumi_sa, cluster]),
         )
 
         gcp.projects.IAMMember(
@@ -301,7 +301,7 @@ class GKE(pulumi.ComponentResource):
                 member=pulumi.Output.all(config.project).apply(
                     lambda args, sa=sa: f"serviceAccount:{args[0]}.svc.id.goog[{sa}]"
                 ),
-                opts=pulumi.ResourceOptions(parent=self, depends_on=[writer_sa]),
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[writer_sa, cluster]),
             )
 
         # reader K8s SAs -> read GCP SA for GCS read-only access
@@ -315,7 +315,7 @@ class GKE(pulumi.ComponentResource):
                     for sa in config.reader_k8s_service_accounts
                 ]
             ),
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[reader_sa]),
+            opts=pulumi.ResourceOptions(parent=self, depends_on=[reader_sa, cluster]),
         )
 
         # storage integration SA for data-importer GCS access

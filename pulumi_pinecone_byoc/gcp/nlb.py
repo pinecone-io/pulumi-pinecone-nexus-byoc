@@ -222,9 +222,14 @@ class InternalLoadBalancer(pulumi.ComponentResource):
                 ],
                 tls=[
                     k8s.networking.v1.IngressTLSArgs(
+                        # Both ingresses reference the same tls_secret_name, so
+                        # cert-manager builds one shared cert from their combined
+                        # hosts -- the two host lists must stay identical or the
+                        # shared cert loses SANs.
                         hosts=[
                             subdomain.apply(lambda s: f"*.{s}"),
                             subdomain.apply(lambda s: f"*.svc.{s}"),
+                            subdomain.apply(lambda s: f"*.wksp.{s}"),
                             subdomain.apply(lambda s: f"*.private.{s}"),
                             subdomain.apply(lambda s: f"*.svc.private.{s}"),
                         ],

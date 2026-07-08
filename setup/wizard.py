@@ -45,6 +45,13 @@ class NexusWizardConfig(TypedDict, total=False):
     image_registry: str
     inference_base: str
     inference_models_toml: str | None
+    # Gemini API key (the default catalog's `gemini-api-key` ref). Collected by
+    # the wizard so it can set the `nexus-gemini-api-key` /
+    # `nexus-provider-keys.gemini-api-key` secrets itself.
+    gemini_api_key: str
+    # Extra provider-key secrets for a customized catalog whose api_key_refs are
+    # not `gemini-api-key`: {ref -> value}, each set as `nexus-provider-keys.<ref>`.
+    provider_keys: dict[str, str]
 
 
 # Canonical UUID form (e.g. 123e4567-e89b-12d3-a456-426614174000). The Nexus BYOC
@@ -75,6 +82,22 @@ def _is_storage_bucket_prefix(value: str) -> bool:
     if not value or len(value) > _STORAGE_PREFIX_MAX_LEN:
         return False
     return bool(_STORAGE_PREFIX_RE.match(value))
+
+
+# `api_key_ref = "<ref>"` lines in an inference-models TOML. Used to discover
+# which provider-key secrets a (possibly customized) catalog needs.
+_API_KEY_REF_RE = re.compile(r'^\s*api_key_ref\s*=\s*"([^"]+)"', re.MULTILINE)
+
+
+def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
+    """Distinct `api_key_ref` values referenced by an inference-models TOML.
+
+    `None` (no custom catalog -> default template) references only the default
+    `gemini-api-key`.
+    """
+    if toml_text is None:
+        return {"gemini-api-key"}
+    return set(_API_KEY_REF_RE.findall(toml_text))
 
 
 PINECONE_VERSION = "main-ecdb757"
@@ -557,12 +580,16 @@ class BaseSetupWizard:
         headless: bool = False,
         stack_name: str = "prod",
         skip_install: bool = False,
+        project_name: str | None = None,
+        local_package_path: str | None = None,
     ):
         self.results: list[PreflightResult] = []
         self._current_step = 0
         self._headless = headless
         self._stack_name = stack_name
         self._skip_install = skip_install
+        self._project_name = project_name
+        self._local_package_path = local_package_path
 
     def _step(self, title: str) -> str:
         self._current_step += 1
@@ -602,6 +629,27 @@ class BaseSetupWizard:
             return None
 
         return api_key
+
+    def _get_gemini_api_key(self) -> str:
+        """The Gemini API key backing the default catalog's `gemini-api-key` ref; required when Nexus is enabled."""
+        console.print()
+        console.print("  [bold]Gemini API Key[/]")
+        console.print("  [dim]Nexus uses Gemini for curation and the default inference models.[/]")
+        console.print("  [dim]Get a key at aistudio.google.com/apikey[/]")
+        console.print()
+
+        for env_var in ("PINECONE_GEMINI_API_KEY", "GEMINI_API_KEY"):
+            env_key = os.environ.get(env_var)
+            if env_key:
+                use_env = self._prompt(f"Found {env_var} in environment. Use it? (Y/n)", "Y")
+                if use_env.lower() in ("y", "yes", ""):
+                    return env_key
+
+        while True:
+            gemini_key = self._prompt("Enter your Gemini API key", password=True).strip()
+            if gemini_key:
+                return gemini_key
+            console.print("  [red]Gemini API key is required for Nexus.[/]")
 
     def _validate_api_key(self, api_key: str) -> bool:
         console.print()
@@ -866,11 +914,15 @@ class BaseSetupWizard:
         return build_inference_models_toml(llm, rerank, tiers)
 
     def _get_project_name(self) -> str:
+        # already collected in bootstrap via --project-name; don't reprompt or consume a step
+        if self._project_name:
+            return self._project_name
         console.print()
         console.print(f"  {self._step('Project Name')}")
         console.print("  [dim]A short name for this deployment (e.g., 'pinecone-prod')[/]")
         console.print()
-        return self._prompt("Enter project name", "pinecone-byoc")
+        default_name = os.path.basename(os.getcwd()) or "pinecone-nexus-byoc"
+        return self._prompt("Pulumi project name", default_name)
 
     def _setup_pulumi_backend(self) -> bool:
         console.print()
@@ -1523,8 +1575,13 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[aws]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[aws]"]
 """
+        if self._local_package_path:
+            pyproject_content += (
+                "\n[tool.uv.sources]\n"
+                f'pulumi-pinecone-nexus-byoc = {{ path = "{self._local_package_path}", editable = true }}\n'
+            )
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
             f.write(pyproject_content)
@@ -1580,7 +1637,7 @@ dependencies = ["pulumi-pinecone-byoc[aws]"]
         if result.returncode == 0:
             # get installed version
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -1591,7 +1648,7 @@ dependencies = ["pulumi-pinecone-byoc[aws]"]
                     pkg_version = line.split(":", 1)[1].strip()
                     break
             console.print(
-                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")
@@ -1663,6 +1720,7 @@ class GCPPreflightChecker:
         self.zones = zones
         self.cidr = cidr
         self.results: list[PreflightResult] = []
+        self._missing_apis: list[str] = []
 
     def run_checks(self) -> bool:
         checks = [
@@ -1678,6 +1736,43 @@ class GCPPreflightChecker:
         for name, check_fn in checks:
             with Status(f"  [dim]Checking {name}...[/]", console=console, spinner="dots"):
                 check_fn()
+
+            # Offer to enable missing APIs -- done outside the Status spinner so
+            # the prompt/raw-terminal input isn't garbled by the live display.
+            if name == "GCP APIs" and self._missing_apis:
+                missing = self._missing_apis
+                answer = _read_input_with_placeholder(
+                    f"{len(missing)} required GCP APIs are not enabled. Enable them now? (Y/n)",
+                    "Y",
+                )
+                if answer.lower() in ("y", "yes", ""):
+                    with Status("  [dim]Enabling APIs...[/]", console=console, spinner="dots"):
+                        enable = subprocess.run(
+                            [
+                                "gcloud",
+                                "services",
+                                "enable",
+                                *missing,
+                                f"--project={self.project_id}",
+                            ],
+                            capture_output=True,
+                            text=True,
+                            timeout=300,
+                        )
+                    if enable.returncode == 0:
+                        self.results[-1] = PreflightResult(
+                            "GCP APIs",
+                            True,
+                            f"Enabled {len(missing)} previously-missing APIs",
+                        )
+                    else:
+                        self.results[-1] = PreflightResult(
+                            "GCP APIs",
+                            False,
+                            f"Failed to enable: {enable.stderr.strip().split(chr(10))[0]}",
+                            f"Run: gcloud services enable {' '.join(missing)} "
+                            f"--project={self.project_id}",
+                        )
 
             # print the result that was just added
             r = self.results[-1]
@@ -1756,6 +1851,7 @@ class GCPPreflightChecker:
             missing = [api for api in required_apis if api not in enabled_apis]
 
             if missing:
+                self._missing_apis = missing
                 short_names = [api.replace(".googleapis.com", "") for api in missing]
                 self._add_result(
                     "GCP APIs",
@@ -1764,6 +1860,7 @@ class GCPPreflightChecker:
                     f"Run: gcloud services enable {' '.join(missing)} --project={self.project_id}",
                 )
             else:
+                self._missing_apis = []
                 self._add_result(
                     "GCP APIs", True, f"All {len(required_apis)} required APIs enabled"
                 )
@@ -2280,8 +2377,8 @@ class GCPSetupWizard(BaseSetupWizard):
         console.print()
         console.print("  [dim]Deploy Nexus alongside the Pinecone DB stack in the same cluster.[/]")
 
-        response = self._prompt("Enable Nexus? (y/N)", "N")
-        if response.strip().lower() not in ("y", "yes"):
+        response = self._prompt("Enable Nexus? (Y/n)", "Y")
+        if response.strip().lower() in ("n", "no"):
             return {"enabled": False}
 
         console.print()
@@ -2348,11 +2445,31 @@ class GCPSetupWizard(BaseSetupWizard):
                 f"  [dim]Using the default Gemini + Pinecone models. Edit [/]"
                 f"{NEXUS_INFERENCE_MODELS_FILENAME}[dim] in the generated project to change them.[/]"
             )
-        console.print(
-            "  [dim]Each model's api_key_ref is a secret; set one per provider before"
-            " `pulumi up`:[/]\n"
-            "  [dim]pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <key>[/]"
+
+        # Provider-key secrets. The default catalog (and the common custom case)
+        # uses a single `gemini-api-key` ref; collect it here so the wizard sets
+        # `nexus-gemini-api-key` and `nexus-provider-keys.gemini-api-key` itself.
+        gemini_api_key = self._get_gemini_api_key()
+
+        # Multi-provider edge case: a customized catalog may reference api_key_refs
+        # other than `gemini-api-key`. Prompt (hidden) for each distinct extra ref
+        # so its `nexus-provider-keys.<ref>` secret is set too; if the operator
+        # skips one, keep printing the manual instruction for that ref.
+        provider_keys: dict[str, str] = {}
+        extra_refs = sorted(
+            ref for ref in _api_key_refs_from_toml(inference_models_toml) if ref != "gemini-api-key"
         )
+        for ref in extra_refs:
+            console.print()
+            console.print(f"  [dim]Provider key for the '{ref}' api_key_ref.[/]")
+            key = self._prompt(f"Enter the {ref} provider key", password=True).strip()
+            if key:
+                provider_keys[ref] = key
+            else:
+                console.print(
+                    f"  [yellow]⚠[/] No value entered; set it before `pulumi up`:\n"
+                    f"  [dim]pulumi config set --path --secret nexus-provider-keys.{ref} <key>[/]"
+                )
 
         return {
             "enabled": True,
@@ -2363,6 +2480,8 @@ class GCPSetupWizard(BaseSetupWizard):
             "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
             "inference_models_toml": inference_models_toml,
+            "gemini_api_key": gemini_api_key,
+            "provider_keys": provider_keys,
         }
 
     def _run_preflight_checks(
@@ -2494,8 +2613,13 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[gcp]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
 """
+        if self._local_package_path:
+            pyproject_content += (
+                "\n[tool.uv.sources]\n"
+                f'pulumi-pinecone-nexus-byoc = {{ path = "{self._local_package_path}", editable = true }}\n'
+            )
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
             f.write(pyproject_content)
@@ -2566,8 +2690,10 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
                     f"  {project_name}:nexus-storage-bucket-prefix: "
                     f"{nexus['storage_bucket_prefix']}\n"
                 )
-            # nexus-gemini-api-key is a secret; set it out-of-band:
-            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
+            # nexus-gemini-api-key / nexus-provider-keys.* are secrets; the
+            # wizard sets them itself in the secret-setting step below (mirroring
+            # pinecone-api-key), so they are intentionally omitted from this
+            # plaintext stack config.
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
@@ -2589,7 +2715,7 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
         if result.returncode == 0:
             # get installed version
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -2600,7 +2726,7 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
                     pkg_version = line.split(":", 1)[1].strip()
                     break
             console.print(
-                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"  [green]✓[/] Dependencies installed [dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")
@@ -2655,6 +2781,49 @@ dependencies = ["pulumi-pinecone-byoc[gcp]"]
             return False
 
         console.print("  [green]✓[/] API key stored securely")
+
+        # nexus-gemini-api-key is read by NexusConfig; nexus-provider-keys.<ref>
+        # by the inference proxy (default catalog's api_key_ref is `gemini-api-key`,
+        # so both are set from the same key).
+        if nexus.get("enabled"):
+            gemini_api_key = nexus.get("gemini_api_key")
+            provider_keys = dict(nexus.get("provider_keys") or {})
+            if gemini_api_key:
+                provider_keys.setdefault("gemini-api-key", gemini_api_key)
+
+            def _set_secret(config_args: list[str], value: str, label: str) -> None:
+                with Status(f"  [dim]Storing {label}...[/]", console=console, spinner="dots"):
+                    res = subprocess.run(
+                        [
+                            "pulumi",
+                            "config",
+                            "set",
+                            *config_args,
+                            value,
+                            "--stack",
+                            stack_name,
+                            "--cwd",
+                            output_dir,
+                        ],
+                        capture_output=True,
+                        text=True,
+                    )
+                if res.returncode != 0:
+                    console.print(f"  [red]✗[/] Failed to store {label}: {res.stderr.strip()}")
+                    console.print(
+                        f"  [dim]Run manually:[/] pulumi config set {' '.join(config_args)} <key>"
+                    )
+                else:
+                    console.print(f"  [green]✓[/] {label} stored securely")
+
+            if gemini_api_key:
+                _set_secret(["--secret", "nexus-gemini-api-key"], gemini_api_key, "Gemini API key")
+            for ref, value in provider_keys.items():
+                _set_secret(
+                    ["--path", "--secret", f"nexus-provider-keys.{ref}"],
+                    value,
+                    f"provider key ({ref})",
+                )
 
         self._print_success(output_dir)
         return True
@@ -3483,8 +3652,13 @@ if config.get_bool("public-access-enabled") is False:
 name = "pinecone-byoc"
 version = "0.1.0"
 requires-python = ">=3.12"
-dependencies = ["pulumi-pinecone-byoc[azure]"]
+dependencies = ["pulumi-pinecone-nexus-byoc[azure]"]
 """
+        if self._local_package_path:
+            pyproject_content += (
+                "\n[tool.uv.sources]\n"
+                f'pulumi-pinecone-nexus-byoc = {{ path = "{self._local_package_path}", editable = true }}\n'
+            )
         pyproject_path = os.path.join(output_dir, "pyproject.toml")
         with open(pyproject_path, "w") as f:
             f.write(pyproject_content)
@@ -3575,7 +3749,7 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
 
         if result.returncode == 0:
             version_result = subprocess.run(
-                ["uv", "pip", "show", "pulumi-pinecone-byoc"],
+                ["uv", "pip", "show", "pulumi-pinecone-nexus-byoc"],
                 cwd=output_dir,
                 capture_output=True,
                 text=True,
@@ -3587,7 +3761,7 @@ dependencies = ["pulumi-pinecone-byoc[azure]"]
                     break
             console.print(
                 f"  [green]✓[/] Dependencies installed "
-                f"[dim](pulumi-pinecone-byoc v{pkg_version})[/]"
+                f"[dim](pulumi-pinecone-nexus-byoc v{pkg_version})[/]"
             )
         else:
             console.print(f"  [red]✗[/] Failed to install dependencies: {result.stderr.strip()}")
@@ -3688,6 +3862,8 @@ def run_setup(
     headless: bool = False,
     stack_name: str = "prod",
     skip_install: bool = False,
+    project_name: str | None = None,
+    local_package_path: str | None = None,
 ) -> bool:
     try:
         if not cloud:
@@ -3698,17 +3874,29 @@ def run_setup(
 
         if cloud == "aws":
             wizard = AWSSetupWizard(
-                headless=headless, stack_name=stack_name, skip_install=skip_install
+                headless=headless,
+                stack_name=stack_name,
+                skip_install=skip_install,
+                project_name=project_name,
+                local_package_path=local_package_path,
             )
             return wizard.run(output_dir)
         elif cloud == "gcp":
             wizard = GCPSetupWizard(
-                headless=headless, stack_name=stack_name, skip_install=skip_install
+                headless=headless,
+                stack_name=stack_name,
+                skip_install=skip_install,
+                project_name=project_name,
+                local_package_path=local_package_path,
             )
             return wizard.run(output_dir)
         elif cloud == "azure":
             wizard = AzureSetupWizard(
-                headless=headless, stack_name=stack_name, skip_install=skip_install
+                headless=headless,
+                stack_name=stack_name,
+                skip_install=skip_install,
+                project_name=project_name,
+                local_package_path=local_package_path,
             )
             return wizard.run(output_dir)
         else:
@@ -3747,9 +3935,23 @@ if __name__ == "__main__":
         help="Pulumi stack name (default: prod).",
     )
     parser.add_argument(
+        "--project-name",
+        default=None,
+        help="Pulumi project name. If not specified, you will be prompted.",
+    )
+    parser.add_argument(
         "--skip-install",
         action="store_true",
         help="Skip dependency installation and stack initialization.",
+    )
+    parser.add_argument(
+        "--local-package-path",
+        default=None,
+        help=(
+            "Path to a local pulumi-pinecone-nexus-byoc checkout to consume as an "
+            "editable dependency via [tool.uv.sources]. If not specified, the "
+            "generated project depends on the published PyPI package."
+        ),
     )
     args = parser.parse_args()
 
@@ -3759,5 +3961,7 @@ if __name__ == "__main__":
         headless=args.headless,
         stack_name=args.stack_name,
         skip_install=args.skip_install,
+        project_name=args.project_name,
+        local_package_path=args.local_package_path,
     )
     sys.exit(0 if success else 1)
