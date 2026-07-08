@@ -279,11 +279,12 @@ class Nexus(pulumi.ComponentResource):
         # values to decide whether to install the operator; pulumi installs no chart.
         if fdb_mode == "operator":
             operator_values: dict = {
-                # Double redundancy, one-per-zone (3-zone fault domain). Set explicitly
-                # (chart defaults match) so pulumi's emitted values document topology.
+                # Node-level (hostname) fault domains: 3 coordinators across 3 nodes.
+                # HA against node loss, not a zone outage (not a goal); also avoids the
+                # zonal-PVC single-zone pinning trap. The dedicated fdb pool supplies
+                # >=3 nodes.
                 "redundancyMode": "double",
-                "faultDomainKey": "topology.kubernetes.io/zone",
-                # FDB data PVCs use the deploy's storage class.
+                "faultDomainKey": "kubernetes.io/hostname",
                 "storageClass": storage_class,
             }
             # Operator + monitor image registry; both pull via regcred (keyed by host).
@@ -291,6 +292,22 @@ class Nexus(pulumi.ComponentResource):
                 operator_values["imageRegistry"] = fdb_operator_image_registry
             fdb_values["foundationdb"]["mode"] = "operator"
             fdb_values["foundationdb"]["operator"] = operator_values
+            # Retarget FDB pods onto the dedicated `nexus-role: fdb` pool (see
+            # gcp/gke.py). The chart key is named `scheduling.services` but drives
+            # every FDB process pod.
+            fdb_values["scheduling"] = {
+                "services": {
+                    "nodeSelector": {"nexus-role": "fdb"},
+                    "tolerations": [
+                        {
+                            "key": "nexus-role",
+                            "operator": "Equal",
+                            "value": "fdb",
+                            "effect": "NoSchedule",
+                        }
+                    ],
+                }
+            }
 
         if blob_storage is not None:
             storage_cfg: dict = {

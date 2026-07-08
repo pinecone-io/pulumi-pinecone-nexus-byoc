@@ -20,17 +20,27 @@ _GCP_SA_MAX_LEN = 30
 _NEXUS_ROLE_LABEL = "nexus-role"
 
 
-def nexus_node_pools() -> list[NodePoolConfig]:
-    """Node pools for the Nexus workloads (services + jobs).
+def nexus_node_pools(
+    fdb_dedicated_pool: bool = False, zones: list[str] | None = None
+) -> list[NodePoolConfig]:
+    """Node pools for the Nexus workloads (services + jobs, plus FDB in operator mode).
 
     Mirrors the existing DB pool conventions (machine type / autoscaling); the
     labels and taints match the nexus Helm chart's nodeSelector/tolerations so
     only nexus pods schedule onto them. Gated by `nexus_enabled` upstream so
-    DB-only deploys are unaffected. The services pool spans all zones with a
-    per-zone autoscaling min of 1, so every zone keeps a node for FDB operator
-    HA to spread its pods one-per-zone -- no fixed node count needed.
+    DB-only deploys are unaffected. The services/jobs pools autoscale across all
+    zones.
+
+    Args:
+        fdb_dedicated_pool: In FDB operator (HA) mode, add a dedicated ``nexus-fdb``
+            pool of >=3 fixed nodes (node-level fault domain: 3 coordinators need 3
+            nodes). Fixed rather than autoscaled because the autoscaler won't pre-warm
+            the nodes FDB needs at bootstrap (its pod anti-affinity is soft, so nothing
+            goes Pending to trigger a scale-up).
+        zones: Cluster availability zones; the FDB pool spreads its nodes across the
+            first 3.
     """
-    return [
+    pools = [
         NodePoolConfig(
             name="nexus-services",
             machine_type="n2-standard-4",
@@ -50,6 +60,28 @@ def nexus_node_pools() -> list[NodePoolConfig]:
             taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="jobs", effect="NO_SCHEDULE")],
         ),
     ]
+    if fdb_dedicated_pool:
+        fdb_zones = (zones or [])[:3]
+        if not fdb_zones:
+            raise ValueError("FDB dedicated pool requires at least one availability zone")
+        pools.append(
+            NodePoolConfig(
+                name="nexus-fdb",
+                machine_type="n2-standard-2",
+                # >=3 nodes spread across whatever zones exist; ceil keeps the per-zone
+                # count so the total is always >=3 (1 zone -> 3, 2 -> 4, 3 -> 3).
+                fixed_node_count_per_zone=-(-3 // len(fdb_zones)),
+                node_locations=fdb_zones,
+                # No Ice Lake pin: a stockout in a pinned zone would hang the fixed pool.
+                min_cpu_platform=None,
+                # Fixed pool has no autoscaler backstop; auto-repair recreates a dead node.
+                auto_repair=True,
+                disk_size_gb=100,
+                labels={_NEXUS_ROLE_LABEL: "fdb"},
+                taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="fdb", effect="NO_SCHEDULE")],
+            )
+        )
+    return pools
 
 
 def _sa_id(prefix: str, cell_name: str) -> str:
@@ -444,11 +476,16 @@ users:
             for taint in (np_config.taints or [])
         ]
 
-        autoscaling = gcp.container.NodePoolAutoscalingArgs(
-            min_node_count=np_config.min_size,
-            max_node_count=np_config.max_size,
-            location_policy="BALANCED",
-        )
+        if np_config.fixed_node_count_per_zone is not None:
+            autoscaling = None
+            node_count = np_config.fixed_node_count_per_zone
+        else:
+            autoscaling = gcp.container.NodePoolAutoscalingArgs(
+                min_node_count=np_config.min_size,
+                max_node_count=np_config.max_size,
+                location_policy="BALANCED",
+            )
+            node_count = None
 
         node_pool_name = f"{name}-np-{np_config.name}"[:32]
 
@@ -461,18 +498,19 @@ users:
             # and on the Cilium-race fix build.
             version=config.kubernetes_version,
             autoscaling=autoscaling,
+            node_count=node_count,
             node_config=gcp.container.NodePoolNodeConfigArgs(
                 machine_type=np_config.machine_type,
-                min_cpu_platform="Intel Ice Lake",
+                min_cpu_platform=np_config.min_cpu_platform,
                 labels=labels,
                 resource_labels=config.labels(),
                 taints=taints or None,
                 oauth_scopes=["https://www.googleapis.com/auth/cloud-platform"],
                 service_account=nodepool_sa_email,
             ),
-            node_locations=config.availability_zones,
+            node_locations=np_config.node_locations or config.availability_zones,
             management=gcp.container.NodePoolManagementArgs(
-                auto_repair=False,
+                auto_repair=np_config.auto_repair,
                 auto_upgrade=False,
             ),
             opts=pulumi.ResourceOptions(parent=self),

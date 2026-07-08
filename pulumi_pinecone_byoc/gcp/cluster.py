@@ -63,8 +63,6 @@ class PineconeGCPClusterArgs:
     # gcp specific
     project: str
     region: str = "us-central1"
-    # Three zones: required for FDB operator HA (3-zone fault domain), harmless
-    # otherwise. The fdb_mode=="operator" guard below enforces the >=3 minimum.
     availability_zones: list[str] = field(
         default_factory=lambda: ["us-central1-a", "us-central1-b", "us-central1-c"]
     )
@@ -118,20 +116,6 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         opts: pulumi.ResourceOptions | None = None,
     ):
         super().__init__("pinecone:byoc:PineconeGCPCluster", name, None, opts)
-
-        # Operator HA spreads FDB pods across 3 zones; fail fast if under-zoned
-        # rather than letting pods sit Pending forever.
-        if (
-            args.nexus is not None
-            and args.nexus.fdb_mode == "operator"
-            and len(args.availability_zones) < 3
-        ):
-            raise ValueError(
-                "Nexus fdb_mode='operator' (HA) requires at least 3 availability_zones "
-                f"(got {len(args.availability_zones)}: {args.availability_zones}). "
-                "Set availability_zones to 3 distinct zones, e.g. "
-                "['us-central1-a', 'us-central1-b', 'us-central1-c']."
-            )
 
         self.args = args
         child_opts = pulumi.ResourceOptions(parent=self)
@@ -602,7 +586,12 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         if args.nexus is not None:
             from .gke import nexus_node_pools
 
-            node_pools.extend(nexus_node_pools())
+            node_pools.extend(
+                nexus_node_pools(
+                    fdb_dedicated_pool=args.nexus.fdb_mode == "operator",
+                    zones=args.availability_zones,
+                )
+            )
 
         control_db_cpu = 2
         system_db_cpu = 2

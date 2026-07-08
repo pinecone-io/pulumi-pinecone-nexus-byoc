@@ -19,6 +19,10 @@ class NodePoolConfig(BaseModel):
     disk_type: str = "gp3"
     # GCP-only
     machine_type: str = "n2-standard-4"
+    fixed_node_count_per_zone: int | None = None
+    node_locations: list[str] | None = None
+    min_cpu_platform: str | None = "Intel Ice Lake"
+    auto_repair: bool = False
     # Azure-only
     vm_size: str = "Standard_D4s_v5"
     # Common
