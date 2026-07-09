@@ -124,6 +124,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 api_url=args.api_url,
                 secret=args.pinecone_api_key,
                 is_public_endpoint_enabled=args.public_access_enabled,
+                is_nexus_enabled=args.nexus is not None,
             ),
             opts=child_opts,
         )
