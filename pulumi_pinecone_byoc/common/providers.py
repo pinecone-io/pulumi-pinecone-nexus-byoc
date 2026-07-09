@@ -52,6 +52,7 @@ class EnvironmentArgs:
     api_url: pulumi.Input[str]
     secret: pulumi.Input[str]
     is_public_endpoint_enabled: pulumi.Input[bool]
+    is_nexus_enabled: pulumi.Input[bool]
 
     def __init__(
         self,
@@ -61,6 +62,7 @@ class EnvironmentArgs:
         api_url: pulumi.Input[str],
         secret: pulumi.Input[str],
         is_public_endpoint_enabled: pulumi.Input[bool] = True,
+        is_nexus_enabled: pulumi.Input[bool] = False,
     ):
         self.cloud = cloud
         self.region = region
@@ -68,6 +70,7 @@ class EnvironmentArgs:
         self.api_url = api_url
         self.secret = secret
         self.is_public_endpoint_enabled = is_public_endpoint_enabled
+        self.is_nexus_enabled = is_nexus_enabled
 
 
 class EnvironmentProvider(ResourceProvider):
@@ -82,6 +85,7 @@ class EnvironmentProvider(ResourceProvider):
             props["secret"],
         )
         is_public_endpoint_enabled = props.get("is_public_endpoint_enabled", True)
+        is_nexus_enabled = props.get("is_nexus_enabled", False)
         environment = asyncio.run(
             asyncio.to_thread(
                 create_environment,
@@ -91,6 +95,7 @@ class EnvironmentProvider(ResourceProvider):
                 api_url=api_url,
                 secret=secret,
                 is_public_endpoint_enabled=is_public_endpoint_enabled,
+                is_nexus_enabled=is_nexus_enabled,
             )
         )
 
@@ -123,6 +128,8 @@ class EnvironmentProvider(ResourceProvider):
             "is_public_endpoint_enabled", True
         ):
             replaces.append("is_public_endpoint_enabled")
+        if _olds.get("is_nexus_enabled", False) != _news.get("is_nexus_enabled", False):
+            replaces.append("is_nexus_enabled")
         return DiffResult(
             changes=len(replaces) > 0 or _olds.get("cloud") != _news.get("cloud"),
             replaces=replaces,
@@ -184,6 +191,7 @@ class Environment(Resource):
             "api_url": args.api_url,
             "secret": args.secret,
             "is_public_endpoint_enabled": args.is_public_endpoint_enabled,
+            "is_nexus_enabled": args.is_nexus_enabled,
         }
         super().__init__(
             EnvironmentProvider(),
