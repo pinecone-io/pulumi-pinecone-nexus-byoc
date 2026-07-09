@@ -21,7 +21,6 @@ RESET='\033[0m'
 CLOUD=""
 STACK_NAME=""
 LOCAL_PKG=""
-REPO_BASE="https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main"
 
 # parse arguments
 while [[ $# -gt 0 ]]; do
@@ -46,6 +45,18 @@ echo ""
 
 # resolve SCRIPT_DIR before anything else (for local repo usage)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)" || SCRIPT_DIR=""
+
+# This package is unpublished, so bootstrap only works from a checkout: it copies
+# the setup scripts and wires the generated project to this clone as an editable
+# dependency. A piped `curl | bash` has no checkout to read from, so fail early
+# with guidance rather than generating a project that can't resolve the package.
+if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/setup/wizard.py" ]; then
+    echo -e "${RED}Could not locate the setup wizard.${RESET}" >&2
+    echo "Run bootstrap.sh from a clone of this repository:" >&2
+    echo "  git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git" >&2
+    echo "  bash pulumi-pinecone-nexus-byoc/bootstrap.sh --cloud gcp" >&2
+    exit 1
+fi
 
 # check for required tools
 check_command() {
@@ -159,17 +170,11 @@ cd "$project_dir"
 echo ""
 echo "Downloading setup wizard..."
 
-# wizard.py imports the sibling module preflight_checks, so both must travel together
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/setup/wizard.py" ]; then
-    cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
-    cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py
-    # local fork: the package is unpublished, so consume it as an editable
-    # dependency from this checkout (SCRIPT_DIR is the fork root, absolute)
-    LOCAL_PKG="$SCRIPT_DIR"
-else
-    curl -fsSL "${REPO_BASE}/setup/wizard.py" -o wizard.py
-    curl -fsSL "${REPO_BASE}/setup/preflight_checks.py" -o preflight_checks.py
-fi
+# wizard.py imports the sibling module preflight_checks, so both must travel
+# together. SCRIPT_DIR (the fork root, absolute) is validated at startup.
+cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
+cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py
+LOCAL_PKG="$SCRIPT_DIR"
 
 # create a temp pyproject.toml for the setup wizard dependencies
 # (wizard.py will overwrite this with the actual project pyproject.toml)
