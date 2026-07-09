@@ -6,8 +6,6 @@
 
 
 
-[![PyPI version](https://img.shields.io/pypi/v/pulumi-pinecone-byoc)](https://pypi.org/project/pulumi-pinecone-byoc/)
-
 Deploy Pinecone in your own cloud account with full control over your infrastructure.
 
 > **Supported clouds:** **GCP** is supported today. **AWS** and **Azure** are
@@ -36,26 +34,36 @@ _AWS and Azure authentication: coming soon (not yet supported)._
 pulumi login
 ```
 
+If you use the local backend, choose a passphrase for encrypting stack secrets and
+export it as `PULUMI_CONFIG_PASSPHRASE` — every `pulumi` command needs it.
+
 You will also need a **Pinecone API key** (BYOC requires an Enterprise plan). If you
 enable **Nexus**, have a **Gemini API key** ready as well — the wizard prompts for both.
 
-### 2. Run the interactive setup
+### 2. Clone this repository and run the interactive setup
+
+Run the bootstrap script from a clone (the generated project is created next to it
+and depends on it):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash
+git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git
+bash pulumi-pinecone-nexus-byoc/bootstrap.sh --cloud gcp
 ```
+
+Use `--stack-name <name>` to name the Pulumi stack (default: `prod`).
 
 This will:
 1. Select your cloud provider (**GCP** — AWS and Azure coming soon)
 2. Check that required tools are installed (Python 3.12+, uv, cloud CLI, Pulumi, kubectl)
 3. Verify your cloud credentials
 4. Run an interactive setup wizard (collects your project, region, network, and API keys)
-5. Generate a complete Pulumi project
+5. Generate a complete Pulumi project in an adjacent directory (default:
+   `pinecone-nexus-byoc`), wired to your clone of this repository
 
 ### 3. Deploy
 
 ```bash
-cd pinecone-byoc
+cd pinecone-nexus-byoc
 pulumi up
 ```
 
@@ -104,6 +112,7 @@ support is coming soon.)
 
 | Tool | Purpose | Install |
 |------|---------|---------|
+| Git | Clone this repository | [git-scm.com](https://git-scm.com/downloads) |
 | Python 3.12+ | Runtime | [python.org](https://www.python.org/downloads/) |
 | uv | Package manager | [docs.astral.sh/uv](https://docs.astral.sh/uv/getting-started/installation/) |
 | Pulumi | Infrastructure | [pulumi.com/docs/install](https://www.pulumi.com/docs/install/) |
@@ -268,15 +277,15 @@ pulumi.export("kubeconfig", cluster.eks.kubeconfig)
 
 ### Installation
 
-Install from PyPI with cloud-specific dependencies:
+This package is not yet published to PyPI — install it from a clone of this
+repository. The setup wizard does this for you: the generated project depends on
+your clone via an editable path source. To use it in your own project:
 
 ```bash
-# GCP (supported)
-uv add 'pulumi-pinecone-byoc[gcp]'
+git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git
+uv add --editable './pulumi-pinecone-nexus-byoc[gcp]'    # GCP (supported)
 
 # AWS and Azure — coming soon (not yet supported)
-# uv add 'pulumi-pinecone-byoc[aws]'
-# uv add 'pulumi-pinecone-byoc[azure]'
 ```
 
 ## Troubleshooting
@@ -341,4 +350,4 @@ Note: If `deletion_protection` is enabled (default), you'll need to disable it f
 ## Support
 
 - [Documentation](https://docs.pinecone.io/guides/production/bring-your-own-cloud)
-- [GitHub Issues](https://github.com/pinecone-io/pulumi-pinecone-byoc/issues)
+- [GitHub Issues](https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc/issues)

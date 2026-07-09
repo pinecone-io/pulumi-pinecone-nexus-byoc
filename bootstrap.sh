@@ -2,13 +2,13 @@
 #
 # Pinecone BYOC Bootstrap Script
 #
-# Usage:
-#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash
+# Usage (run from a clone; the generated project is created in the current
+# directory and depends on the clone as an editable package):
+#   git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git
+#   bash pulumi-pinecone-nexus-byoc/bootstrap.sh --cloud gcp
 #
-# With cloud pre-selected:
-#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash -s -- --cloud aws
-#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash -s -- --cloud gcp
-#   curl -fsSL https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main/bootstrap.sh | bash -s -- --cloud azure
+# Optional:
+#   --stack-name <name>   Pulumi stack to create (default: prod)
 #
 set -e
 
