@@ -913,6 +913,52 @@ class BaseSetupWizard:
             raise ValueError(f"invalid JSON in PINECONE_NEXUS_*_MODELS: {exc}") from exc
         return build_inference_models_toml(llm, rerank, tiers)
 
+    def _headless_gemini_api_key(self) -> str:
+        """The Gemini API key in headless mode -- read from the environment
+        without prompting (the same vars `_get_gemini_api_key` checks). Backs the
+        default catalog's `gemini-api-key` ref, so the wizard can set the
+        `nexus-gemini-api-key` / `nexus-provider-keys.gemini-api-key` secrets
+        itself. Warns (but does not fail) when unset: Nexus still deploys, but
+        curation and search have no generation model until the operator sets the
+        secret manually.
+        """
+        for env_var in ("PINECONE_GEMINI_API_KEY", "GEMINI_API_KEY"):
+            key = os.environ.get(env_var, "").strip()
+            if key:
+                return key
+        console.print(
+            "  [yellow]⚠[/] No Gemini API key in the environment"
+            " (PINECONE_GEMINI_API_KEY / GEMINI_API_KEY). Nexus will deploy without"
+            " a generation model -- curation and search stay non-functional until"
+            " you set it:\n"
+            "  [dim]pulumi config set --secret nexus-gemini-api-key <key>[/]"
+        )
+        return ""
+
+    def _headless_provider_keys(self) -> dict[str, str]:
+        """Extra provider-key secrets for a customized headless catalog whose
+        api_key_refs are not `gemini-api-key`. Read from PINECONE_NEXUS_PROVIDER_KEYS
+        (a JSON object mapping api_key_ref -> key value); each is set as
+        `nexus-provider-keys.<ref>`. Empty unless set -- the default catalog needs
+        none (its `gemini-api-key` ref is derived from the Gemini key above).
+        Mirrors the interactive path's per-ref prompts.
+        """
+        raw = os.environ.get("PINECONE_NEXUS_PROVIDER_KEYS", "").strip()
+        if not raw:
+            return {}
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON in PINECONE_NEXUS_PROVIDER_KEYS: {exc}") from exc
+        if not isinstance(parsed, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in parsed.items()
+        ):
+            raise ValueError(
+                "PINECONE_NEXUS_PROVIDER_KEYS must be a JSON object mapping"
+                " api_key_ref -> key value (strings)"
+            )
+        return {k: v for k, v in parsed.items() if v.strip()}
+
     def _get_project_name(self) -> str:
         # already collected in bootstrap via --project-name; don't reprompt or consume a step
         if self._project_name:
@@ -2201,6 +2247,11 @@ class GCPSetupWizard(BaseSetupWizard):
                 "storage_bucket_prefix": storage_bucket_prefix,
                 # Inference models from env JSON, or None -> default template.
                 "inference_models_toml": self._headless_inference_models_toml(),
+                # Provider-key secrets, from the env (mirrors the interactive path).
+                # Without these the wizard sets no nexus-gemini-api-key /
+                # nexus-provider-keys.* and Nexus deploys with no generation model.
+                "gemini_api_key": self._headless_gemini_api_key(),
+                "provider_keys": self._headless_provider_keys(),
             }
         else:
             nexus = NexusWizardConfig(enabled=False)
@@ -3398,6 +3449,11 @@ class AzureSetupWizard(BaseSetupWizard):
                 "storage_bucket_prefix": os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""),
                 # Inference models from env JSON, or None -> default template.
                 "inference_models_toml": self._headless_inference_models_toml(),
+                # Provider-key secrets, from the env (mirrors the interactive path).
+                # Without these the wizard sets no nexus-gemini-api-key /
+                # nexus-provider-keys.* and Nexus deploys with no generation model.
+                "gemini_api_key": self._headless_gemini_api_key(),
+                "provider_keys": self._headless_provider_keys(),
             }
         else:
             nexus = NexusWizardConfig(enabled=False)
