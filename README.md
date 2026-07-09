@@ -56,8 +56,9 @@ This will:
 1. Select your cloud provider (**GCP** — AWS and Azure coming soon)
 2. Check that required tools are installed (Python 3.12+, uv, cloud CLI, Pulumi, kubectl)
 3. Verify your cloud credentials
-4. Run an interactive setup wizard (collects your project, region, network, and API keys)
-5. Generate a complete Pulumi project in an adjacent directory (default:
+4. Prompt for the project directory and name (press Enter to accept the defaults)
+5. Run an interactive setup wizard (collects your project, region, network, and API keys)
+6. Generate a complete Pulumi project in an adjacent directory (default:
    `pinecone-nexus-byoc`), wired to your clone of this repository
 
 ### 3. Deploy

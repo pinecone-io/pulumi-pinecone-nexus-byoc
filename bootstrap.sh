@@ -21,7 +21,6 @@ RESET='\033[0m'
 CLOUD=""
 STACK_NAME=""
 LOCAL_PKG=""
-REPO_BASE="https://raw.githubusercontent.com/pinecone-io/pulumi-pinecone-byoc/main"
 
 # parse arguments
 while [[ $# -gt 0 ]]; do
@@ -138,7 +137,7 @@ fi
 
 echo ""
 
-# get project directory (read from /dev/tty for curl pipe compatibility)
+# get project directory (read from /dev/tty so this also works if stdin is piped)
 default_dir="pinecone-nexus-byoc"
 echo -n "Pulumi project dir [$default_dir]: "
 read project_dir < /dev/tty
@@ -157,19 +156,22 @@ mkdir -p "$project_dir"
 cd "$project_dir"
 
 echo ""
-echo "Downloading setup wizard..."
+echo "Copying setup wizard..."
 
-# wizard.py imports the sibling module preflight_checks, so both must travel together
-if [ -n "$SCRIPT_DIR" ] && [ -f "$SCRIPT_DIR/setup/wizard.py" ]; then
-    cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
-    cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py
-    # local fork: the package is unpublished, so consume it as an editable
-    # dependency from this checkout (SCRIPT_DIR is the fork root, absolute)
-    LOCAL_PKG="$SCRIPT_DIR"
-else
-    curl -fsSL "${REPO_BASE}/setup/wizard.py" -o wizard.py
-    curl -fsSL "${REPO_BASE}/setup/preflight_checks.py" -o preflight_checks.py
+# wizard.py imports the sibling module preflight_checks, so both must travel
+# together. The package is unpublished, so the generated project consumes the
+# checkout as an editable dependency (SCRIPT_DIR is the fork root, absolute) —
+# which is also why this script must run from a clone, not a curl pipe.
+if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/setup/wizard.py" ]; then
+    echo -e "${RED}Could not locate setup/wizard.py next to this script.${RESET}"
+    echo "Run bootstrap.sh from a clone of the repository:"
+    echo "  git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git"
+    echo "  bash pulumi-pinecone-nexus-byoc/bootstrap.sh --cloud gcp"
+    exit 1
 fi
+cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
+cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py
+LOCAL_PKG="$SCRIPT_DIR"
 
 # create a temp pyproject.toml for the setup wizard dependencies
 # (wizard.py will overwrite this with the actual project pyproject.toml)
