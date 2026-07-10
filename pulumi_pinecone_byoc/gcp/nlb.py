@@ -9,6 +9,7 @@ import pulumi_kubernetes as k8s
 from config.gcp import GCPConfig
 
 from ..common.naming import DNS_CNAMES
+from .lb_selection import ingress_ip_from_status, select_forwarding_rule
 
 
 class InternalLoadBalancer(pulumi.ComponentResource):
@@ -246,18 +247,21 @@ class InternalLoadBalancer(pulumi.ComponentResource):
             ),
         )
 
-        def get_lb_ip_and_link(_ingress_status, cell_name_str: str, retries: int = 30):
+        def get_lb_ip_and_link(ingress_status, cell_name_str: str, retries: int = 30):
+            # The cell subnet holds two internal LBs (this private Gloo LB and
+            # the Nexus gateway ingress); the ingress status IP is the only
+            # deterministic key for picking the right forwarding rule.
+            ingress_ip = ingress_ip_from_status(ingress_status)
+            if ingress_ip is None:
+                pulumi.log.warn(
+                    "private ingress status has no LB IP; falling back to the first "
+                    "forwarding rule in the cell subnet, which is ambiguous when "
+                    "another internal LB shares the subnet"
+                )
             for attempt in range(retries):
                 try:
                     rules = gcp.compute.get_forwarding_rules(config.project, config.region)
-                    lb = next(
-                        (
-                            r
-                            for r in rules.rules
-                            if r.subnetwork and r.subnetwork.endswith(cell_name_str)
-                        ),
-                        None,
-                    )
+                    lb = select_forwarding_rule(rules.rules, cell_name_str, ingress_ip)
                     if lb is None:
                         pulumi.log.info(
                             f"no matching LB found (attempt {attempt + 1}/{retries}), retrying..."
@@ -272,7 +276,8 @@ class InternalLoadBalancer(pulumi.ComponentResource):
                     time.sleep(10)
             raise Exception("failed to get internal LB after retries")
 
-        # wait for Ingress status to be ready, then query the LB
+        # wait for Ingress status to be ready, then match its IP against the
+        # regional forwarding rules to find this LB
         lb_info = pulumi.Output.all(ingress.status, self._cell_name).apply(
             lambda args: get_lb_ip_and_link(args[0], args[1])
         )
