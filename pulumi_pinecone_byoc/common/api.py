@@ -478,3 +478,81 @@ def delete_datadog_api_key(
         raise PineconeApiError(500, f"invalid response: {e}") from e
 
     return result
+
+
+# =============================================================================
+# Workspaces (gCPS unstable API)
+# =============================================================================
+
+WORKSPACES_NOT_ENABLED_MSG = (
+    "Nexus workspaces are not enabled for this organization. Workspace creation is "
+    "gated by the `enableNexusWorkspaces` feature flag (or an Internal-plan org) — "
+    "ask Pinecone to enable it for your organization, then run `pulumi up` again."
+)
+
+
+class WorkspaceStatus(BaseModel):
+    ready: bool
+    state: str
+
+
+class WorkspaceResponse(BaseModel):
+    name: str
+    host: str
+    status: WorkspaceStatus
+
+
+def workspace_headers(api_key: str) -> dict:
+    # The workspaces routes live on the `unstable` version router; whoami-style
+    # default-version headers 404 here (version dispatch picks the router).
+    return {
+        "Api-Key": api_key,
+        "Content-Type": "application/json",
+        "X-Pinecone-Api-Version": "unstable",
+    }
+
+
+def _parse_workspace(resp) -> WorkspaceResponse:
+    try:
+        return WorkspaceResponse.model_validate(resp)
+    except Exception as e:
+        raise PineconeApiError(500, f"invalid workspace response: {e}") from e
+
+
+def create_workspace(
+    api_key: str,
+    api_url: str,
+    name: str,
+    environment: str,
+) -> WorkspaceResponse:
+    """Create a BYOC workspace in the API key's project (409 -> fetch existing)."""
+    try:
+        resp = request(
+            "POST",
+            f"{api_url}/workspaces",
+            headers=workspace_headers(api_key),
+            body={"name": name, "spec": {"byoc": {"environment": environment}}},
+        )
+    except PineconeApiError as e:
+        if e.code == 409:
+            # Already exists (e.g. a prior run created it but failed the Ready
+            # wait) — resume on the existing workspace.
+            return get_workspace(api_key, api_url, name)
+        if e.code == 403:
+            raise PineconeApiError(403, WORKSPACES_NOT_ENABLED_MSG) from e
+        raise
+    return _parse_workspace(resp)
+
+
+def get_workspace(api_key: str, api_url: str, name: str) -> WorkspaceResponse:
+    try:
+        resp = request(
+            "GET",
+            f"{api_url}/workspaces/{name}",
+            headers=workspace_headers(api_key),
+        )
+    except PineconeApiError as e:
+        if e.code == 403:
+            raise PineconeApiError(403, WORKSPACES_NOT_ENABLED_MSG) from e
+        raise
+    return _parse_workspace(resp)
