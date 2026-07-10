@@ -556,3 +556,20 @@ def get_workspace(api_key: str, api_url: str, name: str) -> WorkspaceResponse:
             raise PineconeApiError(403, WORKSPACES_NOT_ENABLED_MSG) from e
         raise
     return _parse_workspace(resp)
+
+
+def workspace_exists(api_key: str, api_url: str, name: str) -> bool:
+    """Whether the workspace currently exists, erring on the side of True.
+
+    Only a definitive 404 counts as gone. Any other failure (auth, 5xx,
+    network) returns True: callers use this to decide whether to null out
+    user-facing links, and a transient control-plane error must not make a
+    live workspace's links disappear — nor may it fail the caller's deploy.
+    """
+    try:
+        get_workspace(api_key, api_url, name)
+        return True
+    except PineconeApiError as e:
+        return e.code != 404
+    except Exception:
+        return True

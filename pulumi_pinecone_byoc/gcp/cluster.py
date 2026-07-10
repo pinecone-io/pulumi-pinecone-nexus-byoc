@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 
 import pulumi
 
+from ..common import api
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
@@ -391,6 +392,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         self._nexus_gcs = None
         self._nexus_project_id = None
         self._default_workspace = None
+        self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
             # Nexus versions independently of the DB stack (separate repo, separate
@@ -675,19 +677,48 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         """The seeded BYOC login credential, or None on DB-only deploys. Marked secret."""
         return self._k8s_secrets.byoc_session_credential
 
+    def _default_workspace_exists(self) -> pulumi.Output[bool]:
+        """Live existence of the `default` workspace, checked once per program run.
+
+        The bootstrap resource is first-run-only (never re-created, no-op
+        delete), so its stored outputs outlive a workspace the user later
+        deletes. The URL exports gate on this lookup instead, so they read
+        null once the workspace is gone. Previews skip the network call and
+        assume existence.
+        """
+        if self.__default_workspace_exists is None:
+            self.__default_workspace_exists = pulumi.Output.all(
+                self.args.pinecone_api_key, self.args.api_url
+            ).apply(
+                lambda a: True
+                if pulumi.runtime.is_dry_run()
+                else api.workspace_exists(a[0], a[1], DEFAULT_WORKSPACE_NAME)
+            )
+        return self.__default_workspace_exists
+
     @property
     def nexus_default_workspace_data_console_url(self) -> pulumi.Output[str] | None:
-        """Console URL of the first-run `default` workspace, or None on DB-only deploys."""
+        """Console URL of the first-run `default` workspace.
+
+        None on DB-only deploys; resolves to null once the workspace has been
+        deleted (existence is re-checked on every `pulumi up`).
+        """
         if self._default_workspace is None:
             return None
-        return self._default_workspace.url
+        return pulumi.Output.all(
+            self._default_workspace_exists(), self._default_workspace.url
+        ).apply(lambda a: a[1] if a[0] else None)
 
     @property
     def nexus_default_workspace_control_console_url(self) -> pulumi.Output[str] | None:
-        """Pinecone-console detail page for the default workspace, or None on DB-only deploys."""
+        """Pinecone-console detail page for the default workspace.
+
+        None on DB-only deploys; resolves to null once the workspace has been
+        deleted (existence is re-checked on every `pulumi up`).
+        """
         if self._default_workspace is None:
             return None
-        return pulumi.Output.concat(
+        url = pulumi.Output.concat(
             self.args.console_url,
             "/organizations/",
             self._environment.org_id,
@@ -695,4 +726,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             pulumi.Output.from_input(self._nexus_project_id),
             "/workspaces/",
             DEFAULT_WORKSPACE_NAME,
+        )
+        return pulumi.Output.all(self._default_workspace_exists(), url).apply(
+            lambda a: a[1] if a[0] else None
         )

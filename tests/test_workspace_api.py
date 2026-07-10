@@ -10,6 +10,7 @@ from pulumi_pinecone_byoc.common.api import (  # noqa: E402
     WORKSPACES_NOT_ENABLED_MSG,
     PineconeApiError,
     create_workspace,
+    workspace_exists,
     get_workspace,
 )
 
@@ -94,3 +95,22 @@ if __name__ == "__main__":
             fn()
             print(f"ok  {name}")
     print("all passed")
+
+
+def test_workspace_exists_true_on_200():
+    with patch("pulumi_pinecone_byoc.common.api.request", return_value=_WS_BODY):
+        assert workspace_exists("key-1", "https://api.pinecone.io", "default") is True
+
+
+def test_workspace_exists_false_only_on_404():
+    with patch(
+        "pulumi_pinecone_byoc.common.api.request",
+        side_effect=PineconeApiError(404, "not found"),
+    ):
+        assert workspace_exists("key-1", "https://api.pinecone.io", "default") is False
+
+
+def test_workspace_exists_fails_open_on_other_errors():
+    for err in (PineconeApiError(403, "no"), PineconeApiError(500, "boom"), RuntimeError("net")):
+        with patch("pulumi_pinecone_byoc.common.api.request", side_effect=err):
+            assert workspace_exists("key-1", "https://api.pinecone.io", "default") is True
