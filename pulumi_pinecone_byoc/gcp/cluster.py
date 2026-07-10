@@ -687,12 +687,15 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         assume existence.
         """
         if self.__default_workspace_exists is None:
-            self.__default_workspace_exists = pulumi.Output.all(
-                self.args.pinecone_api_key, self.args.api_url
-            ).apply(
-                lambda a: True
-                if pulumi.runtime.is_dry_run()
-                else api.workspace_exists(a[0], a[1], DEFAULT_WORKSPACE_NAME)
+            # unsecret: the API key is a secret Output and secretness taints
+            # everything derived from it — without this, the exported URLs
+            # render as [secret]. The boolean reveals nothing about the key.
+            self.__default_workspace_exists = pulumi.Output.unsecret(
+                pulumi.Output.all(self.args.pinecone_api_key, self.args.api_url).apply(
+                    lambda a: True
+                    if pulumi.runtime.is_dry_run()
+                    else api.workspace_exists(a[0], a[1], DEFAULT_WORKSPACE_NAME)
+                )
             )
         return self.__default_workspace_exists
 
@@ -705,9 +708,16 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         """
         if self._default_workspace is None:
             return None
-        return pulumi.Output.all(
-            self._default_workspace_exists(), self._default_workspace.url
-        ).apply(lambda a: a[1] if a[0] else None)
+        # Derive from the stored host rather than the stored url: the resource
+        # is never updated after creation, so a url captured under an older
+        # path shape would be served forever. The host is the stable fact; the
+        # path is decided here, at read time.
+        url = pulumi.Output.concat(
+            "https://", self._default_workspace.host, "/contexts"
+        )
+        return pulumi.Output.all(self._default_workspace_exists(), url).apply(
+            lambda a: a[1] if a[0] else None
+        )
 
     @property
     def nexus_default_workspace_control_console_url(self) -> pulumi.Output[str] | None:
