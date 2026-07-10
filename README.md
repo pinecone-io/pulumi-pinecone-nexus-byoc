@@ -85,8 +85,8 @@ support is coming soon.)
 
 If Nexus is enabled, the first `pulumi up` also creates a default workspace and
 prints two more outputs once it's ready:
-- `nexus_default_workspace_url` — the in-cell workspace console for the `default` workspace.
-- `nexus_default_workspace_pinecone_console_url` — the Pinecone Console page for that workspace.
+- `nexus_default_workspace_data_console_url` — the in-cell workspace console for the `default` workspace.
+- `nexus_default_workspace_control_console_url` — the Pinecone Console page for that workspace.
 
 ## Prerequisites
 

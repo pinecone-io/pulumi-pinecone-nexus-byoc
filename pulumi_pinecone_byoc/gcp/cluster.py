@@ -676,14 +676,14 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         return self._k8s_secrets.byoc_session_credential
 
     @property
-    def nexus_default_workspace_url(self) -> pulumi.Output[str] | None:
+    def nexus_default_workspace_data_console_url(self) -> pulumi.Output[str] | None:
         """Console URL of the first-run `default` workspace, or None on DB-only deploys."""
         if self._default_workspace is None:
             return None
         return self._default_workspace.url
 
     @property
-    def nexus_default_workspace_pinecone_console_url(self) -> pulumi.Output[str] | None:
+    def nexus_default_workspace_control_console_url(self) -> pulumi.Output[str] | None:
         """Pinecone-console detail page for the default workspace, or None on DB-only deploys."""
         if self._default_workspace is None:
             return None
