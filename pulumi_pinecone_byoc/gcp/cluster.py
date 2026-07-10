@@ -685,6 +685,11 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         assume existence.
         """
         if self.__default_workspace_exists is None:
+            workspace = self._default_workspace
+            if workspace is None:
+                # both URL properties return early on DB-only deploys, so this
+                # is unreachable through them
+                raise RuntimeError("default-workspace existence check requires a Nexus deploy")
             # unsecret: secretness taints everything derived from the API key,
             # which would render the exported URLs as [secret]; the boolean
             # reveals nothing about the key. The host input is purely for
@@ -696,7 +701,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 pulumi.Output.all(
                     self.args.pinecone_api_key,
                     self.args.api_url,
-                    self._default_workspace.host,
+                    workspace.host,
                 ).apply(lambda a: api.workspace_exists(a[0], a[1], DEFAULT_WORKSPACE_NAME))
             )
         return self.__default_workspace_exists

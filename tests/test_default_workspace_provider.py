@@ -103,7 +103,7 @@ def test_create_does_not_echo_api_key_in_outs():
 def test_diff_never_reports_changes():
     diff = providers.DefaultWorkspaceProvider().diff("default", dict(_PROPS), dict(_PROPS))
     assert diff.changes is False
-    changed = dict(_PROPS, environment="other-env", pinecone_api_key="rotated")
+    changed = {**_PROPS, "environment": "other-env", "pinecone_api_key": "rotated"}
     diff = providers.DefaultWorkspaceProvider().diff("default", dict(_PROPS), changed)
     assert diff.changes is False
 
