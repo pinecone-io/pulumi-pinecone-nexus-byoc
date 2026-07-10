@@ -93,8 +93,8 @@ class PineconeGCPClusterArgs:
     api_url: str = "https://api.pinecone.io"
     global_env: str = "prod"
     auth0_domain: str = "https://login.pinecone.io"
-    # Base URL of the Pinecone web console; used for the workspace deep link
-    # printed at the end of the install. Override for preprod/internal installs.
+    # Base URL of the Pinecone web console (workspace deep links). Override
+    # for preprod/internal installs.
     console_url: str = "https://app.pinecone.io"
 
     # cross-cloud: AWS account for AMP federation
@@ -484,12 +484,10 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
             )
 
-            # First-run bootstrap: create the `default` workspace in the customer's
-            # project (the pinecone-api-key's project) and wait until the cell's
-            # operation poller promotes it to Ready. Depends on the Nexus component
-            # so the poller exists before we wait on it. Never recreated: the
-            # provider's diff/delete are no-ops, so later ups skip it and destroy
-            # leaves it (delete via gCPS before destroy, per clean teardown).
+            # Depends on Nexus because the cell's operation poller is what
+            # promotes the workspace to Ready — creating before it exists would
+            # wait on nothing. First-run-only (no-op diff/delete): destroy
+            # leaves the workspace; delete it via gCPS before teardown.
             self._default_workspace = DefaultWorkspace(
                 f"{config.resource_prefix}-default-workspace",
                 DefaultWorkspaceArgs(
@@ -687,16 +685,13 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         assume existence.
         """
         if self.__default_workspace_exists is None:
-            # unsecret: the API key is a secret Output and secretness taints
-            # everything derived from it — without this, the exported URLs
-            # render as [secret]. The boolean reveals nothing about the key.
-            #
-            # The workspace host is an input solely for sequencing: the key and
-            # api_url resolve at program start, and on a first deploy the check
-            # must not run until the workspace resource actually exists — the
-            # host resolves only then. The check also runs during previews, so
-            # preview and update agree (workspace_exists fails open, so an
-            # offline preview still renders the stored links).
+            # unsecret: secretness taints everything derived from the API key,
+            # which would render the exported URLs as [secret]; the boolean
+            # reveals nothing about the key. The host input is purely for
+            # sequencing — key and api_url resolve at program start, and on a
+            # first deploy the check must not run before the workspace exists.
+            # Previews run the same check so preview and update agree
+            # (workspace_exists fails open, keeping offline previews working).
             self.__default_workspace_exists = pulumi.Output.unsecret(
                 pulumi.Output.all(
                     self.args.pinecone_api_key,
@@ -715,10 +710,9 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         """
         if self._default_workspace is None:
             return None
-        # Derive from the stored host rather than the stored url: the resource
-        # is never updated after creation, so a url captured under an older
-        # path shape would be served forever. The host is the stable fact; the
-        # path is decided here, at read time.
+        # Built from the stored host, not the stored url: resource state is
+        # frozen at creation, so anything persisted there can go stale. The
+        # host is the durable fact; the path is decided at read time.
         url = pulumi.Output.concat("https://", self._default_workspace.host, "/contexts")
         return pulumi.Output.all(self._default_workspace_exists(), url).apply(
             lambda a: a[1] if a[0] else None
