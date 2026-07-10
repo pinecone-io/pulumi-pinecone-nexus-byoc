@@ -13,6 +13,7 @@ from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     DATADOG_DISABLED_PLACEHOLDER,
+    DEFAULT_WORKSPACE_NAME,
     AmpAccess,
     AmpAccessArgs,
     ApiKey,
@@ -21,6 +22,8 @@ from ..common.providers import (
     CpgwApiKeyArgs,
     DatadogApiKey,
     DatadogApiKeyArgs,
+    DefaultWorkspace,
+    DefaultWorkspaceArgs,
     Environment,
     EnvironmentArgs,
     ServiceAccount,
@@ -89,6 +92,9 @@ class PineconeGCPClusterArgs:
     api_url: str = "https://api.pinecone.io"
     global_env: str = "prod"
     auth0_domain: str = "https://login.pinecone.io"
+    # Base URL of the Pinecone web console; used for the workspace deep link
+    # printed at the end of the install. Override for preprod/internal installs.
+    console_url: str = "https://app.pinecone.io"
 
     # cross-cloud: AWS account for AMP federation
     amp_aws_account_id: str = "713131977538"
@@ -383,6 +389,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         # Install Nexus after the DB stack is ready.
         self._nexus = None
         self._nexus_gcs = None
+        self._nexus_project_id = None
+        self._default_workspace = None
         if args.nexus is not None:
             nx = args.nexus
             # Nexus versions independently of the DB stack (separate repo, separate
@@ -425,6 +433,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             nexus_sa_annotations = self._nexus_gcs.gcs_sa_email.apply(
                 lambda email: {"iam.gke.io/gcp-service-account": email}
             )
+            self._nexus_project_id = nx.byoc_project_id or self._api_key.project_id
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._gke.k8s_provider,
@@ -434,7 +443,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 cloud="gcp",
                 region=args.region,
                 pinecone_prod=args.global_env == "prod",
-                byoc_project_id=nx.byoc_project_id or self._api_key.project_id,
+                byoc_project_id=self._nexus_project_id,
                 byoc_vault_id=(
                     nx.byoc_vault_id or self._resource_suffix.apply(lambda s: f"byoc{s}")
                 ),
@@ -470,6 +479,23 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 kubeconfig=self._gke.kubeconfig,
                 deploy_image=self._nexus.deploy_image,
                 cloud="gcp",
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
+            )
+
+            # First-run bootstrap: create the `default` workspace in the customer's
+            # project (the pinecone-api-key's project) and wait until the cell's
+            # operation poller promotes it to Ready. Depends on the Nexus component
+            # so the poller exists before we wait on it. Never recreated: the
+            # provider's diff/delete are no-ops, so later ups skip it and destroy
+            # leaves it (delete via gCPS before destroy, per clean teardown).
+            self._default_workspace = DefaultWorkspace(
+                f"{config.resource_prefix}-default-workspace",
+                DefaultWorkspaceArgs(
+                    name=DEFAULT_WORKSPACE_NAME,
+                    environment=nx.byoc_env or self._environment.env_name,
+                    api_url=args.api_url,
+                    pinecone_api_key=args.pinecone_api_key,
+                ),
                 opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
             )
 
@@ -648,3 +674,25 @@ class PineconeGCPCluster(pulumi.ComponentResource):
     def nexus_byoc_session_credential(self) -> pulumi.Output[str] | None:
         """The seeded BYOC login credential, or None on DB-only deploys. Marked secret."""
         return self._k8s_secrets.byoc_session_credential
+
+    @property
+    def nexus_default_workspace_url(self) -> pulumi.Output[str] | None:
+        """Console URL of the first-run `default` workspace, or None on DB-only deploys."""
+        if self._default_workspace is None:
+            return None
+        return self._default_workspace.url
+
+    @property
+    def nexus_default_workspace_pinecone_console_url(self) -> pulumi.Output[str] | None:
+        """Pinecone-console detail page for the default workspace, or None on DB-only deploys."""
+        if self._default_workspace is None:
+            return None
+        return pulumi.Output.concat(
+            self.args.console_url,
+            "/organizations/",
+            self._environment.org_id,
+            "/projects/",
+            pulumi.Output.from_input(self._nexus_project_id),
+            "/workspaces/",
+            DEFAULT_WORKSPACE_NAME,
+        )
