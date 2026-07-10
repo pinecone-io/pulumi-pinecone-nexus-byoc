@@ -992,9 +992,12 @@ class DefaultWorkspaceProvider(ResourceProvider):
         # Pulumi stack state, and this resource never needs to read it back
         # (diff()/delete() are no-ops).
         outs = {k: v for k, v in props.items() if k != "pinecone_api_key"}
+        # /contexts, not the bare root: the cell edge short-circuits `/` on
+        # workspace hosts (health-check route), so only /contexts reliably
+        # lands in the console.
         return CreateResult(
             props["name"],
-            {**outs, "host": ws.host, "url": f"https://{ws.host}/"},
+            {**outs, "host": ws.host, "url": f"https://{ws.host}/contexts"},
         )
 
     def diff(self, _id: str, _olds: dict[str, Any], _news: dict[str, Any]) -> DiffResult:

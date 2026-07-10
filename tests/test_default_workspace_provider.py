@@ -56,12 +56,12 @@ def test_create_waits_until_ready():
     result = _create_with(_ws("Initializing"), [_ws("Initializing"), _ws("Ready")])
     assert result.id == "default"
     assert result.outs["host"] == _HOST
-    assert result.outs["url"] == f"https://{_HOST}/"
+    assert result.outs["url"] == f"https://{_HOST}/contexts"
 
 
 def test_create_immediately_ready_skips_polling():
     result = _create_with(_ws("Ready"), [])
-    assert result.outs["url"] == f"https://{_HOST}/"
+    assert result.outs["url"] == f"https://{_HOST}/contexts"
 
 
 def test_initialization_failed_raises():
@@ -92,7 +92,7 @@ def test_create_tolerates_transient_get_workspace_error():
     )
     assert result.id == "default"
     assert result.outs["host"] == _HOST
-    assert result.outs["url"] == f"https://{_HOST}/"
+    assert result.outs["url"] == f"https://{_HOST}/contexts"
 
 
 def test_create_does_not_echo_api_key_in_outs():
