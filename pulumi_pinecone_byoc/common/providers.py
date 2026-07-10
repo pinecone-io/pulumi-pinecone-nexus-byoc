@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import pulumi
+import requests
 from pulumi import Output
 from pulumi.dynamic import (
     CreateResult,
@@ -29,6 +30,7 @@ from .api import (
     create_dns_delegation,
     create_environment,
     create_service_account,
+    create_workspace,
     delete_amp_access,
     delete_api_key,
     delete_cpgw_api_key,
@@ -36,6 +38,7 @@ from .api import (
     delete_dns_delegation,
     delete_environment,
     delete_service_account,
+    get_workspace,
 )
 
 # =============================================================================
@@ -896,6 +899,140 @@ class CpgwApiKey(Resource):
         }
         super().__init__(
             CpgwApiKeyProvider(),
+            name,
+            full_args,
+            opts,
+        )
+
+
+# =============================================================================
+# DefaultWorkspace Resource (first-run bootstrap)
+# =============================================================================
+
+DEFAULT_WORKSPACE_NAME = "default"
+_WORKSPACE_READY_TIMEOUT_SECS = 900
+_WORKSPACE_POLL_SECS = 15
+
+
+class DefaultWorkspaceArgs:
+    """Arguments for the first-run default workspace."""
+
+    name: pulumi.Input[str]
+    environment: pulumi.Input[str]
+    api_url: pulumi.Input[str]
+    pinecone_api_key: pulumi.Input[str]
+
+    def __init__(
+        self,
+        name: pulumi.Input[str],
+        environment: pulumi.Input[str],
+        api_url: pulumi.Input[str],
+        pinecone_api_key: pulumi.Input[str],
+    ):
+        self.name = name
+        self.environment = environment
+        self.api_url = api_url
+        self.pinecone_api_key = pinecone_api_key
+
+
+class DefaultWorkspaceProvider(ResourceProvider):
+    """First-run bootstrap: create the workspace, wait for Ready, then never touch it.
+
+    Not a lifecycle-managed resource: diff() never reports changes (later ups skip
+    it even if inputs drift) and delete() is a no-op (destroy leaves the workspace;
+    it must be deleted via gCPS before destroy, per the clean-teardown procedure).
+    A failed create (gate 403, InitializationFailed, Ready timeout) means the
+    resource never enters state, so the next `pulumi up` retries from scratch.
+    """
+
+    def create(self, props: dict[str, Any]) -> CreateResult:
+        ws = asyncio.run(
+            asyncio.to_thread(
+                create_workspace,
+                api_key=props["pinecone_api_key"],
+                api_url=props["api_url"],
+                name=props["name"],
+                environment=props["environment"],
+            )
+        )
+
+        deadline = time.monotonic() + _WORKSPACE_READY_TIMEOUT_SECS
+        state = ws.status.state
+        while state != "Ready":
+            if state == "InitializationFailed":
+                raise Exception(f"workspace '{props['name']}' failed to initialize")
+            if time.monotonic() >= deadline:
+                raise Exception(
+                    f"timed out after {_WORKSPACE_READY_TIMEOUT_SECS}s waiting for "
+                    f"workspace '{props['name']}' to become Ready "
+                    f"(last state: {state}). The in-cell Nexus operation poller "
+                    "drains workspace Create ops once the cell is healthy; "
+                    "re-running `pulumi up` retries this step."
+                )
+            time.sleep(_WORKSPACE_POLL_SECS)
+            # A transient blip at, say, minute 14 of a 15-minute Ready wait must
+            # not abort a ~30-minute install: re-up recovery exists but is
+            # expensive (retries create_workspace from scratch). Swallow
+            # transient errors here and keep polling; 4xx PineconeApiErrors
+            # (e.g. auth/gate failures) are not transient and still propagate.
+            try:
+                ws = asyncio.run(
+                    asyncio.to_thread(
+                        get_workspace,
+                        api_key=props["pinecone_api_key"],
+                        api_url=props["api_url"],
+                        name=props["name"],
+                    )
+                )
+                state = ws.status.state
+            except (requests.RequestException, PineconeApiInternalError):
+                continue
+
+        # Don't echo the API key into resource state: outs are persisted in the
+        # Pulumi stack state, and this resource never needs to read it back
+        # (diff()/delete() are no-ops).
+        outs = {k: v for k, v in props.items() if k != "pinecone_api_key"}
+        # /contexts, not the bare root: the cell edge short-circuits `/` on
+        # workspace hosts (health-check route), so only /contexts reliably
+        # lands in the console.
+        return CreateResult(
+            props["name"],
+            {**outs, "host": ws.host, "url": f"https://{ws.host}/contexts"},
+        )
+
+    def diff(self, _id: str, _olds: dict[str, Any], _news: dict[str, Any]) -> DiffResult:
+        # First-run-only semantics: never replace, never update.
+        return DiffResult(changes=False, replaces=[], stables=["host", "url"])
+
+    def delete(self, _id: str, _props: dict[str, Any]) -> None:
+        # Intentionally a no-op — see class docstring.
+        return
+
+
+class DefaultWorkspace(Resource):
+    """The first-run `default` workspace, created once and never managed again."""
+
+    id: Output[str]
+    host: Output[str]
+    url: Output[str]
+
+    def __init__(
+        self,
+        name: str,
+        args: DefaultWorkspaceArgs,
+        opts: pulumi.ResourceOptions | None = None,
+    ):
+        full_args = {
+            "id": None,
+            "host": None,
+            "url": None,
+            "name": args.name,
+            "environment": args.environment,
+            "api_url": args.api_url,
+            "pinecone_api_key": args.pinecone_api_key,
+        }
+        super().__init__(
+            DefaultWorkspaceProvider(),
             name,
             full_args,
             opts,
