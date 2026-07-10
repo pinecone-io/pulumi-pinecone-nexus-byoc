@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import pulumi
+import requests
 from pulumi import Output
 from pulumi.dynamic import (
     CreateResult,
@@ -969,19 +970,31 @@ class DefaultWorkspaceProvider(ResourceProvider):
                     "re-running `pulumi up` retries this step."
                 )
             time.sleep(_WORKSPACE_POLL_SECS)
-            ws = asyncio.run(
-                asyncio.to_thread(
-                    get_workspace,
-                    api_key=props["pinecone_api_key"],
-                    api_url=props["api_url"],
-                    name=props["name"],
+            # A transient blip at, say, minute 14 of a 15-minute Ready wait must
+            # not abort a ~30-minute install: re-up recovery exists but is
+            # expensive (retries create_workspace from scratch). Swallow
+            # transient errors here and keep polling; 4xx PineconeApiErrors
+            # (e.g. auth/gate failures) are not transient and still propagate.
+            try:
+                ws = asyncio.run(
+                    asyncio.to_thread(
+                        get_workspace,
+                        api_key=props["pinecone_api_key"],
+                        api_url=props["api_url"],
+                        name=props["name"],
+                    )
                 )
-            )
-            state = ws.status.state
+                state = ws.status.state
+            except (requests.RequestException, PineconeApiInternalError):
+                continue
 
+        # Don't echo the API key into resource state: outs are persisted in the
+        # Pulumi stack state, and this resource never needs to read it back
+        # (diff()/delete() are no-ops).
+        outs = {k: v for k, v in props.items() if k != "pinecone_api_key"}
         return CreateResult(
             props["name"],
-            {**props, "host": ws.host, "url": f"https://{ws.host}/"},
+            {**outs, "host": ws.host, "url": f"https://{ws.host}/"},
         )
 
     def diff(self, _id: str, _olds: dict[str, Any], _news: dict[str, Any]) -> DiffResult:

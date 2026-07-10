@@ -7,7 +7,10 @@ from unittest.mock import patch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from pulumi_pinecone_byoc.common import providers  # noqa: E402
-from pulumi_pinecone_byoc.common.api import WorkspaceResponse  # noqa: E402
+from pulumi_pinecone_byoc.common.api import (  # noqa: E402
+    PineconeApiInternalError,
+    WorkspaceResponse,
+)
 
 _PROPS = {
     "name": "default",
@@ -80,6 +83,21 @@ def test_timeout_raises_with_last_state():
         assert "Initializing" in str(e)
     else:
         raise AssertionError("expected timeout")
+
+
+def test_create_tolerates_transient_get_workspace_error():
+    result = _create_with(
+        _ws("Initializing"),
+        [PineconeApiInternalError("boom"), _ws("Initializing"), _ws("Ready")],
+    )
+    assert result.id == "default"
+    assert result.outs["host"] == _HOST
+    assert result.outs["url"] == f"https://{_HOST}/"
+
+
+def test_create_does_not_echo_api_key_in_outs():
+    result = _create_with(_ws("Ready"), [])
+    assert "pinecone_api_key" not in result.outs
 
 
 def test_diff_never_reports_changes():
