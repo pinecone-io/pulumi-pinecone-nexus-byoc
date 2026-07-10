@@ -10,8 +10,8 @@ from pulumi_pinecone_byoc.common.api import (  # noqa: E402
     WORKSPACES_NOT_ENABLED_MSG,
     PineconeApiError,
     create_workspace,
-    workspace_exists,
     get_workspace,
+    workspace_exists,
 )
 
 _WS_BODY = {
@@ -31,7 +31,9 @@ def test_create_workspace_posts_unstable_and_parses():
     assert args[0] == "POST"
     assert args[1] == "https://api.pinecone.io/workspaces"
     assert kwargs["headers"]["Api-Key"] == "key-1"
-    assert kwargs["headers"]["X-Pinecone-Api-Version"] == "unstable"  # case matches api.py's management_plane_headers
+    assert (
+        kwargs["headers"]["X-Pinecone-Api-Version"] == "unstable"
+    )  # case matches api.py's management_plane_headers
     assert kwargs["body"] == {
         "name": "default",
         "spec": {"byoc": {"environment": "gcp-us-central1-ab12"}},

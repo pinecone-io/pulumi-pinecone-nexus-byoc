@@ -719,9 +719,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         # is never updated after creation, so a url captured under an older
         # path shape would be served forever. The host is the stable fact; the
         # path is decided here, at read time.
-        url = pulumi.Output.concat(
-            "https://", self._default_workspace.host, "/contexts"
-        )
+        url = pulumi.Output.concat("https://", self._default_workspace.host, "/contexts")
         return pulumi.Output.all(self._default_workspace_exists(), url).apply(
             lambda a: a[1] if a[0] else None
         )
