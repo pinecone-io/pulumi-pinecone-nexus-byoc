@@ -91,14 +91,6 @@ def test_get_workspace_invalid_response_raises():
             raise AssertionError("expected PineconeApiError")
 
 
-if __name__ == "__main__":
-    for name, fn in sorted(globals().items()):
-        if name.startswith("test_") and callable(fn):
-            fn()
-            print(f"ok  {name}")
-    print("all passed")
-
-
 def test_workspace_exists_true_on_200():
     with patch("pulumi_pinecone_byoc.common.api.request", return_value=_WS_BODY):
         assert workspace_exists("key-1", "https://api.pinecone.io", "default") is True
@@ -116,3 +108,12 @@ def test_workspace_exists_fails_open_on_other_errors():
     for err in (PineconeApiError(403, "no"), PineconeApiError(500, "boom"), RuntimeError("net")):
         with patch("pulumi_pinecone_byoc.common.api.request", side_effect=err):
             assert workspace_exists("key-1", "https://api.pinecone.io", "default") is True
+
+
+# must stay last: the loop only sees tests already defined above it
+if __name__ == "__main__":
+    for name, fn in sorted(globals().items()):
+        if name.startswith("test_") and callable(fn):
+            fn()
+            print(f"ok  {name}")
+    print("all passed")
