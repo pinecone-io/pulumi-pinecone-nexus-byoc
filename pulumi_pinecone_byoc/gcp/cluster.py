@@ -690,12 +690,19 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             # unsecret: the API key is a secret Output and secretness taints
             # everything derived from it — without this, the exported URLs
             # render as [secret]. The boolean reveals nothing about the key.
+            #
+            # The workspace host is an input solely for sequencing: the key and
+            # api_url resolve at program start, and on a first deploy the check
+            # must not run until the workspace resource actually exists — the
+            # host resolves only then. The check also runs during previews, so
+            # preview and update agree (workspace_exists fails open, so an
+            # offline preview still renders the stored links).
             self.__default_workspace_exists = pulumi.Output.unsecret(
-                pulumi.Output.all(self.args.pinecone_api_key, self.args.api_url).apply(
-                    lambda a: True
-                    if pulumi.runtime.is_dry_run()
-                    else api.workspace_exists(a[0], a[1], DEFAULT_WORKSPACE_NAME)
-                )
+                pulumi.Output.all(
+                    self.args.pinecone_api_key,
+                    self.args.api_url,
+                    self._default_workspace.host,
+                ).apply(lambda a: api.workspace_exists(a[0], a[1], DEFAULT_WORKSPACE_NAME))
             )
         return self.__default_workspace_exists
 
