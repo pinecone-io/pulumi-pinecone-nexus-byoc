@@ -167,19 +167,13 @@ class NexusConfig:
     # collects it via ``pulumi config --secret nexus-provider-keys.<ref>``.
     inference_models_toml: str | None = None
     provider_keys: pulumi.Input[dict] | None = None
-    # FoundationDB topology. "single" (default) => one FDB pod. "operator" => HA via
-    # fdb-kubernetes-operator (GCP-only today; opt-in, passed explicitly by the GCP
-    # call site). The deploy Job reads mode from these values; pulumi installs no chart.
+    # operator = HA FDB via fdb-kubernetes-operator (GCP-only). The in-cluster deploy Job reads this; pulumi installs no chart.
     fdb_mode: Literal["single", "operator"] = "single"
-    # Registry/org prefix for the FDB operator + monitor images
-    # (foundationdb.operator.imageRegistry); operator mode only. None keeps the chart
-    # default ("foundationdb", public). Set to the BYOC mirror host so those pods pull
-    # via regcred (keyed by host).
+    # operator mode only; set to the BYOC mirror host so operator/monitor pods pull via regcred. None = public chart default.
     fdb_operator_image_registry: str | None = None
 
     def __post_init__(self):
-        # Literal isn't enforced at runtime; a typo would silently fall through the
-        # `== "operator"` checks and deploy single-node FDB. Fail loudly instead.
+        # Literal isn't runtime-enforced; a bad value would silently deploy single-node FDB.
         if self.fdb_mode not in ("single", "operator"):
             raise ValueError(
                 f"NexusConfig.fdb_mode must be 'single' or 'operator', got {self.fdb_mode!r}."
@@ -274,27 +268,18 @@ class Nexus(pulumi.ComponentResource):
             },
         }
 
-        # FDB HA (operator mode). When "single" the nexus-fdb values stay at the
-        # baseline above. The in-cluster deploy Job reads foundationdb.mode from these
-        # values to decide whether to install the operator; pulumi installs no chart.
         if fdb_mode == "operator":
             operator_values: dict = {
-                # Node-level (hostname) fault domains: 3 coordinators across 3 nodes.
-                # HA against node loss, not a zone outage (not a goal); also avoids the
-                # zonal-PVC single-zone pinning trap. The dedicated fdb pool supplies
-                # >=3 nodes.
+                # node-level (hostname) fault domains — HA against node loss, not zone outage; avoids the zonal-PVC single-zone pin.
                 "redundancyMode": "double",
                 "faultDomainKey": "kubernetes.io/hostname",
                 "storageClass": storage_class,
             }
-            # Operator + monitor image registry; both pull via regcred (keyed by host).
             if fdb_operator_image_registry is not None:
                 operator_values["imageRegistry"] = fdb_operator_image_registry
             fdb_values["foundationdb"]["mode"] = "operator"
             fdb_values["foundationdb"]["operator"] = operator_values
-            # Retarget FDB pods onto the dedicated `nexus-role: fdb` pool (see
-            # gcp/gke.py). The chart key is named `scheduling.services` but drives
-            # every FDB process pod.
+            # chart key is 'scheduling.services' but drives every FDB process pod; pin them to the dedicated nexus-role=fdb pool.
             fdb_values["scheduling"] = {
                 "services": {
                     "nodeSelector": {"nexus-role": "fdb"},
@@ -357,8 +342,6 @@ class Nexus(pulumi.ComponentResource):
             },
         }
 
-        # Point the app at the operator-managed FDB cluster file (single mode keeps the
-        # chart's baseline wiring). Mirrors the nexus-fdb mode switch above.
         if fdb_mode == "operator":
             app_values["foundationdb"] = {"source": "operator"}
 

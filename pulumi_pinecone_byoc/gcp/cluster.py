@@ -210,9 +210,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gke]),
         )
 
-        # Provision the data-plane Postgres (AlloyDB) only on the postgres data
-        # plane. fdb cells run entirely on FoundationDB and need no AlloyDB, so
-        # skipping it drops both AlloyDB instances.
+        # fdb cells run on FoundationDB and need no AlloyDB; only the postgres backend provisions it.
         self._alloydb = (
             AlloyDB(
                 f"{config.resource_prefix}-alloydb",

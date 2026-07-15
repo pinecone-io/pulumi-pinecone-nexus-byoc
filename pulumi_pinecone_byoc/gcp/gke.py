@@ -68,8 +68,7 @@ def nexus_node_pools(
             NodePoolConfig(
                 name="nexus-fdb",
                 machine_type="n2-standard-2",
-                # >=3 nodes spread across whatever zones exist; ceil keeps the per-zone
-                # count so the total is always >=3 (1 zone -> 3, 2 -> 4, 3 -> 3).
+                # ceil(3 / zones) per zone so the total is always >= 3 (1 zone -> 3, 2 -> 4, 3 -> 3).
                 fixed_node_count_per_zone=-(-3 // len(fdb_zones)),
                 node_locations=fdb_zones,
                 # No Ice Lake pin: a stockout in a pinned zone would hang the fixed pool.
