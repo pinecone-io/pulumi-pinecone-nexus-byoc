@@ -2564,6 +2564,10 @@ _nexus_enabled = config.get_bool("nexus-enabled")
 # next to this file. Shipped to the proxy as the `byoc` config profile.
 _models_toml_path = pathlib.Path(__file__).parent / "inference-proxy-models.toml"
 _nexus_models_toml = _models_toml_path.read_text() if _models_toml_path.exists() else None
+# Nexus enabled => default the DB data plane to FDB so the two share one cluster (Nexus is an external client); explicit config wins.
+_data_plane_backend = config.get("data-plane-backend") or ("fdb" if _nexus_enabled else "postgres")
+# Non-shared fallback is operator (Nexus's own HA FDB), never a downgrade to single.
+_default_fdb_mode = "external" if _data_plane_backend == "fdb" else "operator"
 cluster = PineconeGCPCluster(
     "pinecone-byoc",
     PineconeGCPClusterArgs(
@@ -2576,7 +2580,7 @@ cluster = PineconeGCPCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         labels=config.get_object("labels") or {},
-        data_plane_backend=config.get("data-plane-backend") or "postgres",
+        data_plane_backend=_data_plane_backend,
         nexus=NexusConfig(
             version=config.get("nexus-version"),
             byoc_env=config.get("nexus-byoc-env"),
@@ -2588,7 +2592,7 @@ cluster = PineconeGCPCluster(
             storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
-            fdb_mode=config.get("nexus-fdb-mode") or "operator",
+            fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
             fdb_operator_image_registry=config.get("nexus-fdb-operator-image-registry"),
         ) if _nexus_enabled else None,
     ),

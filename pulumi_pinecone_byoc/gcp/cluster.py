@@ -108,6 +108,17 @@ class PineconeGCPClusterArgs:
     writer_k8s_service_accounts: list[str] | None = None
     reader_k8s_service_accounts: list[str] | None = None
 
+    def __post_init__(self):
+        if (
+            self.nexus is not None
+            and self.nexus.fdb_mode == "external"
+            and self.data_plane_backend != "fdb"
+        ):
+            raise ValueError(
+                "nexus.fdb_mode='external' requires data_plane_backend='fdb', got "
+                f"{self.data_plane_backend!r}."
+            )
+
 
 class PineconeGCPCluster(pulumi.ComponentResource):
     def __init__(
