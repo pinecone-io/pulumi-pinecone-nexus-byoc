@@ -539,14 +539,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 "cluster_endpoint": self._gke.cluster.endpoint,
                 "kubeconfig": self._gke.kubeconfig,
                 "data_bucket": self._gcs.data_bucket.name,
-                **(
-                    {
-                        "control_db_endpoint": self._alloydb.control_db.endpoint,
-                        "system_db_endpoint": self._alloydb.system_db.endpoint,
-                    }
-                    if self._alloydb is not None
-                    else {}
-                ),
+                "control_db_endpoint": self._alloydb.control_db.endpoint if self._alloydb else None,
+                "system_db_endpoint": self._alloydb.system_db.endpoint if self._alloydb else None,
                 "environment_id": self._environment.id,
                 "environment_name": self._environment.env_name,
                 "service_account_id": self._service_account.id,
