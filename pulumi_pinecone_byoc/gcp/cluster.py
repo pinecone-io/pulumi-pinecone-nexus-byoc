@@ -373,9 +373,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             pulumi_outputs=pulumi_outputs,
             opts=pulumi.ResourceOptions(
                 parent=self,
-                depends_on=[
-                    r for r in [self._gke, self._dns, self._gcs, self._alloydb] if r is not None
-                ],
+                depends_on=list(filter(None, [self._gke, self._dns, self._gcs, self._alloydb])),
             ),
         )
 
