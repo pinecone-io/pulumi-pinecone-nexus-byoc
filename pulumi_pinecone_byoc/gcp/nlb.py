@@ -248,6 +248,11 @@ class InternalLoadBalancer(pulumi.ComponentResource):
         )
 
         def get_lb_ip_and_link(ingress_status, cell_name_str: str, retries: int = 30):
+            if pulumi.runtime.is_dry_run():
+                return (
+                    "10.0.0.1",
+                    "projects/placeholder/regions/placeholder/forwardingRules/placeholder",
+                )
             # The cell subnet holds two internal LBs (this private Gloo LB and
             # the Nexus gateway ingress); the ingress status IP is the only
             # deterministic key for picking the right forwarding rule.

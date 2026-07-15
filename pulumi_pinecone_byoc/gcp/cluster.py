@@ -96,6 +96,7 @@ class PineconeGCPClusterArgs:
     # Base URL of the Pinecone web console (workspace deep links). Override
     # for preprod/internal installs.
     console_url: str = "https://app.pinecone.io"
+    data_plane_backend: str = "postgres"  # "postgres" | "fdb"
 
     # cross-cloud: AWS account for AMP federation
     amp_aws_account_id: str = "713131977538"
@@ -209,14 +210,21 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gke]),
         )
 
-        self._alloydb = AlloyDB(
-            f"{config.resource_prefix}-alloydb",
-            config,
-            self._vpc.network_id,
-            self._vpc.private_ip_range_name,
-            self._vpc.private_connection,
-            self._cell_name,
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vpc]),
+        # Provision the data-plane Postgres (AlloyDB) only on the postgres data
+        # plane. fdb cells run entirely on FoundationDB and need no AlloyDB, so
+        # skipping it drops both AlloyDB instances.
+        self._alloydb = (
+            AlloyDB(
+                f"{config.resource_prefix}-alloydb",
+                config,
+                self._vpc.network_id,
+                self._vpc.private_ip_range_name,
+                self._vpc.private_connection,
+                self._cell_name,
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vpc]),
+            )
+            if args.data_plane_backend == "postgres"
+            else None
         )
 
         self._subdomain = self._environment.env_name
@@ -274,8 +282,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             )
             if args.nexus is not None
             else None,
-            control_db=self._alloydb.control_db,
-            system_db=self._alloydb.system_db,
+            control_db=self._alloydb.control_db if self._alloydb is not None else None,
+            system_db=self._alloydb.system_db if self._alloydb is not None else None,
             storage_integration_credentials=(
                 {"key-json": self._gke.service_accounts.storage_integration_key_json}
                 if self._gke.service_accounts.storage_integration_key_json is not None
@@ -318,6 +326,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
 
         pulumi_outputs = {
             "cell_name": self._cell_name,
+            "data_plane_backend": args.data_plane_backend,
             "org_name": self._environment.org_name,
             "cloud": "gcp",
             "region": config.region,
@@ -366,7 +375,9 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             pulumi_outputs=pulumi_outputs,
             opts=pulumi.ResourceOptions(
                 parent=self,
-                depends_on=[self._gke, self._dns, self._gcs, self._alloydb],
+                depends_on=[
+                    r for r in [self._gke, self._dns, self._gcs, self._alloydb] if r is not None
+                ],
             ),
         )
 
@@ -532,8 +543,14 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 "cluster_endpoint": self._gke.cluster.endpoint,
                 "kubeconfig": self._gke.kubeconfig,
                 "data_bucket": self._gcs.data_bucket.name,
-                "control_db_endpoint": self._alloydb.control_db.endpoint,
-                "system_db_endpoint": self._alloydb.system_db.endpoint,
+                **(
+                    {
+                        "control_db_endpoint": self._alloydb.control_db.endpoint,
+                        "system_db_endpoint": self._alloydb.system_db.endpoint,
+                    }
+                    if self._alloydb is not None
+                    else {}
+                ),
                 "environment_id": self._environment.id,
                 "environment_name": self._environment.env_name,
                 "service_account_id": self._service_account.id,
@@ -653,7 +670,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         return self._gcs
 
     @property
-    def alloydb(self) -> AlloyDB:
+    def alloydb(self) -> AlloyDB | None:
         return self._alloydb
 
     @property

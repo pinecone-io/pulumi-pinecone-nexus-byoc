@@ -2576,6 +2576,7 @@ cluster = PineconeGCPCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         labels=config.get_object("labels") or {},
+        data_plane_backend=config.get("data-plane-backend") or "postgres",
         nexus=NexusConfig(
             version=config.get("nexus-version"),
             byoc_env=config.get("nexus-byoc-env"),
