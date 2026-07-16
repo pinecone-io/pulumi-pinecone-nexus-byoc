@@ -99,12 +99,9 @@ def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
         return {"gemini-api-key"}
     return set(_API_KEY_REF_RE.findall(toml_text))
 
-
-PINECONE_VERSION = "main-5d8cdb9"
-
-# Independent of PINECONE_VERSION: DB and Nexus are separate repos with separate
-# CI, so their `main-<sha>` tags don't match — they are not co-tagged.
-NEXUS_VERSION = "main-b8e1eb9"
+# TODO: Temp from https://github.com/pinecone-io/pinecone-db/pull/16775
+PINECONE_VERSION = "avi-fdb-in-byoc-c838cf4"
+NEXUS_VERSION = "main-d13ff4f"
 
 # Nexus images live in their own `nexus` repo, co-located on the registry host;
 # DB/pinetools images stay in the `unstable` repo.
