@@ -99,8 +99,9 @@ def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
         return {"gemini-api-key"}
     return set(_API_KEY_REF_RE.findall(toml_text))
 
+
 # TODO: Temp from https://github.com/pinecone-io/pinecone-db/pull/16775
-PINECONE_VERSION = "avi-fdb-in-byoc-c838cf4"
+PINECONE_VERSION = "avi-fdb-in-byoc-d596c27"
 NEXUS_VERSION = "main-d13ff4f"
 
 # Nexus images live in their own `nexus` repo, co-located on the registry host;
