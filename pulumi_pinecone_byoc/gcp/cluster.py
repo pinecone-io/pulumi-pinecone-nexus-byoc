@@ -382,6 +382,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             region=config.region,
             public_access_enabled=args.public_access_enabled,
             pulumi_outputs=pulumi_outputs,
+            data_plane_backend=args.data_plane_backend,
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=list(filter(None, [self._gke, self._dns, self._gcs, self._alloydb])),
