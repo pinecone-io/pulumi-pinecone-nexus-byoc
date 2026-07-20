@@ -496,10 +496,25 @@ class WorkspaceStatus(BaseModel):
     state: str
 
 
+class WorkspaceByocSpec(BaseModel):
+    environment: str | None = None
+
+
+class WorkspaceSpec(BaseModel):
+    byoc: WorkspaceByocSpec | None = None
+
+
 class WorkspaceResponse(BaseModel):
     name: str
     host: str
     status: WorkspaceStatus
+    spec: WorkspaceSpec | None = None
+
+    @property
+    def environment(self) -> str | None:
+        if self.spec and self.spec.byoc:
+            return self.spec.byoc.environment
+        return None
 
 
 def workspace_headers(api_key: str) -> dict:
@@ -535,13 +550,35 @@ def create_workspace(
         )
     except PineconeApiError as e:
         if e.code == 409:
-            # Already exists (e.g. a prior run created it but failed the Ready
-            # wait) — resume on the existing workspace.
-            return get_workspace(api_key, api_url, name)
+            return _resume_existing_workspace(api_key, api_url, name, environment, e)
         if e.code == 403:
             raise PineconeApiError(403, WORKSPACES_NOT_ENABLED_MSG) from e
         raise
     return _parse_workspace(resp)
+
+
+def _resume_existing_workspace(
+    api_key: str,
+    api_url: str,
+    name: str,
+    environment: str,
+    cause: PineconeApiError,
+) -> WorkspaceResponse:
+    existing = get_workspace(api_key, api_url, name)
+    if existing.environment is None:
+        raise PineconeApiError(
+            409,
+            f"workspace '{name}' already exists but its BYOC environment is unknown, "
+            f"so it cannot be reused for '{environment}'. Deploy with a different name.",
+        ) from cause
+    if existing.environment != environment:
+        raise PineconeApiError(
+            409,
+            f"workspace '{name}' already exists on environment "
+            f"'{existing.environment}', but this deployment targets "
+            f"'{environment}'. Delete or deploy with a different workspace name.",
+        ) from cause
+    return existing
 
 
 def get_workspace(api_key: str, api_url: str, name: str) -> WorkspaceResponse:
