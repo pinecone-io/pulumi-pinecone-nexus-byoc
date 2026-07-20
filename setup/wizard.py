@@ -833,15 +833,11 @@ class BaseSetupWizard:
         ):
             return None
 
-        while True:
-            llm = self._collect_surface_models("llm")
-            if len(llm) >= len(LLM_MODEL_TIERS):
-                break
-            console.print(
-                f"  [red]At least {len(LLM_MODEL_TIERS)} chat models are required:"
-                f" {'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model."
-                " Add more.[/]"
-            )
+        # llm needs >= len(tiers) distinct models (lite/standard/pro map to
+        # distinct ids); embedding/rerank need >= 1. The minimum is enforced
+        # inside the collection loop so partially-entered catalogs are never
+        # discarded.
+        llm = self._collect_surface_models("llm", minimum=len(LLM_MODEL_TIERS))
         embedding = self._collect_surface_models("embedding")
         rerank = self._collect_surface_models("rerank")
 
@@ -859,10 +855,16 @@ class BaseSetupWizard:
         tiers["rerank"] = self._choose_from("Rerank model", list(rerank))
         return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding)
 
-    def _collect_surface_models(self, surface: str) -> dict[str, dict]:
-        """Loop collecting >=1 model for one surface (llm / embedding / rerank)."""
+    def _collect_surface_models(self, surface: str, minimum: int = 1) -> dict[str, dict]:
+        """Loop collecting >= ``minimum`` distinct models for one surface.
+
+        Accumulated models are kept for the whole loop: the operator can only
+        stop once ``minimum`` have been added, so a partially-entered catalog is
+        never discarded (and the step counter is untouched -- this is a sub-prompt
+        of the Nexus step, not a top-level step).
+        """
         console.print()
-        console.print(f"  {self._step(f'{surface.title()} models')}")
+        console.print(f"  [{BLUE}]{surface.title()} models[/]")
         collectors = {
             "llm": self._collect_llm_model,
             "embedding": self._collect_embedding_model,
@@ -873,13 +875,23 @@ class BaseSetupWizard:
             verb = "another" if models else "a"
             ask = self._prompt(f"Add {verb} {surface} model? (Y/n)", "Y").strip().lower()
             if ask not in ("y", "yes", ""):
-                if models:
+                if len(models) >= minimum:
                     return models
-                console.print(f"  [red]At least one {surface} model is required.[/]")
+                remaining = minimum - len(models)
+                console.print(
+                    f"  [red]At least {minimum} {surface} model"
+                    f"{'s' if minimum != 1 else ''} required"
+                    f" -- add {remaining} more.[/]"
+                )
                 continue
             model_id = self._prompt("  Model id (catalog key, e.g. my-flash)").strip()
             if not model_id:
                 console.print("  [red]Model id is required.[/]")
+                continue
+            if model_id in models:
+                console.print(
+                    f"  [red]'{model_id}' already added; each model needs a distinct id.[/]"
+                )
                 continue
             models[model_id] = collectors[surface]()
 
