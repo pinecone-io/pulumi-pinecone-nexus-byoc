@@ -328,6 +328,14 @@ def build_inference_models_toml(
     parts: list[str] = [_INFERENCE_MODELS_HEADER, "# --- Model catalog ---"]
     for model_id, fields in llm_models.items():
         parts.append(_emit_model_table("llm_models", model_id, fields))
+    parts.append(
+        "# Embedding models.\n"
+        "# DO NOT REMOVE an embedding model once a context has used it: the context\n"
+        "# (and the index behind it) resolves its embedding model by id at query\n"
+        "# time, so deleting it here breaks that context. To change the default,\n"
+        "# add the new model and repoint [default.embedding.tiers.default] -- but\n"
+        "# leave every previously-used embedding model defined below."
+    )
     for model_id, fields in embedding_models.items():
         parts.append(_emit_model_table("embedding_models", model_id, fields))
     for model_id, fields in rerank_models.items():
