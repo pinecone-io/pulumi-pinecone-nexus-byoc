@@ -83,6 +83,34 @@ class NexusUninstallerProvider(ResourceProvider):
             except Exception as e:
                 pulumi.log.warn(f"Failed to get gcloud token: {e}")
 
+        # EKS mirror of the GKE branch: the kubeconfig authenticates via an exec
+        # plugin (`aws eks get-token`), which the python client won't run in the
+        # dynamic-provider context. Run the kubeconfig's own exec spec here and
+        # swap the user entry for the minted bearer token.
+        if _props.get("cloud") == "aws":
+            try:
+                import os
+                import subprocess
+
+                for user in kubeconfig.get("users", []):
+                    exec_spec = (user.get("user") or {}).get("exec")
+                    if not exec_spec:
+                        continue
+                    env = os.environ.copy()
+                    for pair in exec_spec.get("env") or []:
+                        env[pair["name"]] = pair["value"]
+                    cred = json.loads(
+                        subprocess.check_output(
+                            [exec_spec["command"], *(exec_spec.get("args") or [])],
+                            text=True,
+                            timeout=30,
+                            env=env,
+                        )
+                    )
+                    user["user"] = {"token": cred["status"]["token"]}
+            except Exception as e:
+                pulumi.log.warn(f"Failed to get EKS token: {e}")
+
         config.load_kube_config_from_dict(kubeconfig)
 
         batch_v1 = client.BatchV1Api()

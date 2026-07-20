@@ -118,12 +118,13 @@ def derive_api_key_refs(inference_models_toml: str) -> list[str]:
 class NexusConfig:
     """Nexus enablement settings. Pass to cluster args to deploy Nexus alongside the DB stack.
 
-    On GCP, durable object storage is always provisioned: the cluster creates
-    three buckets (``{prefix}-source/-knowledge/-archive``) plus the GCS SA and
-    Workload Identity wiring, and switches Nexus to the blob backend. The prefix
-    is derived from the cell name (``pc-nexus-{cell}``) -- minted server-side
-    mid-deploy, so the operator can't supply it in advance. Set
-    ``storage_bucket_prefix`` only to override that derived prefix.
+    On GCP and AWS, durable object storage is always provisioned: the cluster
+    creates three buckets (``{prefix}-source/-knowledge/-archive``) plus the
+    workload-identity wiring (a GCS SA + WI binding on GKE, an IRSA role on
+    EKS), and switches Nexus to the blob backend. The prefix is derived from
+    the cell name (``pc-nexus-{cell}``) -- minted server-side mid-deploy, so
+    the operator can't supply it in advance. Set ``storage_bucket_prefix``
+    only to override that derived prefix.
 
     On Azure ``storage_bucket_prefix`` is opt-in: unset keeps the ``fs``
     backend; set provisions blob containers.
@@ -194,7 +195,10 @@ class Nexus(pulumi.ComponentResource):
             image_registry: Container registry base URL for Nexus images.
             nexus_version: Image tag for Nexus images.
             byoc_env: The ``.byoc`` deployment environment id.
-            cloud: Cloud provider for index placement (``"azure"``/``"gcp"``).
+            cloud: Cloud provider (``"aws"``/``"azure"``/``"gcp"``). Drives both
+                index placement and the pc_blob storage driver: the chart passes
+                it through as ``config.cloud.provider``, which selects GCS/S3/
+                Azure Blob for the ``blob`` backend.
             region: Deploy region for index placement.
             pinecone_prod: False on preprod omits the preprod header.
             byoc_project_id: BYOC single-tenant project id (the cell's minted
@@ -202,15 +206,19 @@ class Nexus(pulumi.ComponentResource):
             byoc_vault_id: Short DNS-safe vault id used as the index host label
                 ``nexus-{context_id}-{vault}``. Keeps that leftmost label <= 63 chars
                 (a full UUID overflows it). Sent to CPGW as ``project_info.vault_id``.
-            storage_class: StorageClass for Nexus PVCs. Defaults to GKE ``premium-rwo``.
-            ingress_class: Gateway Ingress class annotation. Pass ``None`` to omit (AKS).
+            storage_class: StorageClass for Nexus PVCs. Defaults to GKE
+                ``premium-rwo``; AKS passes ``managed-csi``, EKS ``gp3``.
+            ingress_class: Gateway Ingress class annotation. Pass ``None`` to omit
+                (AKS/EKS).
             blob_storage: Provisioned blob bucket/container names. When set, switches
                 the storage backend to ``blob`` and passes the names into the helm chart.
                 Leave ``None`` to use the local filesystem backend (``fs``).
             service_account_annotations: Annotations applied to the chart's KSAs
                 via ``serviceAccountAnnotations``. On GKE this carries
                 ``iam.gke.io/gcp-service-account=<sa-email>`` so the pods assume
-                the blob-storage SA via Workload Identity.
+                the blob-storage SA via Workload Identity; on EKS it carries
+                ``eks.amazonaws.com/role-arn=<role-arn>`` so the pod-identity
+                webhook injects IRSA web-identity credentials.
             cpgw_api_url: CPGW control-plane gateway base URL (``…/internal/cpgw``).
                 When set, Nexus uses the CPGW index client (synchronous CPS
                 ``db_index_id`` on create) instead of the managed public path, and
@@ -578,12 +586,14 @@ class NexusBlobStorage:
 
     Set all three to switch the Nexus storage backend to ``blob``.
     Produced by cloud-specific provisioning (``NexusGCSBuckets`` on GCP,
-    ``NexusBlobContainers`` on Azure) and passed into the ``Nexus`` component.
+    ``NexusS3Buckets`` on AWS, ``NexusBlobContainers`` on Azure) and passed
+    into the ``Nexus`` component. The blob driver itself follows the ``cloud``
+    arg (GCS/S3/Azure Blob).
     """
 
     source: pulumi.Input[str]
     knowledge: pulumi.Input[str]
     archive: pulumi.Input[str]
     # Azure storage account name. Set on Azure (chart emits AZURE_STORAGE_ACCOUNT);
-    # GCS leaves None.
+    # GCS/S3 leave None (their credentials come from workload identity).
     account_name: pulumi.Input[str] | None = None

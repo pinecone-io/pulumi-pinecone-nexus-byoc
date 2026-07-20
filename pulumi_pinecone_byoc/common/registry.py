@@ -22,6 +22,15 @@ AWS_REGISTRY = ContainerRegistry(
     type="ecr",
 )
 
+# Nexus images on AWS live in their own `nexus` repo, co-located on the ECR
+# host so the BYOC pull secret (`regcred`, keyed by host) covers both. Mirrors
+# NEXUS_GCP_REGISTRY; the ECR mirror pipeline that populates it is tracked
+# separately (nexus#1363). DB/pinetools images stay in the `unstable` repo.
+NEXUS_AWS_REGISTRY = ContainerRegistry(
+    base_url="843333058014.dkr.ecr.us-east-1.amazonaws.com/nexus",
+    type="ecr",
+)
+
 GCP_REGISTRY = ContainerRegistry(
     base_url="us-docker.pkg.dev/pinecone-artifacts/unstable",
     type="gcr",
