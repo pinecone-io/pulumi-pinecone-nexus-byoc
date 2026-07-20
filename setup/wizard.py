@@ -43,12 +43,8 @@ class NexusWizardConfig(TypedDict, total=False):
     nexus_version: str
     inference_base: str
     inference_models_toml: str | None
-    # Gemini API key (the default catalog's `gemini-api-key` ref). Collected by
-    # the wizard so it can set the `nexus-gemini-api-key` /
-    # `nexus-provider-keys.gemini-api-key` secrets itself.
-    gemini_api_key: str
-    # Extra provider-key secrets for a customized catalog whose api_key_refs are
-    # not `gemini-api-key`: {ref -> value}, each set as `nexus-provider-keys.<ref>`.
+    # Provider-key secrets, one per api_key_ref the catalog references (no ref is
+    # special-cased): {ref -> value}, each set as `nexus-provider-keys.<ref>`.
     provider_keys: dict[str, str]
 
 
@@ -668,27 +664,6 @@ class BaseSetupWizard:
             return None
 
         return api_key
-
-    def _get_gemini_api_key(self) -> str:
-        """The Gemini API key backing the default catalog's `gemini-api-key` ref; required when Nexus is enabled."""
-        console.print()
-        console.print("  [bold]Gemini API Key[/]")
-        console.print("  [dim]Nexus uses Gemini for curation and the default inference models.[/]")
-        console.print("  [dim]Get a key at aistudio.google.com/apikey[/]")
-        console.print()
-
-        for env_var in ("PINECONE_GEMINI_API_KEY", "GEMINI_API_KEY"):
-            env_key = os.environ.get(env_var)
-            if env_key:
-                use_env = self._prompt(f"Found {env_var} in environment. Use it? (Y/n)", "Y")
-                if use_env.lower() in ("y", "yes", ""):
-                    return env_key
-
-        while True:
-            gemini_key = self._prompt("Enter your Gemini API key", password=True).strip()
-            if gemini_key:
-                return gemini_key
-            console.print("  [red]Gemini API key is required for Nexus.[/]")
 
     def _validate_api_key(self, api_key: str) -> bool:
         console.print()
@@ -2649,28 +2624,13 @@ class GCPSetupWizard(BaseSetupWizard):
                 f"{NEXUS_INFERENCE_MODELS_FILENAME}[dim] in the generated project to change them.[/]"
             )
 
-        # Provider-key secrets: prompt only for the api_key_refs the catalog
-        # actually references. The default template (and the common custom case)
-        # uses a single `gemini-api-key` ref, but a customized catalog may use
-        # other providers (e.g. `azure-api-key`) or none -- an operator bringing
-        # only non-Gemini models must not be forced to enter a Gemini key that
-        # nothing would consume.
-        catalog_refs = _api_key_refs_from_toml(inference_models_toml)
-
-        # `gemini-api-key` gets the dedicated prompt (env-var lookup + AI Studio
-        # hint) and sets both `nexus-gemini-api-key` and its provider-key secret;
-        # collected only when the catalog references it.
-        gemini_api_key = ""
-        if "gemini-api-key" in catalog_refs:
-            gemini_api_key = self._get_gemini_api_key()
-
-        # Every other distinct api_key_ref is prompted (hidden) so its
-        # `nexus-provider-keys.<ref>` secret is set. If the operator skips one,
-        # print the exact command to set it before `pulumi up` so nothing is
-        # missed -- no separate recap needed.
+        # Provider-key secrets: one prompt per distinct api_key_ref the catalog
+        # references, all handled uniformly -- no ref (not even `gemini-api-key`)
+        # is special-cased. Pinecone-style models carry no api_key_ref, so they
+        # contribute nothing here. A skipped key prints the exact command to set
+        # it before `pulumi up` so nothing is missed -- no separate recap needed.
         provider_keys: dict[str, str] = {}
-        extra_refs = sorted(ref for ref in catalog_refs if ref != "gemini-api-key")
-        for ref in extra_refs:
+        for ref in sorted(_api_key_refs_from_toml(inference_models_toml)):
             console.print()
             console.print(f"  [dim]Provider key for the '{ref}' api_key_ref.[/]")
             key = self._prompt(f"Enter the {ref} provider key", password=True).strip()
@@ -2689,7 +2649,6 @@ class GCPSetupWizard(BaseSetupWizard):
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
             "inference_models_toml": inference_models_toml,
-            "gemini_api_key": gemini_api_key,
             "provider_keys": provider_keys,
         }
 
@@ -2791,7 +2750,6 @@ cluster = PineconeGCPCluster(
         data_plane_backend=_data_plane_backend,
         nexus=NexusConfig(
             version=config.get("nexus-version"),
-            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
             byoc_project_id=config.get("nexus-byoc-project-id"),
             byoc_vault_id=config.get("nexus-byoc-vault-id"),
             byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
@@ -2904,10 +2862,9 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
                     f"  {project_name}:nexus-storage-bucket-prefix: "
                     f"{nexus['storage_bucket_prefix']}\n"
                 )
-            # nexus-gemini-api-key / nexus-provider-keys.* are secrets; the
-            # wizard sets them itself in the secret-setting step below (mirroring
-            # pinecone-api-key), so they are intentionally omitted from this
-            # plaintext stack config.
+            # nexus-provider-keys.* are secrets; the wizard sets them itself in
+            # the secret-setting step below (mirroring pinecone-api-key), so they
+            # are intentionally omitted from this plaintext stack config.
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
@@ -2996,14 +2953,10 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
 
         console.print("  [green]✓[/] API key stored securely")
 
-        # nexus-gemini-api-key is read by NexusConfig; nexus-provider-keys.<ref>
-        # by the inference proxy (default catalog's api_key_ref is `gemini-api-key`,
-        # so both are set from the same key).
+        # nexus-provider-keys.<ref> secrets are read by the inference proxy, one
+        # per api_key_ref the catalog references (no ref is special-cased).
         if nexus.get("enabled"):
-            gemini_api_key = nexus.get("gemini_api_key")
             provider_keys = dict(nexus.get("provider_keys") or {})
-            if gemini_api_key:
-                provider_keys.setdefault("gemini-api-key", gemini_api_key)
 
             def _set_secret(config_args: list[str], value: str, label: str) -> None:
                 with Status(f"  [dim]Storing {label}...[/]", console=console, spinner="dots"):
@@ -3030,8 +2983,6 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
                 else:
                     console.print(f"  [green]✓[/] {label} stored securely")
 
-            if gemini_api_key:
-                _set_secret(["--secret", "nexus-gemini-api-key"], gemini_api_key, "Gemini API key")
             for ref, value in provider_keys.items():
                 _set_secret(
                     ["--path", "--secret", f"nexus-provider-keys.{ref}"],
@@ -3826,7 +3777,6 @@ cluster = PineconeAzureCluster(
         tags=config.get_object("tags"),
         nexus=NexusConfig(
             version=config.get("nexus-version"),
-            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
             byoc_project_id=config.get("nexus-byoc-project-id"),
             byoc_vault_id=config.get("nexus-byoc-vault-id"),
             byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
@@ -3930,8 +3880,8 @@ dependencies = ["pulumi-pinecone-nexus-byoc[azure]"]
                     f"  {project_name}:nexus-storage-bucket-prefix: "
                     f"{nexus['storage_bucket_prefix']}\n"
                 )
-            # nexus-gemini-api-key is a secret; set it out-of-band:
-            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
+            # nexus-provider-keys.<ref> are secrets; set each out-of-band:
+            #   pulumi config set --path --secret nexus-provider-keys.<ref> <key>
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:

@@ -31,13 +31,12 @@ class NexusSecretConfig:
     """
 
     api_key: pulumi.Input[str]
-    gemini_api_key: pulumi.Input[str] | None = None
     azure_storage_access_key: pulumi.Input[str] | None = None
     # Inference-proxy provider keys. ``provider_key_refs`` is the set of
     # ``api_key_ref`` values derived from the routing TOML; ``provider_keys`` is
-    # the secret map (ref -> value) the customer supplies. When refs are present
-    # (overlay mode), one Secret key is written per ref with its value from the
-    # map; otherwise the legacy fixed gemini/claude/nebius keys are written.
+    # the secret map (ref -> value) the customer supplies. One Secret key is
+    # written per ref with its value from the map -- no ref is special-cased.
+    # With no refs (no routing TOML), no provider keys are written.
     provider_key_refs: list[str] | None = None
     provider_keys: pulumi.Input[dict] | None = None
 
@@ -162,33 +161,22 @@ class K8sSecrets(pulumi.ComponentResource):
             )
             self.byoc_session_credential = byoc_session_password.result
 
-            # Provider api keys projected onto the inference-proxy pod. Overlay
-            # mode (a routing TOML supplied provider_key_refs) writes one key per
-            # derived ref, value pulled from the provider_keys map; otherwise the
-            # legacy fixed gemini/claude/nebius keys preserve prior behavior.
-            if nexus.provider_key_refs:
-                provider_data: dict[str, pulumi.Output[str]] = {}
-                for ref in nexus.provider_key_refs:
-                    if nexus.provider_keys is not None:
-                        provider_data[ref] = b64(
-                            pulumi.Output.secret(nexus.provider_keys).apply(
-                                lambda keys, r=ref: (
-                                    str(keys.get(r, "")) if isinstance(keys, dict) else ""
-                                )
+            # Provider api keys projected onto the inference-proxy pod: one Secret
+            # key per api_key_ref the routing TOML references, value pulled from
+            # the provider_keys map. No ref is special-cased; with no routing TOML
+            # (no refs), no provider keys are written.
+            provider_data: dict[str, pulumi.Output[str]] = {}
+            for ref in nexus.provider_key_refs or []:
+                if nexus.provider_keys is not None:
+                    provider_data[ref] = b64(
+                        pulumi.Output.secret(nexus.provider_keys).apply(
+                            lambda keys, r=ref: (
+                                str(keys.get(r, "")) if isinstance(keys, dict) else ""
                             )
                         )
-                    else:
-                        provider_data[ref] = b64("")
-            else:
-                provider_data = {
-                    "gemini-api-key": b64(
-                        pulumi.Output.secret(nexus.gemini_api_key)
-                        if nexus.gemini_api_key is not None
-                        else ""
-                    ),
-                    "claude-api-key": b64(""),
-                    "nebius-api-key": b64(""),
-                }
+                    )
+                else:
+                    provider_data[ref] = b64("")
 
             k8s.core.v1.Secret(
                 f"{name}-nexus-config",

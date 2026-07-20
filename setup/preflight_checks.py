@@ -447,7 +447,6 @@ def check_nexus_secrets(stack_dir: str | None) -> bool:
             "No stack dir given; cannot verify secrets are set. Before `pulumi up` "
             "set, per the generated project:"
         )
-        console.print("    [dim]pulumi config set --secret <project>:nexus-gemini-api-key <key>[/]")
         console.print(
             "    [dim]pulumi config set --path --secret "
             "nexus-provider-keys.<api-key-ref> <key>  (one per model api_key_ref)[/]"
@@ -474,15 +473,6 @@ def check_nexus_secrets(stack_dir: str | None) -> bool:
             pass
 
     all_ok = True
-    if "nexus-gemini-api-key" in blob:
-        ok("nexus-gemini-api-key is set")
-    else:
-        all_ok = False
-        fail(
-            "nexus-gemini-api-key not set",
-            "pulumi config set --secret <project>:nexus-gemini-api-key <key>",
-        )
-
     refs = required_provider_key_refs(stack_dir)
     if not refs:
         warn(

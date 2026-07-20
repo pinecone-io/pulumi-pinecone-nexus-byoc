@@ -132,7 +132,6 @@ class NexusConfig:
     version: str | None = None  # REQUIRED: the Nexus image tag; no DB-version fallback
     byoc_env: pulumi.Input[str] | None = None  # falls back to minted env name
     image_registry: str | None = None  # falls back to cloud-specific default
-    gemini_api_key: pulumi.Input[str] | None = None
     inference_base: pulumi.Input[str] | None = None  # falls back to api_url
     # BYOC single-tenant project id. None => the project the deploy mints for the
     # cell (the __SLI__ ApiKey's project_id, also exported as sli_checkers_project_id);
