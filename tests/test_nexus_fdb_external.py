@@ -29,7 +29,7 @@ class _Mocks(pulumi.runtime.Mocks):
         return {}
 
 
-def _deploy_values(fdb_mode: Literal["single", "operator", "external"]):
+def _deploy_values(fdb_mode: Literal["single", "external"]):
     """Instantiate Nexus in the given mode; return the deploy-values ``data`` Output."""
     # Set within the runtime test (event loop active) rather than at import time.
     pulumi.runtime.set_mocks(_Mocks(), preview=False)

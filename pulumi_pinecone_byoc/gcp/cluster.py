@@ -476,7 +476,6 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
                 fdb_mode=nx.fdb_mode,
-                fdb_operator_image_registry=nx.fdb_operator_image_registry,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
@@ -605,12 +604,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         if args.nexus is not None:
             from .gke import nexus_node_pools
 
-            node_pools.extend(
-                nexus_node_pools(
-                    fdb_dedicated_pool=args.nexus.fdb_mode == "operator",
-                    zones=args.availability_zones,
-                )
-            )
+            node_pools.extend(nexus_node_pools())
 
         control_db_cpu = 2
         system_db_cpu = 2

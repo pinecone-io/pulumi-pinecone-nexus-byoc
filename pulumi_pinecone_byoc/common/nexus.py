@@ -167,17 +167,13 @@ class NexusConfig:
     # collects it via ``pulumi config --secret nexus-provider-keys.<ref>``.
     inference_models_toml: str | None = None
     provider_keys: pulumi.Input[dict] | None = None
-    # operator = HA FDB via fdb-kubernetes-operator (GCP-only); external = consume the shared FDB data-plane cluster (BYOC-FDB). Deploy Job reads this; pulumi installs no chart.
-    fdb_mode: Literal["single", "operator", "external"] = "single"
-    # operator mode only; set to the BYOC mirror host so operator/monitor pods pull via regcred. None = public chart default.
-    fdb_operator_image_registry: str | None = None
+    fdb_mode: Literal["single", "external"] = "single"
 
     def __post_init__(self):
         # Literal isn't runtime-enforced; a bad value would silently deploy single-node FDB.
-        if self.fdb_mode not in ("single", "operator", "external"):
+        if self.fdb_mode not in ("single", "external"):
             raise ValueError(
-                f"NexusConfig.fdb_mode must be 'single', 'operator', or 'external', "
-                f"got {self.fdb_mode!r}."
+                f"NexusConfig.fdb_mode must be 'single' or 'external', got {self.fdb_mode!r}."
             )
 
 
@@ -201,8 +197,7 @@ class Nexus(pulumi.ComponentResource):
         cpgw_api_url: pulumi.Input[str] | None = None,
         byoc_docs_api_url: pulumi.Input[str] | None = None,
         inference_models_toml: str | None = None,
-        fdb_mode: Literal["single", "operator", "external"] = "single",
-        fdb_operator_image_registry: str | None = None,
+        fdb_mode: Literal["single", "external"] = "single",
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
@@ -243,11 +238,9 @@ class Nexus(pulumi.ComponentResource):
                 ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
                 pointed at it (``byoc`` appended to configProfiles); leave ``None`` to
                 run the proxy on its baked default routing table.
-            fdb_mode: ``"single"`` (default) runs the baseline one-pod FDB; ``"operator"``
-                runs HA FDB (GCP-only today); ``"external"`` consumes the shared FDB
-                data-plane cluster and runs no FDB of its own (BYOC-FDB backend). See
-                ``NexusConfig.fdb_mode``.
-            fdb_operator_image_registry: See ``NexusConfig.fdb_operator_image_registry``.
+            fdb_mode: ``"single"`` (default) runs the baseline one-pod FDB;
+                ``"external"`` consumes the shared FDB data-plane cluster and runs no
+                FDB of its own (BYOC-FDB backend). See ``NexusConfig.fdb_mode``.
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
 
@@ -271,32 +264,7 @@ class Nexus(pulumi.ComponentResource):
             },
         }
 
-        if fdb_mode == "operator":
-            operator_values: dict = {
-                # node-level (hostname) fault domains — HA against node loss, not zone outage; avoids the zonal-PVC single-zone pin.
-                "redundancyMode": "double",
-                "faultDomainKey": "kubernetes.io/hostname",
-                "storageClass": storage_class,
-            }
-            if fdb_operator_image_registry is not None:
-                operator_values["imageRegistry"] = fdb_operator_image_registry
-            fdb_values["foundationdb"]["mode"] = "operator"
-            fdb_values["foundationdb"]["operator"] = operator_values
-            # chart key is 'scheduling.services' but drives every FDB process pod; pin them to the dedicated nexus-role=fdb pool.
-            fdb_values["scheduling"] = {
-                "services": {
-                    "nodeSelector": {"nexus-role": "fdb"},
-                    "tolerations": [
-                        {
-                            "key": "nexus-role",
-                            "operator": "Equal",
-                            "value": "fdb",
-                            "effect": "NoSchedule",
-                        }
-                    ],
-                }
-            }
-        elif fdb_mode == "external":
+        if fdb_mode == "external":
             # Signals the installer to skip the FDB charts; Nexus mounts the shared cluster file (source=external below).
             fdb_values["foundationdb"]["mode"] = "external"
 
@@ -348,9 +316,7 @@ class Nexus(pulumi.ComponentResource):
             },
         }
 
-        if fdb_mode == "operator":
-            app_values["foundationdb"] = {"source": "operator"}
-        elif fdb_mode == "external":
+        if fdb_mode == "external":
             app_values["foundationdb"] = {"source": "external"}
 
         # KSA annotations for Workload Identity (GKE: gcp-service-account=<email>).

@@ -2564,8 +2564,7 @@ _models_toml_path = pathlib.Path(__file__).parent / "inference-proxy-models.toml
 _nexus_models_toml = _models_toml_path.read_text() if _models_toml_path.exists() else None
 # Nexus enabled => default the DB data plane to FDB so the two share one cluster (Nexus is an external client); explicit config wins.
 _data_plane_backend = config.get("data-plane-backend") or ("fdb" if _nexus_enabled else "postgres")
-# Non-shared fallback is operator (Nexus's own HA FDB), never a downgrade to single.
-_default_fdb_mode = "external" if _data_plane_backend == "fdb" else "operator"
+_default_fdb_mode = "external" if _data_plane_backend == "fdb" else "single"
 cluster = PineconeGCPCluster(
     "pinecone-byoc",
     PineconeGCPClusterArgs(
@@ -2591,7 +2590,6 @@ cluster = PineconeGCPCluster(
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
             fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
-            fdb_operator_image_registry=config.get("nexus-fdb-operator-image-registry"),
         ) if _nexus_enabled else None,
     ),
 )
