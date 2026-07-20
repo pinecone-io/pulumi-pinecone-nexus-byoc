@@ -43,7 +43,7 @@ def test_create_workspace_posts_unstable_and_parses():
     assert ws.status.ready is False
 
 
-def test_create_workspace_409_falls_through_to_get():
+def test_create_workspace_409_same_environment_resumes():
     calls = []
 
     def fake_request(method, url, headers=None, body=None):
@@ -56,6 +56,43 @@ def test_create_workspace_409_falls_through_to_get():
         ws = create_workspace("key-1", "https://api.pinecone.io", "default", "gcp-us-central1-ab12")
     assert calls == ["POST", "GET"]
     assert ws.name == "default"
+    assert ws.environment == "gcp-us-central1-ab12"
+    assert ws.host == _WS_BODY["host"]
+
+
+def test_create_workspace_409_different_environment_raises():
+    def fake_request(method, url, headers=None, body=None):
+        if method == "POST":
+            raise PineconeApiError(409, "409: workspace already exists")
+        return _WS_BODY  # existing workspace is on gcp-us-central1-ab12
+
+    with patch("pulumi_pinecone_byoc.common.api.request", side_effect=fake_request):
+        try:
+            create_workspace("key-1", "https://api.pinecone.io", "default", "gcp-us-east1-zz99")
+        except PineconeApiError as e:
+            assert e.code == 409
+            assert "gcp-us-central1-ab12" in e.msg  # existing environment
+            assert "gcp-us-east1-zz99" in e.msg  # requested environment
+        else:
+            raise AssertionError("expected PineconeApiError for cross-environment conflict")
+
+
+def test_create_workspace_409_missing_environment_raises():
+    body_no_env = {k: v for k, v in _WS_BODY.items() if k != "spec"}
+
+    def fake_request(method, url, headers=None, body=None):
+        if method == "POST":
+            raise PineconeApiError(409, "409: workspace already exists")
+        return body_no_env
+
+    with patch("pulumi_pinecone_byoc.common.api.request", side_effect=fake_request):
+        try:
+            create_workspace("key-1", "https://api.pinecone.io", "default", "gcp-us-central1-ab12")
+        except PineconeApiError as e:
+            assert e.code == 409
+            assert "environment" in e.msg
+        else:
+            raise AssertionError("expected PineconeApiError when environment is unknown")
 
 
 def test_create_workspace_403_raises_actionable_message():
