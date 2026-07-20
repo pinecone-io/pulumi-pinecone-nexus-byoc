@@ -38,11 +38,9 @@ class NexusWizardConfig(TypedDict, total=False):
     """
 
     enabled: bool
-    byoc_env: str
     byoc_project_id: str
     storage_bucket_prefix: str
     nexus_version: str
-    image_registry: str
     inference_base: str
     inference_models_toml: str | None
     # Gemini API key (the default catalog's `gemini-api-key` ref). Collected by
@@ -102,11 +100,6 @@ def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
 
 PINECONE_VERSION = "main-f80d960"
 NEXUS_VERSION = "main-d13ff4f"
-
-# Nexus images live in their own `nexus` repo, co-located on the registry host;
-# DB/pinetools images stay in the `unstable` repo.
-NEXUS_IMAGE_REGISTRY = "us-docker.pkg.dev/pinecone-artifacts/nexus"
-NEXUS_AZURE_IMAGE_REGISTRY = "pinecone.azurecr.io/nexus"
 
 # Inference-proxy model-routing template written into the generated project when
 # Nexus is enabled. It IS the `byoc` config profile -- BYOC omits the chart's
@@ -2394,11 +2387,7 @@ class GCPSetupWizard(BaseSetupWizard):
                 return False
             nexus: NexusWizardConfig = {
                 "enabled": True,
-                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
-                "image_registry": os.environ.get(
-                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_IMAGE_REGISTRY
-                ),
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
@@ -2573,10 +2562,12 @@ class GCPSetupWizard(BaseSetupWizard):
         task 2.7). Default is a DB-only install (nexus_enabled=False) so the
         generated project is byte-for-byte unchanged unless Nexus is requested.
 
-        For a "Nexus BYOC" install the wizard collects the BYOC env id
-        (PINECONE_BYOC_ENV), the Nexus image tag (nexus-version), and the
-        inference base (INFERENCE_BASE). The inference key is not prompted: it
-        defaults to the minted deployment key per §10.
+        For a "Nexus BYOC" install the wizard collects the gCPS project UUID, the
+        Nexus image tag (nexus-version), and the inference base (INFERENCE_BASE).
+        The BYOC env is not prompted -- Nexus always targets the env this deploy
+        creates. The image registry is not prompted either -- it uses the package
+        default. The inference key is not prompted: it defaults to the minted
+        deployment key per §10.
         """
         console.print()
         console.print(f"  {self._step('Nexus')}")
@@ -2586,14 +2577,6 @@ class GCPSetupWizard(BaseSetupWizard):
         response = self._prompt("Enable Nexus? (Y/n)", "Y")
         if response.strip().lower() in ("n", "no"):
             return {"enabled": False}
-
-        console.print()
-        console.print(
-            "  [dim]The `.byoc` deployment environment id Nexus targets for index CRUD.[/]"
-        )
-        byoc_env = self._prompt(
-            "Enter PINECONE_BYOC_ENV (or press Enter to use the minted env)", ""
-        )
 
         console.print()
         console.print("  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]")
@@ -2628,12 +2611,6 @@ class GCPSetupWizard(BaseSetupWizard):
             )
 
         nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
-
-        console.print()
-        console.print(
-            "  [dim]Container registry for the Nexus images (the `nexus` repo, co-located on the DB registry host).[/]"
-        )
-        image_registry = self._prompt("Enter nexus image registry", NEXUS_IMAGE_REGISTRY)
 
         console.print()
         console.print(
@@ -2687,11 +2664,9 @@ class GCPSetupWizard(BaseSetupWizard):
 
         return {
             "enabled": True,
-            "byoc_env": byoc_env.strip(),
             "byoc_project_id": byoc_project_id,
             "storage_bucket_prefix": storage_bucket_prefix,
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
-            "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
             "inference_base": inference_base.strip() or "https://api.pinecone.io",
             "inference_models_toml": inference_models_toml,
             "gemini_api_key": gemini_api_key,
@@ -2796,8 +2771,6 @@ cluster = PineconeGCPCluster(
         data_plane_backend=_data_plane_backend,
         nexus=NexusConfig(
             version=config.get("nexus-version"),
-            byoc_env=config.get("nexus-byoc-env"),
-            image_registry=config.get("nexus-image-registry"),
             gemini_api_key=config.get_secret("nexus-gemini-api-key"),
             byoc_project_id=config.get("nexus-byoc-project-id"),
             byoc_vault_id=config.get("nexus-byoc-vault-id"),
@@ -2898,12 +2871,6 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
             config_content += (
                 f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
             )
-            config_content += (
-                f"  {project_name}:nexus-image-registry: "
-                f"{nexus.get('image_registry', NEXUS_IMAGE_REGISTRY)}\n"
-            )
-            if nexus.get("byoc_env"):
-                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
             if nexus.get("byoc_project_id"):
                 config_content += (
                     f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
@@ -3612,11 +3579,7 @@ class AzureSetupWizard(BaseSetupWizard):
                 return False
             nexus: NexusWizardConfig = {
                 "enabled": True,
-                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
-                "image_registry": os.environ.get(
-                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_AZURE_IMAGE_REGISTRY
-                ),
                 "inference_base": os.environ.get(
                     "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
                 ),
@@ -3843,8 +3806,6 @@ cluster = PineconeAzureCluster(
         tags=config.get_object("tags"),
         nexus=NexusConfig(
             version=config.get("nexus-version"),
-            byoc_env=config.get("nexus-byoc-env"),
-            image_registry=config.get("nexus-image-registry"),
             gemini_api_key=config.get_secret("nexus-gemini-api-key"),
             byoc_project_id=config.get("nexus-byoc-project-id"),
             byoc_vault_id=config.get("nexus-byoc-vault-id"),
@@ -3936,12 +3897,6 @@ dependencies = ["pulumi-pinecone-nexus-byoc[azure]"]
             config_content += (
                 f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
             )
-            config_content += (
-                f"  {project_name}:nexus-image-registry: "
-                f"{nexus.get('image_registry', NEXUS_AZURE_IMAGE_REGISTRY)}\n"
-            )
-            if nexus.get("byoc_env"):
-                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
             if nexus.get("byoc_project_id"):
                 config_content += (
                     f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
