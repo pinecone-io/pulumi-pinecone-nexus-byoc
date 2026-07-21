@@ -2647,7 +2647,7 @@ class GCPSetupWizard(BaseSetupWizard):
             return False
 
         region = os.environ.get("PINECONE_REGION", "us-central1")
-        zones_str = os.environ.get("PINECONE_AZS", f"{region}-a,{region}-b")
+        zones_str = os.environ.get("PINECONE_AZS", f"{region}-a,{region}-b,{region}-c")
         zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
@@ -2811,7 +2811,8 @@ class GCPSetupWizard(BaseSetupWizard):
             available = self._fetch_zones(project_id, region)
 
         console.print(f"  [dim]Available in {region}:[/] {', '.join(available)}")
-        default_zones = available[:2]
+        # 3 zones so FDB data-plane cells keep zone fault domains (<3 silently degrades).
+        default_zones = available[:3]
 
         zones_input = self._prompt("Enter zones (comma-separated)", ",".join(default_zones))
         zones = [zone.strip() for zone in zones_input.split(",")]
