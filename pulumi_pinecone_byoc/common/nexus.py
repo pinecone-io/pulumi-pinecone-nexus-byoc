@@ -77,32 +77,20 @@ _FDB_IMAGE_REPOSITORY = "foundationdb/foundationdb"
 _DEFAULT_DOCS_API_URL = "http://docs-api.pc-docs-api.svc.cluster.local:3001"
 
 # Inference-proxy routing overlay. The customer's model config is layered onto
-# the proxy's baked default.toml as the `byoc` cascade profile. These names are
-# the contract with the Nexus chart (deploy/helm/nexus/values.yaml,
+# the `byoc` config profile (BYOC's sole routing layer; see nexus#864). These
+# names are the contract with the Nexus chart (deploy/helm/nexus/values.yaml,
 # templates/services/inference-proxy.yaml): the ConfigMap holds a `byoc.toml`
-# key, and `byoc` is appended to the chart's default configProfiles.
+# key, and configProfiles is set to `byoc` (managed profile deliberately omitted).
 _INFERENCE_BYOC_CONFIGMAP = "nexus-inference-proxy-byoc-config"
 _INFERENCE_BYOC_PROFILE = "byoc"
-# Base configProfiles for a BYOC inference overlay. Empty so the byoc profile
-# stands alone: byoc.toml resets the catalog/tiers, but layering the chart's
-# "development" base re-introduces its claude/nebius tier refs (which the reset
-# does not clear), tripping the proxy's startup assert when only a gemini key
-# is present.
+# Base configProfiles for a BYOC deployment. Empty so the byoc profile stands
+# alone: as of nexus#864 the managed model catalog lives in a `managed` profile
+# that BYOC deliberately omits, so byoc.toml is the only routing layer and there
+# is nothing to reset -- the proxy inherits none of the managed claude/nebius
+# tiers a gemini-only deploy has no keys for.
 _CHART_BASE_CONFIG_PROFILE = ""
 # Surfaces whose model entries carry an api_key_ref to project as a pod env var.
 _PROVIDER_KEY_SURFACES = ("llm_models", "embedding_models", "rerank_models")
-
-# Clean-slate sentinel prepended to the customer's routing TOML. It makes the
-# proxy drop its baked routing table (catalog + profiles, incl. the dev/prod
-# claude tier overrides) before this layer applies, so the customer's config is
-# authoritative rather than a deep-merge onto the shipped default. Injected here
-# so the operator-facing TOML stays purely about models -- it never has to know
-# about the cascade. See nexus-inference-proxy settings (_ResettableRoutingTomlSource).
-_RESET_SENTINEL_HEADER = (
-    "# Managed by Pinecone BYOC: start from a clean routing table (drop the\n"
-    "# proxy's built-in model catalog/tiers) before applying the config below.\n"
-    "reset_inference_proxy_config = true\n\n"
-)
 
 
 def derive_api_key_refs(inference_models_toml: str) -> list[str]:
@@ -144,8 +132,6 @@ class NexusConfig:
     version: str | None = None  # REQUIRED: the Nexus image tag; no DB-version fallback
     byoc_env: pulumi.Input[str] | None = None  # falls back to minted env name
     image_registry: str | None = None  # falls back to cloud-specific default
-    gemini_api_key: pulumi.Input[str] | None = None
-    inference_base: pulumi.Input[str] | None = None  # falls back to api_url
     # BYOC single-tenant project id. None => the project the deploy mints for the
     # cell (the __SLI__ ApiKey's project_id, also exported as sli_checkers_project_id);
     # set only to pin Nexus to a different, pre-existing project.
@@ -161,10 +147,12 @@ class NexusConfig:
     # (storage always provisioned); set to override. Azure: None => fs backend, set => blob.
     storage_bucket_prefix: str | None = None
     # Inference-proxy model routing. When set, the proxy loads this TOML as the
-    # `byoc` config overlay (model catalog + the default profile's tiers) on top
-    # of its baked default. ``provider_keys`` maps each ``api_key_ref`` in the
-    # TOML to its secret value (e.g. {"gemini-api-key": <secret>}); the wizard
-    # collects it via ``pulumi config --secret nexus-provider-keys.<ref>``.
+    # `byoc` config profile -- the deployment's ONLY routing layer. BYOC omits the
+    # chart's `managed` profile (see nexus#864), so nothing is inherited: this TOML
+    # supplies the whole catalog + tiers rather than overlaying a baked default.
+    # ``provider_keys`` maps each ``api_key_ref`` in the TOML to its secret value
+    # (e.g. {"gemini-api-key": <secret>}); the wizard collects it via
+    # ``pulumi config --secret nexus-provider-keys.<ref>``.
     inference_models_toml: str | None = None
     provider_keys: pulumi.Input[dict] | None = None
     fdb_mode: Literal["single", "external"] = "single"
@@ -234,10 +222,11 @@ class Nexus(pulumi.ComponentResource):
             byoc_docs_api_url: In-cluster svc-docs-api base URL for the keyless BYOC
                 data path. Defaults to the co-located DB's docs-api. Only
                 applied when ``cpgw_api_url`` is set.
-            inference_models_toml: BYOC inference-proxy routing overlay. When set, a
+            inference_models_toml: BYOC inference-proxy routing table. When set, a
                 ConfigMap holding it as ``byoc.toml`` is provisioned and the chart is
-                pointed at it (``byoc`` appended to configProfiles); leave ``None`` to
-                run the proxy on its baked default routing table.
+                pointed at it (configProfiles set to ``byoc``). Leave ``None`` to
+                fall through to the chart's managed default profile -- not viable for
+                a gemini-only BYOC deploy, so the wizard always writes a TOML.
             fdb_mode: ``"single"`` (default) runs the baseline one-pod FDB;
                 ``"external"`` consumes the shared FDB data-plane cluster and runs no
                 FDB of its own (BYOC-FDB backend). See ``NexusConfig.fdb_mode``.
@@ -349,22 +338,17 @@ class Nexus(pulumi.ComponentResource):
             app_values["config"]["workspacesEnabled"] = True
             app_values["gateway"]["workspaceAuth"] = True
 
-        # BYOC inference-proxy routing overlay. Ship the customer's model config
-        # as a ConfigMap mounted as the `byoc` cascade profile. The TOML sets
-        # reset_inference_proxy_config = true, so the proxy drops the baked
-        # routing table (catalog + profiles) before this layer applies -- the
-        # customer's config is authoritative, not a deep-merge onto the shipped
-        # default (which also clears the dev/prod claude tier overrides). The
-        # configChecksum (a hash of the TOML) rolls the proxy pod when the
-        # overlay changes -- the subPath mount doesn't live-update.
-        # providerKeyRefs is derived from the same TOML so the projected env
-        # vars match the catalog's api_key_refs.
+        # BYOC inference-proxy routing table. Ship the customer's model config as
+        # a ConfigMap mounted as the `byoc` config profile. BYOC omits the chart's
+        # `managed` profile (nexus#864), so this is the proxy's ONLY routing layer:
+        # it supplies the whole catalog + tiers, inheriting nothing from the image.
+        # The configChecksum (a hash of the TOML) rolls the proxy pod when the
+        # config changes -- the subPath mount doesn't live-update. providerKeyRefs
+        # is derived from the same TOML so the projected env vars match the
+        # catalog's api_key_refs.
         install_job_depends_on: list[pulumi.Resource] = []
         if inference_models_toml is not None:
-            # Prepend the clean-slate sentinel here so the operator-facing TOML
-            # never carries cascade plumbing. derive_api_key_refs ignores the
-            # bool; the checksum hashes the final content so edits roll the pod.
-            byoc_toml = _RESET_SENTINEL_HEADER + inference_models_toml
+            byoc_toml = inference_models_toml
             self.inference_config = k8s.core.v1.ConfigMap(
                 f"{name}-inference-proxy-byoc-config",
                 metadata=k8s.meta.v1.ObjectMetaArgs(
@@ -376,10 +360,11 @@ class Nexus(pulumi.ComponentResource):
             )
             install_job_depends_on.append(self.inference_config)
             checksum = hashlib.sha256(byoc_toml.encode("utf-8")).hexdigest()
-            # Append byoc as the last (highest-precedence) profile, idempotently:
-            # keep whatever base profiles are already selected and only add byoc
-            # if absent. Nothing sets configProfiles upstream today, so this falls
-            # back to the chart's default base.
+            # Set configProfiles to just `byoc`, overriding the chart's managed
+            # default (`managed,development`). BYOC omits `managed` on purpose so
+            # byoc.toml is the sole routing layer. Nothing sets configProfiles
+            # upstream today, so this starts from our empty base and appends byoc
+            # idempotently.
             existing = app_values.get("configProfiles", _CHART_BASE_CONFIG_PROFILE)
             profiles = [p.strip() for p in existing.split(",") if p.strip()]
             if _INFERENCE_BYOC_PROFILE not in profiles:

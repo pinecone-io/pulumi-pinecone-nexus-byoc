@@ -48,6 +48,62 @@ def test_static_template_curate_subset():
     assert "gemini-3.1-pro-preview" not in curate
 
 
+def test_embedding_defaults_when_omitted():
+    parsed = tomllib.loads(build_inference_models_toml(_LLM, _RERANK, _TIERS))
+    assert "multilingual-e5-large" in parsed["embedding_models"]
+    assert parsed["default"]["supported_embedding_models"] == ["multilingual-e5-large"]
+    assert (
+        parsed["default"]["embedding"]["tiers"]["default"]["model_ref"] == "multilingual-e5-large"
+    )
+    # dimension is a required model-level field (nexus#1234).
+    assert parsed["embedding_models"]["multilingual-e5-large"]["dimension"] == 1024
+
+
+def test_custom_embedding_model_is_emitted_and_routed():
+    embedding = {
+        "my-embed": {
+            "api_style": "litellm",
+            "model": "openai/text-embedding-3-large",
+            "dimension": 3072,
+        },
+        "multilingual-e5-large": {
+            "api_style": "pinecone",
+            "model": "multilingual-e5-large",
+            "dimension": 1024,
+        },
+    }
+    tiers = {**_TIERS, "embedding": "my-embed"}
+    parsed = tomllib.loads(
+        build_inference_models_toml(_LLM, _RERANK, tiers, embedding_models=embedding)
+    )
+    assert set(parsed["embedding_models"]) == {"my-embed", "multilingual-e5-large"}
+    assert parsed["embedding_models"]["my-embed"]["dimension"] == 3072
+    assert set(parsed["default"]["supported_embedding_models"]) == {
+        "my-embed",
+        "multilingual-e5-large",
+    }
+    assert parsed["default"]["embedding"]["tiers"]["default"]["model_ref"] == "my-embed"
+
+
+def test_embedding_model_requires_dimension():
+    embedding = {"my-embed": {"api_style": "litellm", "model": "openai/text-embedding-3-large"}}
+    try:
+        build_inference_models_toml(
+            _LLM, _RERANK, {**_TIERS, "embedding": "my-embed"}, embedding_models=embedding
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError: embedding model needs a 'dimension'")
+
+
+def test_embedding_tier_must_be_defined():
+    try:
+        build_inference_models_toml(_LLM, _RERANK, {**_TIERS, "embedding": "ghost"})
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for undefined embedding tier model_ref")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

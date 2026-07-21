@@ -281,7 +281,6 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             ),
             nexus=NexusSecretConfig(
                 api_key=args.pinecone_api_key,
-                gemini_api_key=args.nexus.gemini_api_key,
                 provider_keys=args.nexus.provider_keys,
                 provider_key_refs=(
                     derive_api_key_refs(args.nexus.inference_models_toml)

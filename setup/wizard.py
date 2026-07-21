@@ -38,19 +38,12 @@ class NexusWizardConfig(TypedDict, total=False):
     """
 
     enabled: bool
-    byoc_env: str
     byoc_project_id: str
     storage_bucket_prefix: str
     nexus_version: str
-    image_registry: str
-    inference_base: str
     inference_models_toml: str | None
-    # Gemini API key (the default catalog's `gemini-api-key` ref). Collected by
-    # the wizard so it can set the `nexus-gemini-api-key` /
-    # `nexus-provider-keys.gemini-api-key` secrets itself.
-    gemini_api_key: str
-    # Extra provider-key secrets for a customized catalog whose api_key_refs are
-    # not `gemini-api-key`: {ref -> value}, each set as `nexus-provider-keys.<ref>`.
+    # Provider-key secrets, one per api_key_ref the catalog references (no ref is
+    # special-cased): {ref -> value}, each set as `nexus-provider-keys.<ref>`.
     provider_keys: dict[str, str]
 
 
@@ -101,16 +94,12 @@ def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
 
 
 PINECONE_VERSION = "main-f80d960"
-NEXUS_VERSION = "main-d13ff4f"
-
-# Nexus images live in their own `nexus` repo, co-located on the registry host;
-# DB/pinetools images stay in the `unstable` repo.
-NEXUS_IMAGE_REGISTRY = "us-docker.pkg.dev/pinecone-artifacts/nexus"
-NEXUS_AZURE_IMAGE_REGISTRY = "pinecone.azurecr.io/nexus"
+NEXUS_VERSION = "main-a34dcd7"
 
 # Inference-proxy model-routing template written into the generated project when
-# Nexus is enabled. It's layered onto the proxy's baked default as the `byoc`
-# config profile; the customer edits it, then `pulumi up` ships it as a
+# Nexus is enabled. It IS the `byoc` config profile -- BYOC omits the chart's
+# `managed` profile (nexus#864), so this file is the proxy's only routing layer
+# and inherits nothing. The customer edits it, then `pulumi up` ships it as a
 # ConfigMap. Gemini + Pinecone only (the keys a BYOC deploy reliably has) and a
 # complete `default` profile -- project/phase overrides are intentionally out of
 # scope. Keep every api_key_ref's secret wired via `nexus-provider-keys.<ref>`.
@@ -120,13 +109,19 @@ NEXUS_INFERENCE_MODELS_TEMPLATE = """\
 # These are the models the deployment serves and how the lite / standard / pro
 # (chat) and default (embedding / rerank) tiers route to them. Edit to taste,
 # then run `pulumi up`. This config fully defines the catalog -- only the models
-# listed here are served.
+# listed here are served (nothing is inherited from the proxy image).
 #
 # For every `api_key_ref` below, set its secret value (the wizard printed the
 # exact commands):
 #   pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <value>
 # Pinecone embed/rerank models need NO api_key_ref -- the caller supplies the
 # key per request via the Api-Key header.
+#
+# CHANGING THE EMBEDDING MODEL: a Pinecone index's dimension is fixed at creation
+# to whatever embedding model was the `default` then. If you switch the embedding
+# default, KEEP every previously-default embedding model in [embedding_models]
+# below (just repoint the tier) -- indexes built on an old model still resolve it
+# by id at query time, and dropping it from the catalog breaks them.
 #
 # Keep it complete: chat tiers lite/standard/pro, plus one embedding default and
 # one rerank default. Each tier's model_ref must be one of the ids defined below
@@ -139,6 +134,7 @@ model          = "gemini/gemini-3.1-flash-lite"
 api_key_ref    = "gemini-api-key"
 label          = "Gemini 3.1 Flash Lite"
 provider       = "gemini"
+vision         = true
 max_retries    = 2
 context_window = 1_000_000
 
@@ -148,6 +144,7 @@ model          = "gemini/gemini-3.5-flash"
 api_key_ref    = "gemini-api-key"
 label          = "Gemini 3.5 Flash"
 provider       = "gemini"
+vision         = true
 max_retries    = 2
 context_window = 1_000_000
 
@@ -157,15 +154,18 @@ model          = "gemini/gemini-3.1-pro-preview"
 api_key_ref    = "gemini-api-key"
 label          = "Gemini 3.1 Pro"
 provider       = "gemini"
+vision         = true
 max_retries    = 5
 context_window = 1_000_000
 
-# FIXED -- do not change. The embedding model is locked platform-wide (the
-# nexus index dimension is frozen to it); pointing the embedding tier elsewhere
-# fails deploy validation.
+# Default embedding model. You may change it or add more (pinecone- or
+# litellm-style), but see the CHANGING THE EMBEDDING MODEL note above: keep any
+# previously-default embedding model in this catalog so existing indexes built on
+# it keep resolving.
 [embedding_models.multilingual-e5-large]
 api_style       = "pinecone"
 model           = "multilingual-e5-large"
+dimension       = 1024
 max_retries     = 2
 max_input_chars = 1000
 max_batch_size  = 96
@@ -200,25 +200,29 @@ model_ref = "multilingual-e5-large"
 [default.rerank.tiers.default]
 model_ref = "bge-reranker-v2-m3"
 
-# Override the image default's search phase, which otherwise inherits
-# claude-sonnet-4-6 (not in this deployment's gemini-only supported models).
+# Search-workflow inference phase (the proxy folds the legacy `query` phase onto
+# it). Pinned to the standard chat tier here; may be a tier name or a model id.
 [default.llm.phase_defaults]
 search = "gemini-3.5-flash"
 """
 
-# Filename of the routing overlay written into the generated project.
+# Filename of the routing table written into the generated project.
 NEXUS_INFERENCE_MODELS_FILENAME = "inference-proxy-models.toml"
 
 # Header comment for wizard/headless-built model TOML (mirrors the template).
 _INFERENCE_MODELS_HEADER = """\
 # Inference models for this BYOC deployment (generated by the setup wizard).
 #
-# These are the chat (lite/standard/pro) and rerank models the deployment
-# serves. Edit to taste, then run `pulumi up`. This config fully defines the
-# catalog -- only the models listed here are served.
+# These are the chat (lite/standard/pro), embedding, and rerank models the
+# deployment serves. Edit to taste, then run `pulumi up`. This config fully
+# defines the catalog -- only the models listed here are served (nothing is
+# inherited from the proxy image).
 #
-# The embedding model is FIXED platform-wide (the nexus index dimension is
-# frozen to it) and is injected automatically -- it is not operator-configurable.
+# CHANGING THE EMBEDDING MODEL: a Pinecone index's dimension is fixed at creation
+# to whatever embedding model was the `default` then. If you switch the embedding
+# default, KEEP every previously-default embedding model in [embedding_models]
+# (just repoint the tier) -- indexes built on an old model still resolve it by id
+# at query time, and dropping it from the catalog breaks them.
 #
 # For every `api_key_ref` below, set its secret value:
 #   pulumi config set --path --secret nexus-provider-keys.<api-key-ref> <value>
@@ -227,19 +231,21 @@ _INFERENCE_MODELS_HEADER = """\
 
 LLM_MODEL_TIERS = ("lite", "standard", "pro")
 
-# Embedding is fixed platform-wide: every embedding tier must resolve to this
-# exact pinecone model or the proxy refuses to start (the nexus index dimension
-# is frozen to it -- see nexus-inference-proxy EXPECTED_EMBEDDING_MODEL). The
-# wizard never prompts for it; it's injected into every built catalog here.
-LOCKED_EMBEDDING_MODEL_ID = "multilingual-e5-large"
-_LOCKED_EMBEDDING_TABLE = (
-    f'[embedding_models."{LOCKED_EMBEDDING_MODEL_ID}"]\n'
-    'api_style       = "pinecone"\n'
-    f'model           = "{LOCKED_EMBEDDING_MODEL_ID}"\n'
-    "max_retries     = 2\n"
-    "max_input_chars = 1000\n"
-    "max_batch_size  = 96\n"
-)
+# Default embedding model used when the operator doesn't customize embedding
+# (interactive wizard) or omits the embedding env vars (headless). It is no longer
+# platform-locked -- operators may define their own pinecone- or litellm-style
+# embedding models -- but this pinecone model stays the shipped default.
+DEFAULT_EMBEDDING_MODEL_ID = "multilingual-e5-large"
+_DEFAULT_EMBEDDING_MODELS = {
+    DEFAULT_EMBEDDING_MODEL_ID: {
+        "api_style": "pinecone",
+        "model": DEFAULT_EMBEDDING_MODEL_ID,
+        "dimension": 1024,
+        "max_retries": 2,
+        "max_input_chars": 1000,
+        "max_batch_size": 96,
+    }
+}
 
 
 def _toml_scalar(v) -> str:
@@ -267,18 +273,42 @@ def build_inference_models_toml(
     llm_models: dict[str, dict],
     rerank_models: dict[str, dict],
     tiers: dict[str, str],
+    embedding_models: dict[str, dict] | None = None,
 ) -> str:
     """Render a complete inference-routing TOML from operator-chosen catalogs.
 
-    Only chat + rerank are operator-configurable. ``tiers`` keys:
-    ``lite`` / ``standard`` / ``pro`` (llm ids) and ``rerank`` (a rerank id).
-    The embedding model is fixed platform-wide and injected here (it is not a
-    parameter). ``supported_<surface>_models`` is auto-set to every defined id.
-    The clean-slate sentinel is NOT emitted here -- it's injected at deploy time
-    by the Nexus component so this file stays purely about models.
+    Chat, embedding, and rerank are all operator-configurable. ``tiers`` keys:
+    ``lite`` / ``standard`` / ``pro`` (llm ids), ``embedding`` (an embedding id),
+    and ``rerank`` (a rerank id). ``embedding_models`` / ``tiers['embedding']``
+    default to the shipped pinecone model when omitted, so callers that don't
+    customize embedding still get a complete catalog. Each embedding model must
+    carry a ``dimension`` (its output vector width -- required by the proxy since
+    nexus#1234). ``supported_<surface>_models`` is auto-set to every defined id.
+    BYOC omits the chart's ``managed`` profile (nexus#864), so this TOML is the
+    proxy's only routing layer.
     """
     if not llm_models or not rerank_models:
         raise ValueError("llm and rerank must each have at least one model")
+
+    # Fall back to the shipped default embedding model when the operator didn't
+    # customize embedding (keeps the catalog complete without a locked injection).
+    if not embedding_models:
+        embedding_models = dict(_DEFAULT_EMBEDDING_MODELS)
+    embedding_ref = tiers.get("embedding") or DEFAULT_EMBEDDING_MODEL_ID
+    if embedding_ref not in embedding_models:
+        raise ValueError(
+            f"embedding tier model_ref {embedding_ref!r} is not one of the defined "
+            f"embedding models {sorted(embedding_models)}"
+        )
+    # dimension is required on every embedding model (nexus#1234): it's the single
+    # source of truth for output width that the API reads to provision indexes.
+    for model_id, fields in embedding_models.items():
+        dim = fields.get("dimension")
+        if not isinstance(dim, int) or dim <= 0:
+            raise ValueError(
+                f"embedding model {model_id!r} needs a positive integer 'dimension' "
+                "(the model's output vector width)"
+            )
 
     # The proxy refuses to boot (assert_deploy_complete, nexus#1083) when any two
     # chat tiers resolve to the same model_ref -- the tier-as-alias contract
@@ -293,32 +323,39 @@ def build_inference_models_toml(
     parts: list[str] = [_INFERENCE_MODELS_HEADER, "# --- Model catalog ---"]
     for model_id, fields in llm_models.items():
         parts.append(_emit_model_table("llm_models", model_id, fields))
-    # Embedding is fixed -- inject it rather than taking it from the operator.
-    parts.append("# Embedding is fixed platform-wide and managed by Pinecone BYOC.")
-    parts.append(_LOCKED_EMBEDDING_TABLE.rstrip())
+    parts.append(
+        "# Embedding models.\n"
+        "# DO NOT REMOVE an embedding model once a context has used it: the context\n"
+        "# (and the index behind it) resolves its embedding model by id at query\n"
+        "# time, so deleting it here breaks that context. To change the default,\n"
+        "# add the new model and repoint [default.embedding.tiers.default] -- but\n"
+        "# leave every previously-used embedding model defined below."
+    )
+    for model_id, fields in embedding_models.items():
+        parts.append(_emit_model_table("embedding_models", model_id, fields))
     for model_id, fields in rerank_models.items():
         parts.append(_emit_model_table("rerank_models", model_id, fields))
 
     supported_llm = "[" + ", ".join(_toml_scalar(i) for i in llm_models) + "]"
+    supported_emb = "[" + ", ".join(_toml_scalar(i) for i in embedding_models) + "]"
     supported_rr = "[" + ", ".join(_toml_scalar(i) for i in rerank_models) + "]"
-    # LLM catalog minus the pro tier. Emitted so it overrides the image base's broader list and stays a subset.
+    # LLM catalog minus the pro tier. Emitted so it stays a subset of supported_llm_models.
     curate_ids = [i for i in llm_models if i != tiers["pro"]]
     supported_curate = "[" + ", ".join(_toml_scalar(i) for i in curate_ids) + "]"
     parts.append(
         "# --- Default profile (supported_* = every model defined above) ---\n"
         "[default]\n"
         f"supported_llm_models = {supported_llm}\n"
-        f"supported_embedding_models = [{_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}]\n"
+        f"supported_embedding_models = {supported_emb}\n"
         f"supported_rerank_models = {supported_rr}\n"
         f"supported_curate_models = {supported_curate}\n\n"
         + "".join(
             f"[default.llm.tiers.{t}]\nmodel_ref = {_toml_scalar(tiers[t])}\n\n"
             for t in LLM_MODEL_TIERS
         )
-        + f"[default.embedding.tiers.default]\nmodel_ref = {_toml_scalar(LOCKED_EMBEDDING_MODEL_ID)}\n\n"
-        f"[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers['rerank'])}\n\n"
-        "# Override the image default's search phase, which otherwise inherits\n"
-        "# claude-sonnet-4-6 (not in this deployment's supported models).\n"
+        + f"[default.embedding.tiers.default]\nmodel_ref = {_toml_scalar(embedding_ref)}\n\n"
+        + f"[default.rerank.tiers.default]\nmodel_ref = {_toml_scalar(tiers['rerank'])}\n\n"
+        "# Search-workflow inference phase; pinned to the standard chat tier's model.\n"
         f"[default.llm.phase_defaults]\nsearch = {_toml_scalar(tiers['standard'])}"
     )
     return "\n\n".join(parts) + "\n"
@@ -627,27 +664,6 @@ class BaseSetupWizard:
 
         return api_key
 
-    def _get_gemini_api_key(self) -> str:
-        """The Gemini API key backing the default catalog's `gemini-api-key` ref; required when Nexus is enabled."""
-        console.print()
-        console.print("  [bold]Gemini API Key[/]")
-        console.print("  [dim]Nexus uses Gemini for curation and the default inference models.[/]")
-        console.print("  [dim]Get a key at aistudio.google.com/apikey[/]")
-        console.print()
-
-        for env_var in ("PINECONE_GEMINI_API_KEY", "GEMINI_API_KEY"):
-            env_key = os.environ.get(env_var)
-            if env_key:
-                use_env = self._prompt(f"Found {env_var} in environment. Use it? (Y/n)", "Y")
-                if use_env.lower() in ("y", "yes", ""):
-                    return env_key
-
-        while True:
-            gemini_key = self._prompt("Enter your Gemini API key", password=True).strip()
-            if gemini_key:
-                return gemini_key
-            console.print("  [red]Gemini API key is required for Nexus.[/]")
-
     def _validate_api_key(self, api_key: str) -> bool:
         console.print()
         console.print(f"  {self._step('Validating API Key')}")
@@ -737,6 +753,30 @@ class BaseSetupWizard:
             except ValueError:
                 console.print("  [red]Enter a whole number.[/]")
 
+    def _prompt_optional_int(self, message: str) -> int | None:
+        """Prompt for an integer that may be skipped (Enter -> None)."""
+        while True:
+            raw = self._prompt(message, "").strip()
+            if not raw:
+                return None
+            try:
+                return int(raw)
+            except ValueError:
+                console.print("  [red]Enter a whole number, or press Enter to skip.[/]")
+
+    def _prompt_required(self, message: str) -> str:
+        """Prompt for a value the proxy schema requires to be a non-empty string."""
+        while True:
+            value = self._prompt(message).strip()
+            if value:
+                return value
+            console.print("  [red]This field is required.[/]")
+
+    def _prompt_bool(self, message: str, default: bool = False) -> bool:
+        suffix = "(Y/n)" if default else "(y/N)"
+        yes = self._prompt(f"{message} {suffix}", "Y" if default else "N").strip().lower()
+        return yes in ("y", "yes") or (default and yes == "")
+
     def _choose_from(self, message: str, options: list[str]) -> str:
         """Prompt the user to pick one id from `options` (defaults to the first)."""
         console.print(f"  [dim]Available: {', '.join(options)}[/]")
@@ -746,34 +786,43 @@ class BaseSetupWizard:
                 return choice
             console.print(f"  [red]Pick one of: {', '.join(options)}[/]")
 
+    def _show_default_models(self) -> None:
+        """Print the default catalog so the operator sees what they're accepting."""
+        console.print("  [dim]Default inference catalog (edit the generated TOML to change):[/]")
+        console.print("  [dim]  chat  lite     -> gemini-3.1-flash-lite[/]")
+        console.print("  [dim]  chat  standard -> gemini-3.5-flash[/]")
+        console.print("  [dim]  chat  pro      -> gemini-3.1-pro-preview[/]")
+        console.print(f"  [dim]  embedding      -> {DEFAULT_EMBEDDING_MODEL_ID} (pinecone)[/]")
+        console.print("  [dim]  rerank         -> bge-reranker-v2-m3 (pinecone)[/]")
+        console.print("  [dim]  provider keys  -> gemini-api-key[/]")
+
     def _collect_inference_models(self) -> str | None:
         """Guided catalog entry + tier selection -> routing TOML.
 
         Returns None to fall back to the default (Gemini + Pinecone) template.
-        The clean-slate sentinel is injected later by the Nexus component, so the
-        operator only ever deals with models and tiers here.
+        This TOML is BYOC's only routing layer (the managed profile is omitted),
+        so the operator defines the whole catalog -- chat, embedding, and rerank.
         """
         console.print()
         console.print(
-            "  [dim]Define the chat + rerank models this deployment serves, or use"
-            " the default Gemini + Pinecone set. The embedding model is fixed"
-            f" ({LOCKED_EMBEDDING_MODEL_ID}) and configured automatically.[/]"
+            "  [dim]Define the chat, embedding, and rerank models this deployment"
+            " serves, or accept the default Gemini + Pinecone set below.[/]"
         )
+        self._show_default_models()
         if self._prompt("Customize inference models? (y/N)", "N").strip().lower() not in (
             "y",
             "yes",
         ):
             return None
 
-        while True:
-            llm = self._collect_surface_models("llm")
-            if len(llm) >= len(LLM_MODEL_TIERS):
-                break
-            console.print(
-                f"  [red]At least {len(LLM_MODEL_TIERS)} chat models are required:"
-                f" {'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model."
-                " Add more.[/]"
-            )
+        # llm needs >= len(tiers) distinct models (lite/standard/pro map to
+        # distinct ids); rerank needs >= 1. Embedding is optional (minimum 0):
+        # add none to keep the shipped default. Minimums are enforced inside the
+        # collection loop so partially-entered catalogs are never discarded.
+        llm = self._collect_surface_models("llm", minimum=len(LLM_MODEL_TIERS))
+        embedding = self._collect_surface_models(
+            "embedding", minimum=0, keep_default=DEFAULT_EMBEDDING_MODEL_ID
+        )
         rerank = self._collect_surface_models("rerank")
 
         console.print()
@@ -786,30 +835,64 @@ class BaseSetupWizard:
                 f"  [red]{'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model."
                 " Please pick again.[/]"
             )
+        # Map the embedding tier only when the operator defined embedding models;
+        # otherwise build_inference_models_toml fills in the default model + tier.
+        if embedding:
+            tiers["embedding"] = self._choose_from("Embedding model", list(embedding))
         tiers["rerank"] = self._choose_from("Rerank model", list(rerank))
-        return build_inference_models_toml(llm, rerank, tiers)
+        return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding or None)
 
-    def _collect_surface_models(self, surface: str) -> dict[str, dict]:
-        """Loop collecting >=1 model for one surface (llm / rerank)."""
+    def _collect_surface_models(
+        self, surface: str, minimum: int = 1, keep_default: str | None = None
+    ) -> dict[str, dict]:
+        """Loop collecting >= ``minimum`` distinct models for one surface.
+
+        Accumulated models are kept for the whole loop: the operator can only
+        stop once ``minimum`` have been added, so a partially-entered catalog is
+        never discarded (and the step counter is untouched -- this is a sub-prompt
+        of the Nexus step, not a top-level step). ``minimum=0`` makes the surface
+        optional -- the first prompt defaults to "no" and ``keep_default`` names
+        the shipped model used when the operator adds none.
+        """
         console.print()
-        console.print(f"  {self._step(f'{surface.title()} models')}")
+        console.print(f"  [{BLUE}]{surface.title()} models[/]")
+        if minimum == 0:
+            console.print(
+                f"  [dim]Optional — answer n to keep the shipped default"
+                f"{f' ({keep_default})' if keep_default else ''}.[/]"
+            )
+        collectors = {
+            "llm": self._collect_llm_model,
+            "embedding": self._collect_embedding_model,
+            "rerank": self._collect_rerank_model,
+        }
         models: dict[str, dict] = {}
         while True:
             verb = "another" if models else "a"
-            ask = self._prompt(f"Add {verb} {surface} model? (Y/n)", "Y").strip().lower()
-            if ask not in ("y", "yes", ""):
-                if models:
+            # Optional surface with nothing added yet defaults to "no", so pressing
+            # Enter keeps the default instead of forcing a model entry.
+            prompt_default = "N" if (minimum == 0 and not models) else "Y"
+            ask = self._prompt(f"Add {verb} {surface} model? (Y/n)", prompt_default).strip().lower()
+            if ask not in ("y", "yes"):
+                if len(models) >= minimum:
                     return models
-                console.print(f"  [red]At least one {surface} model is required.[/]")
+                remaining = minimum - len(models)
+                console.print(
+                    f"  [red]At least {minimum} {surface} model"
+                    f"{'s' if minimum != 1 else ''} required"
+                    f" -- add {remaining} more.[/]"
+                )
                 continue
             model_id = self._prompt("  Model id (catalog key, e.g. my-flash)").strip()
             if not model_id:
                 console.print("  [red]Model id is required.[/]")
                 continue
-            if surface == "llm":
-                models[model_id] = self._collect_llm_model()
-            else:
-                models[model_id] = self._collect_rerank_model()
+            if model_id in models:
+                console.print(
+                    f"  [red]'{model_id}' already added; each model needs a distinct id.[/]"
+                )
+                continue
+            models[model_id] = collectors[surface]()
 
     def _collect_llm_model(self) -> dict:
         console.print(
@@ -822,36 +905,117 @@ class BaseSetupWizard:
                 "  [dim]model must match LiteLLM EXACTLY (e.g. gemini/gemini-2.5-flash,"
                 " anthropic/claude-...). See https://models.litellm.ai/[/]"
             )
+        else:
+            console.print(
+                "  [dim]model is the id your OpenAI-compatible endpoint expects in the"
+                " request body (e.g. gpt-4o, or a self-hosted model name).[/]"
+            )
+        # Required by the proxy schema: model, label, provider (all non-empty).
         fields: dict = {
             "api_style": api_style,
-            "model": self._prompt("  model").strip(),
-            "label": self._prompt("  label (shown in console)").strip(),
-            "provider": self._prompt("  provider tag (gemini / claude / openai / ...)").strip(),
-            "api_key_ref": self._prompt(
-                "  api_key_ref (provider key env var, e.g. gemini-api-key)"
-            ).strip(),
-            "max_retries": self._prompt_int("  max_retries", 2),
+            "model": self._prompt_required("  model"),
+            "label": self._prompt_required("  label (shown in console)"),
+            "provider": self._prompt_required("  provider tag (gemini / claude / openai / ...)"),
         }
-        if api_style == "openai":
-            # base_url + token budgets are required for openai-compat (no LiteLLM
-            # registry to infer them from).
-            fields["base_url"] = self._prompt("  base_url (required)").strip()
-            fields["context_window"] = self._prompt_int("  context_window (required)")
-            fields["max_output_tokens"] = self._prompt_int("  max_output_tokens (required)")
+        # api_key_ref is optional in the schema but every chat model routed to a
+        # tier needs a resolvable key, so prompt for it (blank => omitted).
+        api_key_ref = self._prompt(
+            "  api_key_ref (provider key env var, e.g. gemini-api-key)"
+        ).strip()
+        if api_key_ref:
+            fields["api_key_ref"] = api_key_ref
+        # vision: operator-pinned capability flag (model accepts image blocks).
+        if self._prompt_bool("  vision (model accepts image inputs)?", default=False):
+            fields["vision"] = True
+        fields["max_retries"] = self._prompt_int(
+            "  max_retries (retries on a failed upstream call)", 2
+        )
+        # base_url: needed to reach a non-OpenAI endpoint; optional otherwise
+        # (openai without it hits OpenAI's default host, litellm uses its registry).
+        base_url_hint = (
+            "  base_url (endpoint URL; Enter to use OpenAI's default host)"
+            if api_style == "openai"
+            else "  base_url (endpoint URL; Enter for LiteLLM's default endpoint)"
+        )
+        base_url = self._prompt(base_url_hint, "").strip()
+        if base_url:
+            fields["base_url"] = base_url
+        # api_version: forwarded to LiteLLM's `api_version` kwarg, so it applies
+        # only to litellm-style models (some providers require it); omitted when blank.
+        if api_style == "litellm":
+            api_version = self._prompt(
+                "  api_version (LiteLLM api_version kwarg; needed by some providers; Enter to skip)",
+                "",
+            ).strip()
+            if api_version:
+                fields["api_version"] = api_version
+        # context_window / max_output_tokens are optional token budgets (the proxy
+        # falls back to the LiteLLM registry / provider defaults when omitted).
+        context_window = self._prompt_optional_int(
+            "  context_window (model's total input token budget; Enter to skip)"
+        )
+        if context_window is not None:
+            fields["context_window"] = context_window
+        max_output_tokens = self._prompt_optional_int(
+            "  max_output_tokens (max tokens generated per response; Enter to skip)"
+        )
+        if max_output_tokens is not None:
+            fields["max_output_tokens"] = max_output_tokens
+        return fields
+
+    def _collect_embedding_model(self) -> dict:
+        console.print(
+            "  [dim]api_style: 'pinecone' (Pinecone-hosted, key supplied per request)"
+            " or 'litellm'.[/]"
+        )
+        console.print(
+            "  [yellow]Keep any embedding model you have previously used as the default"
+            " in the catalog[/][dim] -- indexes built on it need it to stay resolvable.[/]"
+        )
+        api_style = self._choose_from("  api_style", ["pinecone", "litellm"])
+        if api_style == "litellm":
+            console.print(
+                "  [dim]model must match LiteLLM EXACTLY (e.g. voyage/voyage-3-large,"
+                " cohere/embed-v4.0). See https://models.litellm.ai/[/]"
+            )
         else:
+            console.print("  [dim]model is a Pinecone-hosted embedding model id.[/]")
+        fields: dict = {"api_style": api_style, "model": self._prompt_required("  model")}
+        # dimension is required: the model's output vector width, read by the API
+        # to provision an index of the matching size (nexus#1234). It's fixed by
+        # the model (e.g. multilingual-e5-large is 1024).
+        fields["dimension"] = self._prompt_int("  dimension (output vector width, e.g. 1024)")
+        if api_style == "litellm":
+            # api_key_ref is forbidden for pinecone (caller-supplied per request);
+            # required in practice for litellm.
+            api_key_ref = self._prompt("  api_key_ref (provider key env var)").strip()
+            if api_key_ref:
+                fields["api_key_ref"] = api_key_ref
             base_url = self._prompt(
-                "  base_url (optional, Enter for LiteLLM's default endpoint)", ""
+                "  base_url (endpoint URL; Enter for LiteLLM's default endpoint)", ""
             ).strip()
             if base_url:
                 fields["base_url"] = base_url
-            cw = self._prompt(
-                "  context_window (optional, Enter to let LiteLLM decide)", ""
-            ).strip()
-            if cw:
-                fields["context_window"] = int(cw)
-            mot = self._prompt("  max_output_tokens (optional, Enter to skip)", "").strip()
-            if mot:
-                fields["max_output_tokens"] = int(mot)
+        fields["max_retries"] = self._prompt_int(
+            "  max_retries (retries on a failed upstream call)", 2
+        )
+        fields["max_input_chars"] = self._prompt_int(
+            "  max_input_chars (max characters per input item)", 1000
+        )
+        fields["max_batch_size"] = self._prompt_int(
+            "  max_batch_size (max items per embed call)", 96
+        )
+        # api_version: valid for both styles, different meaning. litellm =>
+        # forwarded as the `api_version` kwarg (some providers require it);
+        # pinecone => sets the X-Pinecone-API-Version request header.
+        api_version_hint = (
+            "  api_version (LiteLLM api_version kwarg; needed by some providers; Enter to skip)"
+            if api_style == "litellm"
+            else "  api_version (X-Pinecone-API-Version request header; Enter to skip)"
+        )
+        api_version = self._prompt(api_version_hint, "").strip()
+        if api_version:
+            fields["api_version"] = api_version
         return fields
 
     def _collect_rerank_model(self) -> dict:
@@ -860,39 +1024,77 @@ class BaseSetupWizard:
             " or 'litellm'.[/]"
         )
         api_style = self._choose_from("  api_style", ["pinecone", "litellm"])
-        fields: dict = {"api_style": api_style, "model": self._prompt("  model").strip()}
         if api_style == "litellm":
-            fields["api_key_ref"] = self._prompt("  api_key_ref (provider key env var)").strip()
+            console.print(
+                "  [dim]model must match LiteLLM EXACTLY (e.g. cohere/rerank-v3.5)."
+                " See https://models.litellm.ai/[/]"
+            )
+        else:
+            console.print("  [dim]model is a Pinecone-hosted rerank model id.[/]")
+        fields: dict = {"api_style": api_style, "model": self._prompt_required("  model")}
+        if api_style == "litellm":
+            # api_key_ref is forbidden for pinecone (caller-supplied per request);
+            # required in practice for litellm.
+            api_key_ref = self._prompt("  api_key_ref (provider key env var)").strip()
+            if api_key_ref:
+                fields["api_key_ref"] = api_key_ref
             base_url = self._prompt(
-                "  base_url (optional, Enter for LiteLLM's default endpoint)", ""
+                "  base_url (endpoint URL; Enter for LiteLLM's default endpoint)", ""
             ).strip()
             if base_url:
                 fields["base_url"] = base_url
-        fields["max_retries"] = self._prompt_int("  max_retries", 2)
-        fields["max_query_chars"] = self._prompt_int("  max_query_chars", 1000)
-        fields["max_doc_chars"] = self._prompt_int("  max_doc_chars", 800)
-        fields["max_docs_per_request"] = self._prompt_int("  max_docs_per_request", 100)
+        fields["max_retries"] = self._prompt_int(
+            "  max_retries (retries on a failed upstream call)", 2
+        )
+        fields["max_query_chars"] = self._prompt_int(
+            "  max_query_chars (max characters in the query)", 1000
+        )
+        fields["max_doc_chars"] = self._prompt_int(
+            "  max_doc_chars (max characters per document)", 800
+        )
+        fields["max_docs_per_request"] = self._prompt_int(
+            "  max_docs_per_request (max documents per rerank call)", 100
+        )
+        # api_version: pinecone-only -- sets the X-Pinecone-API-Version request
+        # header. The proxy rejects it on litellm rerank models (litellm.arerank
+        # has no api_version parameter), so it is only prompted for pinecone.
+        if api_style == "pinecone":
+            api_version = self._prompt(
+                "  api_version (X-Pinecone-API-Version request header; Enter to skip)", ""
+            ).strip()
+            if api_version:
+                fields["api_version"] = api_version
         return fields
 
     def _headless_inference_models_toml(self) -> str | None:
         """Build the routing TOML from env vars (headless mode), or None to use
         the default template when none are set.
 
-        Only chat + rerank are operator-configurable (the embedding model is
-        fixed platform-wide and injected automatically). Env contract (JSON object
-        is id -> model-definition, fields exactly as in nexus-inference-proxy's
-        [<surface>_models.<id>] tables):
-          PINECONE_NEXUS_LLM_MODELS / _RERANK_MODELS   (JSON)
-          PINECONE_NEXUS_LLM_LITE / _STANDARD / _PRO    (model id)
-          PINECONE_NEXUS_RERANK_MODEL                   (model id)
+        Chat + rerank are required to customize; embedding is optional and falls
+        back to the shipped default when its env vars are absent. Env contract
+        (JSON object is id -> model-definition, fields exactly as in
+        nexus-inference-proxy's [<surface>_models.<id>] tables):
+          PINECONE_NEXUS_LLM_MODELS / _RERANK_MODELS         (JSON, required)
+          PINECONE_NEXUS_LLM_LITE / _STANDARD / _PRO          (model id, required)
+          PINECONE_NEXUS_RERANK_MODEL                         (model id, required)
+          PINECONE_NEXUS_EMBEDDING_MODELS                     (JSON, optional)
+          PINECONE_NEXUS_EMBEDDING_MODEL                      (model id, optional)
+
+        Embedding is all-or-nothing: set BOTH the catalog JSON and the tier id to
+        customize it, or NEITHER to keep the shipped default. Setting only one
+        raises (rather than silently deploying the default).
+
+        Each embedding model definition must include a ``dimension`` (its output
+        vector width) -- required by the proxy since nexus#1234.
         """
         if not os.environ.get("PINECONE_NEXUS_LLM_MODELS"):
             console.print(
                 "  [dim]Inference models: using the default Gemini + Pinecone catalog."
                 " To customize, set PINECONE_NEXUS_LLM_MODELS / _RERANK_MODELS"
                 " (JSON id->definition) plus the tier ids PINECONE_NEXUS_LLM_LITE /"
-                " _STANDARD / _PRO and PINECONE_NEXUS_RERANK_MODEL. The embedding"
-                f" model is fixed ({LOCKED_EMBEDDING_MODEL_ID}).[/]"
+                " _STANDARD / _PRO and PINECONE_NEXUS_RERANK_MODEL. Embedding is"
+                " optional (PINECONE_NEXUS_EMBEDDING_MODELS / _EMBEDDING_MODEL);"
+                f" it defaults to {DEFAULT_EMBEDDING_MODEL_ID}.[/]"
             )
             return None
         try:
@@ -908,7 +1110,33 @@ class BaseSetupWizard:
             ) from exc
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON in PINECONE_NEXUS_*_MODELS: {exc}") from exc
-        return build_inference_models_toml(llm, rerank, tiers)
+
+        # Embedding is optional: set BOTH the catalog JSON and the tier id, or
+        # NEITHER (falls back to the shipped default inside build_...). Setting only
+        # one is a misconfiguration -- fail loudly rather than silently deploying
+        # the default. (The reverse asymmetry -- catalog set, tier id missing -- is
+        # caught by the KeyError below.)
+        embedding = None
+        emb_catalog = os.environ.get("PINECONE_NEXUS_EMBEDDING_MODELS")
+        emb_tier = os.environ.get("PINECONE_NEXUS_EMBEDDING_MODEL")
+        if emb_tier and not emb_catalog:
+            raise ValueError(
+                "PINECONE_NEXUS_EMBEDDING_MODEL is set but PINECONE_NEXUS_EMBEDDING_MODELS "
+                "(the catalog JSON) is not -- set both to customize embedding, or neither to "
+                "keep the default."
+            )
+        if emb_catalog:
+            try:
+                embedding = json.loads(emb_catalog)
+                tiers["embedding"] = os.environ["PINECONE_NEXUS_EMBEDDING_MODEL"]
+            except KeyError as exc:
+                raise ValueError(
+                    "PINECONE_NEXUS_EMBEDDING_MODELS is set but "
+                    "PINECONE_NEXUS_EMBEDDING_MODEL (the tier id) is missing."
+                ) from exc
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid JSON in PINECONE_NEXUS_EMBEDDING_MODELS: {exc}") from exc
+        return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding)
 
     def _get_project_name(self) -> str:
         # already collected in bootstrap via --project-name; don't reprompt or consume a step
@@ -2185,14 +2413,7 @@ class GCPSetupWizard(BaseSetupWizard):
                 return False
             nexus: NexusWizardConfig = {
                 "enabled": True,
-                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
-                "image_registry": os.environ.get(
-                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_IMAGE_REGISTRY
-                ),
-                "inference_base": os.environ.get(
-                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
-                ),
                 "byoc_project_id": byoc_project_id,
                 # Optional override; blank => package derives `pc-nexus-{cell}`.
                 "storage_bucket_prefix": storage_bucket_prefix,
@@ -2364,10 +2585,12 @@ class GCPSetupWizard(BaseSetupWizard):
         task 2.7). Default is a DB-only install (nexus_enabled=False) so the
         generated project is byte-for-byte unchanged unless Nexus is requested.
 
-        For a "Nexus BYOC" install the wizard collects the BYOC env id
-        (PINECONE_BYOC_ENV), the Nexus image tag (nexus-version), and the
-        inference base (INFERENCE_BASE). The inference key is not prompted: it
-        defaults to the minted deployment key per §10.
+        For a "Nexus BYOC" install the wizard collects the gCPS project UUID and
+        the Nexus image tag (nexus-version).
+        The BYOC env is not prompted -- Nexus always targets the env this deploy
+        creates. The image registry is not prompted either -- it uses the package
+        default. The inference key is not prompted: it defaults to the minted
+        deployment key per §10.
         """
         console.print()
         console.print(f"  {self._step('Nexus')}")
@@ -2377,14 +2600,6 @@ class GCPSetupWizard(BaseSetupWizard):
         response = self._prompt("Enable Nexus? (Y/n)", "Y")
         if response.strip().lower() in ("n", "no"):
             return {"enabled": False}
-
-        console.print()
-        console.print(
-            "  [dim]The `.byoc` deployment environment id Nexus targets for index CRUD.[/]"
-        )
-        byoc_env = self._prompt(
-            "Enter PINECONE_BYOC_ENV (or press Enter to use the minted env)", ""
-        )
 
         console.print()
         console.print("  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]")
@@ -2420,18 +2635,6 @@ class GCPSetupWizard(BaseSetupWizard):
 
         nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
 
-        console.print()
-        console.print(
-            "  [dim]Container registry for the Nexus images (the `nexus` repo, co-located on the DB registry host).[/]"
-        )
-        image_registry = self._prompt("Enter nexus image registry", NEXUS_IMAGE_REGISTRY)
-
-        console.print()
-        console.print(
-            "  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]"
-        )
-        inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
-
         # Guided model catalog + tier selection. None => default template is
         # written and the operator can edit it before `pulumi up`.
         inference_models_toml = self._collect_inference_models()
@@ -2443,20 +2646,13 @@ class GCPSetupWizard(BaseSetupWizard):
                 f"{NEXUS_INFERENCE_MODELS_FILENAME}[dim] in the generated project to change them.[/]"
             )
 
-        # Provider-key secrets. The default catalog (and the common custom case)
-        # uses a single `gemini-api-key` ref; collect it here so the wizard sets
-        # `nexus-gemini-api-key` and `nexus-provider-keys.gemini-api-key` itself.
-        gemini_api_key = self._get_gemini_api_key()
-
-        # Multi-provider edge case: a customized catalog may reference api_key_refs
-        # other than `gemini-api-key`. Prompt (hidden) for each distinct extra ref
-        # so its `nexus-provider-keys.<ref>` secret is set too; if the operator
-        # skips one, keep printing the manual instruction for that ref.
+        # Provider-key secrets: one prompt per distinct api_key_ref the catalog
+        # references, all handled uniformly -- no ref (not even `gemini-api-key`)
+        # is special-cased. Pinecone-style models carry no api_key_ref, so they
+        # contribute nothing here. A skipped key prints the exact command to set
+        # it before `pulumi up` so nothing is missed -- no separate recap needed.
         provider_keys: dict[str, str] = {}
-        extra_refs = sorted(
-            ref for ref in _api_key_refs_from_toml(inference_models_toml) if ref != "gemini-api-key"
-        )
-        for ref in extra_refs:
+        for ref in sorted(_api_key_refs_from_toml(inference_models_toml)):
             console.print()
             console.print(f"  [dim]Provider key for the '{ref}' api_key_ref.[/]")
             key = self._prompt(f"Enter the {ref} provider key", password=True).strip()
@@ -2470,14 +2666,10 @@ class GCPSetupWizard(BaseSetupWizard):
 
         return {
             "enabled": True,
-            "byoc_env": byoc_env.strip(),
             "byoc_project_id": byoc_project_id,
             "storage_bucket_prefix": storage_bucket_prefix,
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
-            "image_registry": image_registry.strip() or NEXUS_IMAGE_REGISTRY,
-            "inference_base": inference_base.strip() or "https://api.pinecone.io",
             "inference_models_toml": inference_models_toml,
-            "gemini_api_key": gemini_api_key,
             "provider_keys": provider_keys,
         }
 
@@ -2579,9 +2771,6 @@ cluster = PineconeGCPCluster(
         data_plane_backend=_data_plane_backend,
         nexus=NexusConfig(
             version=config.get("nexus-version"),
-            byoc_env=config.get("nexus-byoc-env"),
-            image_registry=config.get("nexus-image-registry"),
-            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
             byoc_project_id=config.get("nexus-byoc-project-id"),
             byoc_vault_id=config.get("nexus-byoc-vault-id"),
             byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
@@ -2681,29 +2870,18 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
             config_content += (
                 f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
             )
-            config_content += (
-                f"  {project_name}:nexus-image-registry: "
-                f"{nexus.get('image_registry', NEXUS_IMAGE_REGISTRY)}\n"
-            )
-            if nexus.get("byoc_env"):
-                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
             if nexus.get("byoc_project_id"):
                 config_content += (
                     f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
                 )
-            config_content += (
-                f"  {project_name}:nexus-inference-base: "
-                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
-            )
             if nexus.get("storage_bucket_prefix"):
                 config_content += (
                     f"  {project_name}:nexus-storage-bucket-prefix: "
                     f"{nexus['storage_bucket_prefix']}\n"
                 )
-            # nexus-gemini-api-key / nexus-provider-keys.* are secrets; the
-            # wizard sets them itself in the secret-setting step below (mirroring
-            # pinecone-api-key), so they are intentionally omitted from this
-            # plaintext stack config.
+            # nexus-provider-keys.* are secrets; the wizard sets them itself in
+            # the secret-setting step below (mirroring pinecone-api-key), so they
+            # are intentionally omitted from this plaintext stack config.
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
@@ -2792,14 +2970,10 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
 
         console.print("  [green]✓[/] API key stored securely")
 
-        # nexus-gemini-api-key is read by NexusConfig; nexus-provider-keys.<ref>
-        # by the inference proxy (default catalog's api_key_ref is `gemini-api-key`,
-        # so both are set from the same key).
+        # nexus-provider-keys.<ref> secrets are read by the inference proxy, one
+        # per api_key_ref the catalog references (no ref is special-cased).
         if nexus.get("enabled"):
-            gemini_api_key = nexus.get("gemini_api_key")
             provider_keys = dict(nexus.get("provider_keys") or {})
-            if gemini_api_key:
-                provider_keys.setdefault("gemini-api-key", gemini_api_key)
 
             def _set_secret(config_args: list[str], value: str, label: str) -> None:
                 with Status(f"  [dim]Storing {label}...[/]", console=console, spinner="dots"):
@@ -2826,8 +3000,6 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
                 else:
                     console.print(f"  [green]✓[/] {label} stored securely")
 
-            if gemini_api_key:
-                _set_secret(["--secret", "nexus-gemini-api-key"], gemini_api_key, "Gemini API key")
             for ref, value in provider_keys.items():
                 _set_secret(
                     ["--path", "--secret", f"nexus-provider-keys.{ref}"],
@@ -3395,14 +3567,7 @@ class AzureSetupWizard(BaseSetupWizard):
                 return False
             nexus: NexusWizardConfig = {
                 "enabled": True,
-                "byoc_env": os.environ.get("PINECONE_BYOC_ENV", ""),
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
-                "image_registry": os.environ.get(
-                    "PINECONE_NEXUS_IMAGE_REGISTRY", NEXUS_AZURE_IMAGE_REGISTRY
-                ),
-                "inference_base": os.environ.get(
-                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
-                ),
                 "byoc_project_id": byoc_project_id,
                 # Opt-in blob backend: unset = fs (PVC); set = provision blob containers.
                 "storage_bucket_prefix": os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""),
@@ -3626,9 +3791,6 @@ cluster = PineconeAzureCluster(
         tags=config.get_object("tags"),
         nexus=NexusConfig(
             version=config.get("nexus-version"),
-            byoc_env=config.get("nexus-byoc-env"),
-            image_registry=config.get("nexus-image-registry"),
-            gemini_api_key=config.get_secret("nexus-gemini-api-key"),
             byoc_project_id=config.get("nexus-byoc-project-id"),
             byoc_vault_id=config.get("nexus-byoc-vault-id"),
             byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
@@ -3719,27 +3881,17 @@ dependencies = ["pulumi-pinecone-nexus-byoc[azure]"]
             config_content += (
                 f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
             )
-            config_content += (
-                f"  {project_name}:nexus-image-registry: "
-                f"{nexus.get('image_registry', NEXUS_AZURE_IMAGE_REGISTRY)}\n"
-            )
-            if nexus.get("byoc_env"):
-                config_content += f"  {project_name}:nexus-byoc-env: {nexus['byoc_env']}\n"
             if nexus.get("byoc_project_id"):
                 config_content += (
                     f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
                 )
-            config_content += (
-                f"  {project_name}:nexus-inference-base: "
-                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
-            )
             if nexus.get("storage_bucket_prefix"):
                 config_content += (
                     f"  {project_name}:nexus-storage-bucket-prefix: "
                     f"{nexus['storage_bucket_prefix']}\n"
                 )
-            # nexus-gemini-api-key is a secret; set it out-of-band:
-            #   pulumi config set --secret <project>:nexus-gemini-api-key <key>
+            # nexus-provider-keys.<ref> are secrets; set each out-of-band:
+            #   pulumi config set --path --secret nexus-provider-keys.<ref> <key>
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
