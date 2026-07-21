@@ -816,11 +816,13 @@ class BaseSetupWizard:
             return None
 
         # llm needs >= len(tiers) distinct models (lite/standard/pro map to
-        # distinct ids); embedding/rerank need >= 1. The minimum is enforced
-        # inside the collection loop so partially-entered catalogs are never
-        # discarded.
+        # distinct ids); rerank needs >= 1. Embedding is optional (minimum 0):
+        # add none to keep the shipped default. Minimums are enforced inside the
+        # collection loop so partially-entered catalogs are never discarded.
         llm = self._collect_surface_models("llm", minimum=len(LLM_MODEL_TIERS))
-        embedding = self._collect_surface_models("embedding")
+        embedding = self._collect_surface_models(
+            "embedding", minimum=0, keep_default=DEFAULT_EMBEDDING_MODEL_ID
+        )
         rerank = self._collect_surface_models("rerank")
 
         console.print()
@@ -833,20 +835,32 @@ class BaseSetupWizard:
                 f"  [red]{'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model."
                 " Please pick again.[/]"
             )
-        tiers["embedding"] = self._choose_from("Embedding model", list(embedding))
+        # Map the embedding tier only when the operator defined embedding models;
+        # otherwise build_inference_models_toml fills in the default model + tier.
+        if embedding:
+            tiers["embedding"] = self._choose_from("Embedding model", list(embedding))
         tiers["rerank"] = self._choose_from("Rerank model", list(rerank))
-        return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding)
+        return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding or None)
 
-    def _collect_surface_models(self, surface: str, minimum: int = 1) -> dict[str, dict]:
+    def _collect_surface_models(
+        self, surface: str, minimum: int = 1, keep_default: str | None = None
+    ) -> dict[str, dict]:
         """Loop collecting >= ``minimum`` distinct models for one surface.
 
         Accumulated models are kept for the whole loop: the operator can only
         stop once ``minimum`` have been added, so a partially-entered catalog is
         never discarded (and the step counter is untouched -- this is a sub-prompt
-        of the Nexus step, not a top-level step).
+        of the Nexus step, not a top-level step). ``minimum=0`` makes the surface
+        optional -- the first prompt defaults to "no" and ``keep_default`` names
+        the shipped model used when the operator adds none.
         """
         console.print()
         console.print(f"  [{BLUE}]{surface.title()} models[/]")
+        if minimum == 0:
+            console.print(
+                f"  [dim]Optional — answer n to keep the shipped default"
+                f"{f' ({keep_default})' if keep_default else ''}.[/]"
+            )
         collectors = {
             "llm": self._collect_llm_model,
             "embedding": self._collect_embedding_model,
@@ -855,8 +869,11 @@ class BaseSetupWizard:
         models: dict[str, dict] = {}
         while True:
             verb = "another" if models else "a"
-            ask = self._prompt(f"Add {verb} {surface} model? (Y/n)", "Y").strip().lower()
-            if ask not in ("y", "yes", ""):
+            # Optional surface with nothing added yet defaults to "no", so pressing
+            # Enter keeps the default instead of forcing a model entry.
+            prompt_default = "N" if (minimum == 0 and not models) else "Y"
+            ask = self._prompt(f"Add {verb} {surface} model? (Y/n)", prompt_default).strip().lower()
+            if ask not in ("y", "yes"):
                 if len(models) >= minimum:
                     return models
                 remaining = minimum - len(models)
@@ -1063,6 +1080,10 @@ class BaseSetupWizard:
           PINECONE_NEXUS_EMBEDDING_MODELS                     (JSON, optional)
           PINECONE_NEXUS_EMBEDDING_MODEL                      (model id, optional)
 
+        Embedding is all-or-nothing: set BOTH the catalog JSON and the tier id to
+        customize it, or NEITHER to keep the shipped default. Setting only one
+        raises (rather than silently deploying the default).
+
         Each embedding model definition must include a ``dimension`` (its output
         vector width) -- required by the proxy since nexus#1234.
         """
@@ -1090,12 +1111,23 @@ class BaseSetupWizard:
         except json.JSONDecodeError as exc:
             raise ValueError(f"invalid JSON in PINECONE_NEXUS_*_MODELS: {exc}") from exc
 
-        # Embedding is optional: set both the catalog JSON and the tier id, or
-        # neither (falls back to the shipped default inside build_...).
+        # Embedding is optional: set BOTH the catalog JSON and the tier id, or
+        # NEITHER (falls back to the shipped default inside build_...). Setting only
+        # one is a misconfiguration -- fail loudly rather than silently deploying
+        # the default. (The reverse asymmetry -- catalog set, tier id missing -- is
+        # caught by the KeyError below.)
         embedding = None
-        if os.environ.get("PINECONE_NEXUS_EMBEDDING_MODELS"):
+        emb_catalog = os.environ.get("PINECONE_NEXUS_EMBEDDING_MODELS")
+        emb_tier = os.environ.get("PINECONE_NEXUS_EMBEDDING_MODEL")
+        if emb_tier and not emb_catalog:
+            raise ValueError(
+                "PINECONE_NEXUS_EMBEDDING_MODEL is set but PINECONE_NEXUS_EMBEDDING_MODELS "
+                "(the catalog JSON) is not -- set both to customize embedding, or neither to "
+                "keep the default."
+            )
+        if emb_catalog:
             try:
-                embedding = json.loads(os.environ["PINECONE_NEXUS_EMBEDDING_MODELS"])
+                embedding = json.loads(emb_catalog)
                 tiers["embedding"] = os.environ["PINECONE_NEXUS_EMBEDDING_MODEL"]
             except KeyError as exc:
                 raise ValueError(
