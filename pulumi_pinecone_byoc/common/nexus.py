@@ -62,7 +62,9 @@ NEXUS_KSA_MEMBERS: tuple[tuple[str, str], ...] = (
 )
 
 _DEFAULT_STORAGE_CLASS = "premium-rwo"
-# GKE uses gce-internal; AKS passes None (gateway exposed directly via LoadBalancer).
+# GKE uses gce-internal (an in-VPC ops door onto the gateway); EKS/AKS pass
+# None -- no controller serves a class-less Ingress there, so none is created
+# (the gateway is reached in-cluster via the netstack *.wksp route).
 _DEFAULT_INGRESS_CLASS = "gce-internal"
 
 # Public FoundationDB image. The nexus-fdb chart defaults to the nexus-alpha AR
@@ -208,8 +210,9 @@ class Nexus(pulumi.ComponentResource):
                 (a full UUID overflows it). Sent to CPGW as ``project_info.vault_id``.
             storage_class: StorageClass for Nexus PVCs. Defaults to GKE
                 ``premium-rwo``; AKS passes ``managed-csi``, EKS ``gp3``.
-            ingress_class: Gateway Ingress class annotation. Pass ``None`` to omit
-                (AKS/EKS).
+            ingress_class: Gateway Ingress class. Pass ``None`` (AKS/EKS) to
+                create no gateway Ingress at all -- no controller serves a
+                class-less Ingress on those clusters, so one would be inert.
             blob_storage: Provisioned blob bucket/container names. When set, switches
                 the storage backend to ``blob`` and passes the names into the helm chart.
                 Leave ``None`` to use the local filesystem backend (``fs``).
@@ -530,24 +533,24 @@ class Nexus(pulumi.ComponentResource):
         name: str,
         k8s_provider: pulumi.ProviderResource,
         ingress_class: str | None = _DEFAULT_INGRESS_CLASS,
-    ) -> k8s.networking.v1.Ingress:
+    ) -> k8s.networking.v1.Ingress | None:
         """Expose the Nexus gateway through the existing cluster LB.
 
-        On GKE attaches via the ``gce-internal`` ingress class. On AKS
-        ``ingress_class=None`` omits the annotation (gateway exposed directly
-        via LoadBalancer Services).
+        On GKE attaches via the ``gce-internal`` ingress class. On EKS/AKS
+        ``ingress_class=None`` creates no Ingress: no controller there serves
+        a class-less Ingress, so it would sit inert (the gateway is reached
+        in-cluster -- netstack routes wksp.* hosts to the nexus-gateway
+        Service through the Gloo edge).
         """
+        if ingress_class is None:
+            return None
+
         # This Ingress serves HTTP (allow-http); TLS termination is out of scope
         # for this resource.
-        annotations: dict = {"kubernetes.io/ingress.allow-http": "true"}
-        if ingress_class is not None:
-            annotations["kubernetes.io/ingress.class"] = ingress_class
-        else:
-            # AKS: no controller serves this class-less Ingress (the gateway is
-            # exposed via the cluster LB / Gloo gateway-proxy), so its
-            # .status.loadBalancer is never populated. Skip Pulumi's readiness
-            # await so `pulumi up` doesn't hang waiting for an LB address.
-            annotations["pulumi.com/skipAwait"] = "true"
+        annotations: dict = {
+            "kubernetes.io/ingress.allow-http": "true",
+            "kubernetes.io/ingress.class": ingress_class,
+        }
 
         return k8s.networking.v1.Ingress(
             f"{name}-gateway-ingress",
