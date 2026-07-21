@@ -26,7 +26,7 @@ def nexus_node_pools() -> list[NodePoolConfig]:
     Mirrors the existing DB pool conventions (machine type / autoscaling); the
     labels and taints match the nexus Helm chart's nodeSelector/tolerations so
     only nexus pods schedule onto them. Gated by `nexus_enabled` upstream so
-    DB-only deploys are unaffected.
+    DB-only deploys are unaffected. The pools autoscale across all zones.
     """
     return [
         NodePoolConfig(

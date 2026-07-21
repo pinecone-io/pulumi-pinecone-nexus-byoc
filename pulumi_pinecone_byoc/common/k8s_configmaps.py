@@ -23,6 +23,7 @@ class K8sConfigMaps(pulumi.ComponentResource):
         region: pulumi.Input[str],
         public_access_enabled: pulumi.Input[bool],
         pulumi_outputs: dict[str, pulumi.Input],
+        data_plane_backend: pulumi.Input[str] = "postgres",
         opts: pulumi.ResourceOptions | None = None,
     ):
         super().__init__("pinecone:byoc:K8sConfigMaps", name, None, opts)
@@ -58,6 +59,7 @@ class K8sConfigMaps(pulumi.ComponentResource):
                 "public_access_enabled": pulumi.Output.from_input(public_access_enabled).apply(
                     lambda v: str(v)
                 ),
+                "data_plane_backend": data_plane_backend,
             },
             opts=pulumi.ResourceOptions(
                 parent=self,

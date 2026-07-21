@@ -100,11 +100,8 @@ def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
     return set(_API_KEY_REF_RE.findall(toml_text))
 
 
-PINECONE_VERSION = "main-5d8cdb9"
-
-# Independent of PINECONE_VERSION: DB and Nexus are separate repos with separate
-# CI, so their `main-<sha>` tags don't match — they are not co-tagged.
-NEXUS_VERSION = "main-b8e1eb9"
+PINECONE_VERSION = "main-f80d960"
+NEXUS_VERSION = "main-d13ff4f"
 
 # Nexus images live in their own `nexus` repo, co-located on the registry host;
 # DB/pinetools images stay in the `unstable` repo.
@@ -2564,6 +2561,9 @@ _nexus_enabled = config.get_bool("nexus-enabled")
 # next to this file. Shipped to the proxy as the `byoc` config profile.
 _models_toml_path = pathlib.Path(__file__).parent / "inference-proxy-models.toml"
 _nexus_models_toml = _models_toml_path.read_text() if _models_toml_path.exists() else None
+# Nexus enabled => default the DB data plane to FDB so the two share one cluster (Nexus is an external client); explicit config wins.
+_data_plane_backend = config.get("data-plane-backend") or ("fdb" if _nexus_enabled else "postgres")
+_default_fdb_mode = "external" if _data_plane_backend == "fdb" else "single"
 cluster = PineconeGCPCluster(
     "pinecone-byoc",
     PineconeGCPClusterArgs(
@@ -2576,6 +2576,7 @@ cluster = PineconeGCPCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         labels=config.get_object("labels") or {},
+        data_plane_backend=_data_plane_backend,
         nexus=NexusConfig(
             version=config.get("nexus-version"),
             byoc_env=config.get("nexus-byoc-env"),
@@ -2587,6 +2588,7 @@ cluster = PineconeGCPCluster(
             storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
+            fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
         ) if _nexus_enabled else None,
     ),
 )

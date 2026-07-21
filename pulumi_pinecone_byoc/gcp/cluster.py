@@ -64,7 +64,7 @@ class PineconeGCPClusterArgs:
     project: str
     region: str = "us-central1"
     availability_zones: list[str] = field(
-        default_factory=lambda: ["us-central1-a", "us-central1-b"]
+        default_factory=lambda: ["us-central1-a", "us-central1-b", "us-central1-c"]
     )
 
     # networking
@@ -96,6 +96,7 @@ class PineconeGCPClusterArgs:
     # Base URL of the Pinecone web console (workspace deep links). Override
     # for preprod/internal installs.
     console_url: str = "https://app.pinecone.io"
+    data_plane_backend: str = "postgres"  # "postgres" | "fdb"
 
     # cross-cloud: AWS account for AMP federation
     amp_aws_account_id: str = "713131977538"
@@ -106,6 +107,17 @@ class PineconeGCPClusterArgs:
     # workload identity - K8s service accounts that need GCS access
     writer_k8s_service_accounts: list[str] | None = None
     reader_k8s_service_accounts: list[str] | None = None
+
+    def __post_init__(self):
+        if (
+            self.nexus is not None
+            and self.nexus.fdb_mode == "external"
+            and self.data_plane_backend != "fdb"
+        ):
+            raise ValueError(
+                "nexus.fdb_mode='external' requires data_plane_backend='fdb', got "
+                f"{self.data_plane_backend!r}."
+            )
 
 
 class PineconeGCPCluster(pulumi.ComponentResource):
@@ -209,14 +221,19 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._gke]),
         )
 
-        self._alloydb = AlloyDB(
-            f"{config.resource_prefix}-alloydb",
-            config,
-            self._vpc.network_id,
-            self._vpc.private_ip_range_name,
-            self._vpc.private_connection,
-            self._cell_name,
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vpc]),
+        # fdb cells run on FoundationDB and need no AlloyDB; only the postgres backend provisions it.
+        self._alloydb = (
+            AlloyDB(
+                f"{config.resource_prefix}-alloydb",
+                config,
+                self._vpc.network_id,
+                self._vpc.private_ip_range_name,
+                self._vpc.private_connection,
+                self._cell_name,
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vpc]),
+            )
+            if args.data_plane_backend == "postgres"
+            else None
         )
 
         self._subdomain = self._environment.env_name
@@ -274,8 +291,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             )
             if args.nexus is not None
             else None,
-            control_db=self._alloydb.control_db,
-            system_db=self._alloydb.system_db,
+            control_db=self._alloydb.control_db if self._alloydb is not None else None,
+            system_db=self._alloydb.system_db if self._alloydb is not None else None,
             storage_integration_credentials=(
                 {"key-json": self._gke.service_accounts.storage_integration_key_json}
                 if self._gke.service_accounts.storage_integration_key_json is not None
@@ -318,6 +335,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
 
         pulumi_outputs = {
             "cell_name": self._cell_name,
+            "data_plane_backend": args.data_plane_backend,
             "org_name": self._environment.org_name,
             "cloud": "gcp",
             "region": config.region,
@@ -364,9 +382,10 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             region=config.region,
             public_access_enabled=args.public_access_enabled,
             pulumi_outputs=pulumi_outputs,
+            data_plane_backend=args.data_plane_backend,
             opts=pulumi.ResourceOptions(
                 parent=self,
-                depends_on=[self._gke, self._dns, self._gcs, self._alloydb],
+                depends_on=list(filter(None, [self._gke, self._dns, self._gcs, self._alloydb])),
             ),
         )
 
@@ -456,6 +475,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 # Paired with the cpgw-api-key in the nexus-config secret.
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
+                fdb_mode=nx.fdb_mode,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
@@ -530,8 +550,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 "cluster_endpoint": self._gke.cluster.endpoint,
                 "kubeconfig": self._gke.kubeconfig,
                 "data_bucket": self._gcs.data_bucket.name,
-                "control_db_endpoint": self._alloydb.control_db.endpoint,
-                "system_db_endpoint": self._alloydb.system_db.endpoint,
+                "control_db_endpoint": self._alloydb.control_db.endpoint if self._alloydb else None,
+                "system_db_endpoint": self._alloydb.system_db.endpoint if self._alloydb else None,
                 "environment_id": self._environment.id,
                 "environment_name": self._environment.env_name,
                 "service_account_id": self._service_account.id,
@@ -646,7 +666,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         return self._gcs
 
     @property
-    def alloydb(self) -> AlloyDB:
+    def alloydb(self) -> AlloyDB | None:
         return self._alloydb
 
     @property
