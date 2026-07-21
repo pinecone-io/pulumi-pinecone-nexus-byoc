@@ -95,6 +95,14 @@ class PineconeAWSClusterArgs:
     # tags
     tags: dict[str, str] | None = None
 
+    def __post_init__(self):
+        if self.nexus is not None and self.nexus.fdb_mode == "external":
+            raise ValueError(
+                "nexus.fdb_mode='external' (shared data-plane FDB cluster) is not "
+                "wired on AWS yet; Nexus on AWS runs its own single-pod FDB "
+                "(fdb_mode='single')."
+            )
+
 
 class PineconeAWSCluster(pulumi.ComponentResource):
     def __init__(
