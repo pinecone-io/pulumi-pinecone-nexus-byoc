@@ -576,7 +576,8 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 byoc_vault_id=(
                     nx.byoc_vault_id or self._resource_suffix.apply(lambda s: f"byoc{s}")
                 ),
-                # gp3 via the EBS CSI addon (installed in K8sAddons).
+                # The `gp3` StorageClass created in K8sAddons (EKS ships no gp3
+                # class of its own; the EBS CSI addon only installs the driver).
                 storage_class="gp3",
                 # No gateway Ingress: nothing on EKS consumes one. The gateway is
                 # reached through the netstack *.wksp route via the Gloo edge
@@ -596,6 +597,9 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                         r
                         for r in [
                             self._eks,
+                            # Explicit: the gp3 StorageClass the Nexus PVCs
+                            # reference is created inside K8sAddons.
+                            self._k8s_addons,
                             self._k8s_secrets,
                             self._k8s_configmaps,
                             self._ecr_refresher,
