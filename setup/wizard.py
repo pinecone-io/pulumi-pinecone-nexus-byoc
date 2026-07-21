@@ -41,7 +41,6 @@ class NexusWizardConfig(TypedDict, total=False):
     byoc_project_id: str
     storage_bucket_prefix: str
     nexus_version: str
-    inference_base: str
     inference_models_toml: str | None
     # Provider-key secrets, one per api_key_ref the catalog references (no ref is
     # special-cased): {ref -> value}, each set as `nexus-provider-keys.<ref>`.
@@ -2383,9 +2382,6 @@ class GCPSetupWizard(BaseSetupWizard):
             nexus: NexusWizardConfig = {
                 "enabled": True,
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
-                "inference_base": os.environ.get(
-                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
-                ),
                 "byoc_project_id": byoc_project_id,
                 # Optional override; blank => package derives `pc-nexus-{cell}`.
                 "storage_bucket_prefix": storage_bucket_prefix,
@@ -2557,8 +2553,8 @@ class GCPSetupWizard(BaseSetupWizard):
         task 2.7). Default is a DB-only install (nexus_enabled=False) so the
         generated project is byte-for-byte unchanged unless Nexus is requested.
 
-        For a "Nexus BYOC" install the wizard collects the gCPS project UUID, the
-        Nexus image tag (nexus-version), and the inference base (INFERENCE_BASE).
+        For a "Nexus BYOC" install the wizard collects the gCPS project UUID and
+        the Nexus image tag (nexus-version).
         The BYOC env is not prompted -- Nexus always targets the env this deploy
         creates. The image registry is not prompted either -- it uses the package
         default. The inference key is not prompted: it defaults to the minted
@@ -2607,12 +2603,6 @@ class GCPSetupWizard(BaseSetupWizard):
 
         nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
 
-        console.print()
-        console.print(
-            "  [dim]Managed embed/rerank endpoint (the inference key defaults to the deployment key).[/]"
-        )
-        inference_base = self._prompt("Enter inference base", "https://api.pinecone.io")
-
         # Guided model catalog + tier selection. None => default template is
         # written and the operator can edit it before `pulumi up`.
         inference_models_toml = self._collect_inference_models()
@@ -2647,7 +2637,6 @@ class GCPSetupWizard(BaseSetupWizard):
             "byoc_project_id": byoc_project_id,
             "storage_bucket_prefix": storage_bucket_prefix,
             "nexus_version": nexus_version.strip() or NEXUS_VERSION,
-            "inference_base": inference_base.strip() or "https://api.pinecone.io",
             "inference_models_toml": inference_models_toml,
             "provider_keys": provider_keys,
         }
@@ -2853,10 +2842,6 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
                 config_content += (
                     f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
                 )
-            config_content += (
-                f"  {project_name}:nexus-inference-base: "
-                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
-            )
             if nexus.get("storage_bucket_prefix"):
                 config_content += (
                     f"  {project_name}:nexus-storage-bucket-prefix: "
@@ -3551,9 +3536,6 @@ class AzureSetupWizard(BaseSetupWizard):
             nexus: NexusWizardConfig = {
                 "enabled": True,
                 "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
-                "inference_base": os.environ.get(
-                    "PINECONE_INFERENCE_BASE", "https://api.pinecone.io"
-                ),
                 "byoc_project_id": byoc_project_id,
                 # Opt-in blob backend: unset = fs (PVC); set = provision blob containers.
                 "storage_bucket_prefix": os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX", ""),
@@ -3871,10 +3853,6 @@ dependencies = ["pulumi-pinecone-nexus-byoc[azure]"]
                 config_content += (
                     f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
                 )
-            config_content += (
-                f"  {project_name}:nexus-inference-base: "
-                f"{nexus.get('inference_base', 'https://api.pinecone.io')}\n"
-            )
             if nexus.get("storage_bucket_prefix"):
                 config_content += (
                     f"  {project_name}:nexus-storage-bucket-prefix: "
