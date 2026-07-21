@@ -1138,6 +1138,246 @@ class BaseSetupWizard:
                 raise ValueError(f"invalid JSON in PINECONE_NEXUS_EMBEDDING_MODELS: {exc}") from exc
         return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding)
 
+    def _get_nexus_config(self) -> NexusWizardConfig:
+        """Prompt for Nexus enablement and inference config. Default is a
+        DB-only install (nexus_enabled=False) so the generated project is
+        byte-for-byte unchanged unless Nexus is requested.
+
+        For a "Nexus BYOC" install the wizard collects the gCPS project UUID and
+        the Nexus image tag (nexus-version).
+        The BYOC env is not prompted -- Nexus always targets the env this deploy
+        creates. The image registry is not prompted either -- it uses the package
+        default. The inference key is not prompted: it defaults to the minted
+        deployment key.
+        """
+        console.print()
+        console.print(f"  {self._step('Nexus')}")
+        console.print()
+        console.print("  [dim]Deploy Nexus alongside the Pinecone DB stack in the same cluster.[/]")
+
+        response = self._prompt("Enable Nexus? (Y/n)", "Y")
+        if response.strip().lower() in ("n", "no"):
+            return {"enabled": False}
+
+        console.print()
+        console.print("  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]")
+        console.print(
+            f"  [dim]This is NOT the {self.CLOUD_NAME} project/account -- it is the gCPS"
+            " project id (matched against projects.id),"
+            " e.g. 123e4567-e89b-12d3-a456-426614174000.[/]"
+        )
+        while True:
+            byoc_project_id = self._prompt("Enter Pinecone gCPS project UUID").strip()
+            if _is_uuid(byoc_project_id):
+                break
+            console.print(
+                "  [red]Enter a valid UUID (e.g. 123e4567-e89b-12d3-a456-426614174000);"
+                " this is the Pinecone gCPS project id, not the"
+                f" {self.CLOUD_NAME} project/account.[/]"
+            )
+
+        console.print()
+        console.print("  [dim]Optional override for the Nexus storage bucket prefix. Leave[/]")
+        console.print("  [dim]blank to auto-derive it from the cell name (pc-nexus-<cell>);[/]")
+        console.print("  [dim]the cluster provisions {prefix}-source/-knowledge/-archive.[/]")
+        while True:
+            storage_bucket_prefix = self._prompt(
+                "Enter a Nexus storage bucket prefix override (blank = auto-derive)"
+            ).strip()
+            if not storage_bucket_prefix or _is_storage_bucket_prefix(storage_bucket_prefix):
+                break
+            console.print(
+                "  [red]Enter a valid bucket name prefix: lowercase letters,"
+                " digits and hyphens, starting and ending alphanumeric, and at most"
+                f" {_STORAGE_PREFIX_MAX_LEN} chars (so {{prefix}}-knowledge stays <="
+                " 63).[/]"
+            )
+
+        nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
+
+        # Guided model catalog + tier selection. None => default template is
+        # written and the operator can edit it before `pulumi up`.
+        inference_models_toml = self._collect_inference_models()
+
+        console.print()
+        if inference_models_toml is None:
+            console.print(
+                f"  [dim]Using the default Gemini + Pinecone models. Edit [/]"
+                f"{NEXUS_INFERENCE_MODELS_FILENAME}[dim] in the generated project to change them.[/]"
+            )
+
+        # Provider-key secrets: one prompt per distinct api_key_ref the catalog
+        # references, all handled uniformly -- no ref (not even `gemini-api-key`)
+        # is special-cased. Pinecone-style models carry no api_key_ref, so they
+        # contribute nothing here. A skipped key prints the exact command to set
+        # it before `pulumi up` so nothing is missed -- no separate recap needed.
+        provider_keys: dict[str, str] = {}
+        for ref in sorted(_api_key_refs_from_toml(inference_models_toml)):
+            console.print()
+            console.print(f"  [dim]Provider key for the '{ref}' api_key_ref.[/]")
+            key = self._prompt(f"Enter the {ref} provider key", password=True).strip()
+            if key:
+                provider_keys[ref] = key
+            else:
+                console.print(
+                    f"  [yellow]⚠[/] No value entered; set it before `pulumi up`:\n"
+                    f"  [dim]pulumi config set --path --secret nexus-provider-keys.{ref} <key>[/]"
+                )
+
+        return {
+            "enabled": True,
+            "byoc_project_id": byoc_project_id,
+            "storage_bucket_prefix": storage_bucket_prefix,
+            "nexus_version": nexus_version.strip() or NEXUS_VERSION,
+            "inference_models_toml": inference_models_toml,
+            "provider_keys": provider_keys,
+        }
+
+    def _headless_nexus_config(self) -> NexusWizardConfig | None:
+        """Nexus answers from the environment (headless mode).
+
+        Returns ``{"enabled": False}`` when PINECONE_NEXUS_ENABLED is unset (so
+        headless DB-only installs are unchanged) and ``None`` on validation
+        failure (the caller aborts).
+        """
+        # Nexus is opt-in; default off so headless DB-only installs are unchanged.
+        if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() != "true":
+            return NexusWizardConfig(enabled=False)
+
+        # The Pinecone gCPS project UUID the BYOC vault belongs to (matched
+        # against projects.id by CPGW). Required, and must NOT be the cloud
+        # project/account -- pass it as its own var.
+        byoc_project_id = os.environ.get("PINECONE_BYOC_PROJECT_ID", "").strip()
+        if not byoc_project_id:
+            console.print(
+                "  [red]✗[/] PINECONE_BYOC_PROJECT_ID environment variable is required"
+                " when Nexus is enabled (the Pinecone gCPS project UUID)"
+            )
+            return None
+        if not _is_uuid(byoc_project_id):
+            console.print(
+                "  [red]✗[/] PINECONE_BYOC_PROJECT_ID must be a Pinecone gCPS project"
+                " UUID (e.g. 123e4567-e89b-12d3-a456-426614174000), not the"
+                f" {self.CLOUD_NAME} project/account"
+            )
+            return None
+        # The bucket-name prefix Nexus storage is provisioned under. OPTIONAL
+        # override: when unset, the package derives it from the cell name
+        # (`pc-nexus-{cell}`), which is minted server-side mid-deploy and so
+        # can't be supplied in advance. Accepts the canonical
+        # PINECONE_NEXUS_STORAGE_BUCKET_PREFIX, falling back to the shorter
+        # PINECONE_STORAGE_BUCKET_PREFIX alias.
+        storage_bucket_prefix = (
+            os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX")
+            or os.environ.get("PINECONE_STORAGE_BUCKET_PREFIX")
+            or ""
+        ).strip()
+        if storage_bucket_prefix and not _is_storage_bucket_prefix(storage_bucket_prefix):
+            console.print(
+                "  [red]✗[/] PINECONE_NEXUS_STORAGE_BUCKET_PREFIX must be a valid"
+                " bucket name prefix: lowercase letters, digits and hyphens,"
+                " starting and ending alphanumeric, and at most"
+                f" {_STORAGE_PREFIX_MAX_LEN} chars (so {{prefix}}-knowledge stays"
+                " <= 63)"
+            )
+            return None
+        return {
+            "enabled": True,
+            "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
+            "byoc_project_id": byoc_project_id,
+            # Optional override; blank => package derives `pc-nexus-{cell}`.
+            "storage_bucket_prefix": storage_bucket_prefix,
+            # Inference models from env JSON, or None -> default template.
+            "inference_models_toml": self._headless_inference_models_toml(),
+        }
+
+    def _write_nexus_models_file(self, output_dir: str, nexus: NexusWizardConfig) -> None:
+        """Write the inference-proxy model-routing config into the project.
+
+        Written only when Nexus is enabled; the generated ``__main__.py`` reads
+        it into ``NexusConfig.inference_models_toml``. Uses the wizard/headless-
+        built catalog when present, else the editable default template.
+        """
+        if not nexus.get("enabled"):
+            return
+        models_path = os.path.join(output_dir, NEXUS_INFERENCE_MODELS_FILENAME)
+        with open(models_path, "w") as f:
+            inference_models_toml = nexus.get("inference_models_toml")
+            # None => no catalog built, write the editable default template.
+            # A non-str value here would be a bug; let f.write surface it.
+            f.write(
+                inference_models_toml
+                if inference_models_toml is not None
+                else NEXUS_INFERENCE_MODELS_TEMPLATE
+            )
+        console.print(f"  [green]✓[/] Created {NEXUS_INFERENCE_MODELS_FILENAME}")
+
+    def _nexus_stack_config(self, project_name: str, nexus: NexusWizardConfig) -> str:
+        """Stack-config lines for a Nexus install. Empty for DB-only stacks, so
+        those omit the keys entirely and `nexus_enabled` stays False."""
+        if not nexus.get("enabled"):
+            return ""
+        config_content = f"  {project_name}:nexus-enabled: true\n"
+        config_content += (
+            f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
+        )
+        if nexus.get("byoc_project_id"):
+            config_content += (
+                f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
+            )
+        if nexus.get("storage_bucket_prefix"):
+            config_content += (
+                f"  {project_name}:nexus-storage-bucket-prefix: {nexus['storage_bucket_prefix']}\n"
+            )
+        # nexus-provider-keys.* are secrets; the wizard sets them itself in
+        # the secret-setting step (mirroring pinecone-api-key), so they are
+        # intentionally omitted from this plaintext stack config.
+        return config_content
+
+    def _store_nexus_secrets(
+        self, nexus: NexusWizardConfig, stack_name: str, output_dir: str
+    ) -> None:
+        """Set the Nexus secret config values on the generated stack.
+
+        nexus-provider-keys.<ref> secrets are read by the inference proxy, one
+        per api_key_ref the catalog references (no ref is special-cased).
+        """
+        if not nexus.get("enabled"):
+            return
+        provider_keys = dict(nexus.get("provider_keys") or {})
+
+        def _set_secret(config_args: list[str], value: str, label: str) -> None:
+            with Status(f"  [dim]Storing {label}...[/]", console=console, spinner="dots"):
+                res = subprocess.run(
+                    [
+                        "pulumi",
+                        "config",
+                        "set",
+                        *config_args,
+                        value,
+                        "--stack",
+                        stack_name,
+                        "--cwd",
+                        output_dir,
+                    ],
+                    capture_output=True,
+                    text=True,
+                )
+            if res.returncode != 0:
+                console.print(f"  [red]✗[/] Failed to store {label}: {res.stderr.strip()}")
+                console.print(
+                    f"  [dim]Run manually:[/] pulumi config set {' '.join(config_args)} <key>"
+                )
+            else:
+                console.print(f"  [green]✓[/] {label} stored securely")
+
+        for ref, value in provider_keys.items():
+            _set_secret(
+                ["--path", "--secret", f"nexus-provider-keys.{ref}"],
+                value,
+                f"provider key ({ref})",
+            )
+
     def _get_project_name(self) -> str:
         # already collected in bootstrap via --project-name; don't reprompt or consume a step
         if self._project_name:
@@ -1530,7 +1770,8 @@ class AWSPreflightChecker:
 
 
 class AWSSetupWizard(BaseSetupWizard):
-    TOTAL_STEPS = 15
+    # one more than the previous flow: AWS adds a Nexus enablement step.
+    TOTAL_STEPS = 16
     HEADER_TITLE = "Pinecone BYOC Setup Wizard"
     HEADER_SUBTITLE = "This wizard will set up everything you need to deploy Pinecone BYOC."
     DEFAULT_CIDR = "10.0.0.0/16"
@@ -1564,6 +1805,7 @@ class AWSSetupWizard(BaseSetupWizard):
         deletion_protection = self._get_deletion_protection()
         public_access = self._get_public_access()
         tags = self._get_custom_metadata()
+        nexus = self._get_nexus_config()
 
         if not self._run_preflight_checks(region, azs, cidr):
             return False
@@ -1585,6 +1827,7 @@ class AWSSetupWizard(BaseSetupWizard):
             tags,
             custom_ami_id=custom_ami_id,
             kms_key_arn=kms_key_arn,
+            nexus=nexus,
         )
 
     def _run_headless(self, output_dir: str) -> bool:
@@ -1607,6 +1850,10 @@ class AWSSetupWizard(BaseSetupWizard):
         custom_ami_id = os.environ.get("PINECONE_CUSTOM_AMI_ID", "") or None
         kms_key_arn = os.environ.get("PINECONE_KMS_KEY_ARN", "") or None
 
+        nexus = self._headless_nexus_config()
+        if nexus is None:
+            return False
+
         return self._generate_project(
             output_dir,
             project_name,
@@ -1619,6 +1866,7 @@ class AWSSetupWizard(BaseSetupWizard):
             {},
             custom_ami_id=custom_ami_id,
             kms_key_arn=kms_key_arn,
+            nexus=nexus,
         )
 
     def _validate_aws_creds(self) -> bool:
@@ -1731,7 +1979,9 @@ class AWSSetupWizard(BaseSetupWizard):
         tags: dict[str, str],
         custom_ami_id: str | None = None,
         kms_key_arn: str | None = None,
+        nexus: NexusWizardConfig | None = None,
     ):
+        nexus = nexus if nexus is not None else NexusWizardConfig(enabled=False)
         console.print()
 
         console.print(f"  {self._step('Creating Project')}")
@@ -1760,11 +2010,19 @@ class AWSSetupWizard(BaseSetupWizard):
         # create __main__.py
         main_py = '''"""Pinecone BYOC deployment (AWS)."""
 
+import pathlib
+
 import pulumi
 from pulumi_pinecone_byoc.aws import PineconeAWSCluster, PineconeAWSClusterArgs
+from pulumi_pinecone_byoc.common.nexus import NexusConfig
 
 config = pulumi.Config()
 
+_nexus_enabled = config.get_bool("nexus-enabled")
+# Inference-proxy model routing: the wizard-generated, customer-edited overlay
+# next to this file. Shipped to the proxy as the `byoc` config profile.
+_models_toml_path = pathlib.Path(__file__).parent / "inference-proxy-models.toml"
+_nexus_models_toml = _models_toml_path.read_text() if _models_toml_path.exists() else None
 cluster = PineconeAWSCluster(
     name="pinecone-aws-cluster",
     args=PineconeAWSClusterArgs(
@@ -1778,6 +2036,15 @@ cluster = PineconeAWSCluster(
         custom_ami_id=config.get("custom-ami-id"),
         kms_key_arn=config.get("kms-key-arn"),
         tags=config.get_object("tags"),
+        nexus=NexusConfig(
+            version=config.get("nexus-version"),
+            byoc_project_id=config.get("nexus-byoc-project-id"),
+            byoc_vault_id=config.get("nexus-byoc-vault-id"),
+            byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
+            storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+            inference_models_toml=_nexus_models_toml,
+            provider_keys=config.get_secret_object("nexus-provider-keys"),
+        ) if _nexus_enabled else None,
     ),
 )
 
@@ -1786,6 +2053,9 @@ update_kubeconfig_command = cluster.name.apply(
 )
 pulumi.export("environment", cluster.environment_name)
 pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
+if _nexus_enabled:
+    pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
+    pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("vpc_endpoint_service_name", cluster.vpc_endpoint_service_name)
 '''
@@ -1811,6 +2081,8 @@ dependencies = ["pulumi-pinecone-nexus-byoc[aws]"]
         with open(pyproject_path, "w") as f:
             f.write(pyproject_content)
         console.print("  [green]✓[/] Created pyproject.toml")
+
+        self._write_nexus_models_file(output_dir, nexus)
 
         # create stack config
         stack_name = self._stack_name
@@ -1841,6 +2113,8 @@ dependencies = ["pulumi-pinecone-nexus-byoc[aws]"]
             config_content += f"  {project_name}:tags:\n"
             for key, value in tags.items():
                 config_content += f'    {key}: "{value}"\n'
+
+        config_content += self._nexus_stack_config(project_name, nexus)
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
@@ -1928,6 +2202,8 @@ dependencies = ["pulumi-pinecone-nexus-byoc[aws]"]
             return False
 
         console.print("  [green]✓[/] API key stored securely")
+
+        self._store_nexus_secrets(nexus, stack_name, output_dir)
 
         self._print_success(output_dir)
         return True
@@ -2372,56 +2648,9 @@ class GCPSetupWizard(BaseSetupWizard):
         public_access = os.environ.get("PINECONE_PUBLIC_ACCESS", "true").lower() == "true"
         project_name = os.environ.get("PINECONE_PROJECT_NAME", "pinecone-byoc")
 
-        # Nexus is opt-in; default off so headless DB-only installs are unchanged.
-        if os.environ.get("PINECONE_NEXUS_ENABLED", "false").lower() == "true":
-            # The Pinecone gCPS project UUID the BYOC vault belongs to (matched
-            # against projects.id by CPGW). Required, and must NOT be the GCP
-            # project name -- pass it as its own var, distinct from GCP_PROJECT.
-            byoc_project_id = os.environ.get("PINECONE_BYOC_PROJECT_ID", "").strip()
-            if not byoc_project_id:
-                console.print(
-                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID environment variable is required"
-                    " when Nexus is enabled (the Pinecone gCPS project UUID)"
-                )
-                return False
-            if not _is_uuid(byoc_project_id):
-                console.print(
-                    "  [red]✗[/] PINECONE_BYOC_PROJECT_ID must be a Pinecone gCPS project"
-                    " UUID (e.g. 123e4567-e89b-12d3-a456-426614174000), not the GCP"
-                    " project name"
-                )
-                return False
-            # The GCS bucket-name prefix Nexus storage is provisioned under.
-            # OPTIONAL override on GCP: when unset, the package derives it from
-            # the cell name (`pc-nexus-{cell}`), which is minted server-side
-            # mid-deploy and so can't be supplied in advance. Accepts the
-            # canonical PINECONE_NEXUS_STORAGE_BUCKET_PREFIX, falling back to the
-            # shorter PINECONE_STORAGE_BUCKET_PREFIX alias.
-            storage_bucket_prefix = (
-                os.environ.get("PINECONE_NEXUS_STORAGE_BUCKET_PREFIX")
-                or os.environ.get("PINECONE_STORAGE_BUCKET_PREFIX")
-                or ""
-            ).strip()
-            if storage_bucket_prefix and not _is_storage_bucket_prefix(storage_bucket_prefix):
-                console.print(
-                    "  [red]✗[/] PINECONE_NEXUS_STORAGE_BUCKET_PREFIX must be a valid"
-                    " GCS bucket name prefix: lowercase letters, digits and hyphens,"
-                    " starting and ending alphanumeric, and at most"
-                    f" {_STORAGE_PREFIX_MAX_LEN} chars (so {{prefix}}-knowledge stays"
-                    " <= 63)"
-                )
-                return False
-            nexus: NexusWizardConfig = {
-                "enabled": True,
-                "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
-                "byoc_project_id": byoc_project_id,
-                # Optional override; blank => package derives `pc-nexus-{cell}`.
-                "storage_bucket_prefix": storage_bucket_prefix,
-                # Inference models from env JSON, or None -> default template.
-                "inference_models_toml": self._headless_inference_models_toml(),
-            }
-        else:
-            nexus = NexusWizardConfig(enabled=False)
+        nexus = self._headless_nexus_config()
+        if nexus is None:
+            return False
 
         return self._generate_project(
             output_dir,
@@ -2580,99 +2809,6 @@ class GCPSetupWizard(BaseSetupWizard):
         zones = [zone.strip() for zone in zones_input.split(",")]
         return zones
 
-    def _get_nexus_config(self) -> NexusWizardConfig:
-        """Prompt for Nexus enablement and inference config (proposal §4.6/§4.7,
-        task 2.7). Default is a DB-only install (nexus_enabled=False) so the
-        generated project is byte-for-byte unchanged unless Nexus is requested.
-
-        For a "Nexus BYOC" install the wizard collects the gCPS project UUID and
-        the Nexus image tag (nexus-version).
-        The BYOC env is not prompted -- Nexus always targets the env this deploy
-        creates. The image registry is not prompted either -- it uses the package
-        default. The inference key is not prompted: it defaults to the minted
-        deployment key per §10.
-        """
-        console.print()
-        console.print(f"  {self._step('Nexus')}")
-        console.print()
-        console.print("  [dim]Deploy Nexus alongside the Pinecone DB stack in the same cluster.[/]")
-
-        response = self._prompt("Enable Nexus? (Y/n)", "Y")
-        if response.strip().lower() in ("n", "no"):
-            return {"enabled": False}
-
-        console.print()
-        console.print("  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]")
-        console.print(
-            "  [dim]This is NOT the GCP project name -- it is the gCPS project id"
-            " (matched against projects.id), e.g. 123e4567-e89b-12d3-a456-426614174000.[/]"
-        )
-        while True:
-            byoc_project_id = self._prompt("Enter Pinecone gCPS project UUID").strip()
-            if _is_uuid(byoc_project_id):
-                break
-            console.print(
-                "  [red]Enter a valid UUID (e.g. 123e4567-e89b-12d3-a456-426614174000);"
-                " this is the Pinecone gCPS project id, not the GCP project name.[/]"
-            )
-
-        console.print()
-        console.print("  [dim]Optional override for the Nexus storage bucket prefix. Leave[/]")
-        console.print("  [dim]blank to auto-derive it from the cell name (pc-nexus-<cell>);[/]")
-        console.print("  [dim]the cluster provisions {prefix}-source/-knowledge/-archive.[/]")
-        while True:
-            storage_bucket_prefix = self._prompt(
-                "Enter a Nexus storage bucket prefix override (blank = auto-derive)"
-            ).strip()
-            if not storage_bucket_prefix or _is_storage_bucket_prefix(storage_bucket_prefix):
-                break
-            console.print(
-                "  [red]Enter a valid GCS bucket name prefix: lowercase letters,"
-                " digits and hyphens, starting and ending alphanumeric, and at most"
-                f" {_STORAGE_PREFIX_MAX_LEN} chars (so {{prefix}}-knowledge stays <="
-                " 63).[/]"
-            )
-
-        nexus_version = self._prompt("Enter nexus-version", NEXUS_VERSION)
-
-        # Guided model catalog + tier selection. None => default template is
-        # written and the operator can edit it before `pulumi up`.
-        inference_models_toml = self._collect_inference_models()
-
-        console.print()
-        if inference_models_toml is None:
-            console.print(
-                f"  [dim]Using the default Gemini + Pinecone models. Edit [/]"
-                f"{NEXUS_INFERENCE_MODELS_FILENAME}[dim] in the generated project to change them.[/]"
-            )
-
-        # Provider-key secrets: one prompt per distinct api_key_ref the catalog
-        # references, all handled uniformly -- no ref (not even `gemini-api-key`)
-        # is special-cased. Pinecone-style models carry no api_key_ref, so they
-        # contribute nothing here. A skipped key prints the exact command to set
-        # it before `pulumi up` so nothing is missed -- no separate recap needed.
-        provider_keys: dict[str, str] = {}
-        for ref in sorted(_api_key_refs_from_toml(inference_models_toml)):
-            console.print()
-            console.print(f"  [dim]Provider key for the '{ref}' api_key_ref.[/]")
-            key = self._prompt(f"Enter the {ref} provider key", password=True).strip()
-            if key:
-                provider_keys[ref] = key
-            else:
-                console.print(
-                    f"  [yellow]⚠[/] No value entered; set it before `pulumi up`:\n"
-                    f"  [dim]pulumi config set --path --secret nexus-provider-keys.{ref} <key>[/]"
-                )
-
-        return {
-            "enabled": True,
-            "byoc_project_id": byoc_project_id,
-            "storage_bucket_prefix": storage_bucket_prefix,
-            "nexus_version": nexus_version.strip() or NEXUS_VERSION,
-            "inference_models_toml": inference_models_toml,
-            "provider_keys": provider_keys,
-        }
-
     def _run_preflight_checks(
         self, project_id: str, region: str, zones: list[str], cidr: str
     ) -> bool:
@@ -2824,22 +2960,7 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
             f.write(pyproject_content)
         console.print("  [green]✓[/] Created pyproject.toml")
 
-        # Nexus inference-proxy model-routing config. Written only when Nexus is
-        # enabled; __main__.py reads it into NexusConfig.inference_models_toml.
-        # Use the wizard/headless-built catalog when present, else the editable
-        # default template.
-        if nexus.get("enabled"):
-            models_path = os.path.join(output_dir, NEXUS_INFERENCE_MODELS_FILENAME)
-            with open(models_path, "w") as f:
-                inference_models_toml = nexus.get("inference_models_toml")
-                # None => no catalog built, write the editable default template.
-                # A non-str value here would be a bug; let f.write surface it.
-                f.write(
-                    inference_models_toml
-                    if inference_models_toml is not None
-                    else NEXUS_INFERENCE_MODELS_TEMPLATE
-                )
-            console.print(f"  [green]✓[/] Created {NEXUS_INFERENCE_MODELS_FILENAME}")
+        self._write_nexus_models_file(output_dir, nexus)
 
         # create stack config
         stack_name = self._stack_name
@@ -2863,25 +2984,7 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
             for key, value in labels.items():
                 config_content += f'    {key}: "{value}"\n'
 
-        # Nexus BYOC install (task 2.7). Written only when enabled, so DB-only
-        # stacks omit these keys entirely and `nexus_enabled` stays False.
-        if nexus.get("enabled"):
-            config_content += f"  {project_name}:nexus-enabled: true\n"
-            config_content += (
-                f"  {project_name}:nexus-version: {nexus.get('nexus_version', NEXUS_VERSION)}\n"
-            )
-            if nexus.get("byoc_project_id"):
-                config_content += (
-                    f"  {project_name}:nexus-byoc-project-id: {nexus['byoc_project_id']}\n"
-                )
-            if nexus.get("storage_bucket_prefix"):
-                config_content += (
-                    f"  {project_name}:nexus-storage-bucket-prefix: "
-                    f"{nexus['storage_bucket_prefix']}\n"
-                )
-            # nexus-provider-keys.* are secrets; the wizard sets them itself in
-            # the secret-setting step below (mirroring pinecone-api-key), so they
-            # are intentionally omitted from this plaintext stack config.
+        config_content += self._nexus_stack_config(project_name, nexus)
 
         config_path = os.path.join(output_dir, f"Pulumi.{stack_name}.yaml")
         with open(config_path, "w") as f:
@@ -2970,42 +3073,7 @@ dependencies = ["pulumi-pinecone-nexus-byoc[gcp]"]
 
         console.print("  [green]✓[/] API key stored securely")
 
-        # nexus-provider-keys.<ref> secrets are read by the inference proxy, one
-        # per api_key_ref the catalog references (no ref is special-cased).
-        if nexus.get("enabled"):
-            provider_keys = dict(nexus.get("provider_keys") or {})
-
-            def _set_secret(config_args: list[str], value: str, label: str) -> None:
-                with Status(f"  [dim]Storing {label}...[/]", console=console, spinner="dots"):
-                    res = subprocess.run(
-                        [
-                            "pulumi",
-                            "config",
-                            "set",
-                            *config_args,
-                            value,
-                            "--stack",
-                            stack_name,
-                            "--cwd",
-                            output_dir,
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                if res.returncode != 0:
-                    console.print(f"  [red]✗[/] Failed to store {label}: {res.stderr.strip()}")
-                    console.print(
-                        f"  [dim]Run manually:[/] pulumi config set {' '.join(config_args)} <key>"
-                    )
-                else:
-                    console.print(f"  [green]✓[/] {label} stored securely")
-
-            for ref, value in provider_keys.items():
-                _set_secret(
-                    ["--path", "--secret", f"nexus-provider-keys.{ref}"],
-                    value,
-                    f"provider key ({ref})",
-                )
+        self._store_nexus_secrets(nexus, stack_name, output_dir)
 
         self._print_success(output_dir)
         return True

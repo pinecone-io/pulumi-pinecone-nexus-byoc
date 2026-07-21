@@ -8,9 +8,10 @@
 
 Deploy Pinecone in your own cloud account with full control over your infrastructure.
 
-> **Supported clouds:** **GCP** is supported today. **AWS** and **Azure** are
-> **coming soon** — the wizard and docs may reference them, but they are not yet
-> supported for production deployments.
+> **Supported clouds:** **GCP** is fully supported today. **AWS** is supported in
+> **preview for database-only installs** (Pinecone Database without Nexus) — Nexus
+> on AWS is still in progress. **Azure** is **coming soon**. See
+> [AWS (DB-only preview)](#aws-db-only-preview) for AWS-specific operational notes.
 
 ![Demo](./assets/demo.gif)
 
@@ -27,7 +28,13 @@ gcloud auth login
 gcloud auth application-default login
 ```
 
-_AWS and Azure authentication: coming soon (not yet supported)._
+**AWS** _(DB-only preview)_ — Pulumi deploys using your default AWS credentials:
+```bash
+aws configure                  # or aws sso login / exported AWS_* env vars
+aws sts get-caller-identity    # verify
+```
+
+_Azure authentication: coming soon (not yet supported)._
 
 **Pulumi** (state backend — Pulumi Cloud, or `pulumi login --local` for local state):
 ```bash
@@ -50,10 +57,11 @@ git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git
 bash pulumi-pinecone-nexus-byoc/bootstrap.sh --cloud gcp
 ```
 
-Use `--stack-name <name>` to name the Pulumi stack (default: `prod`).
+Use `--stack-name <name>` to name the Pulumi stack (default: `prod`). Use
+`--cloud aws` for a DB-only AWS install (preview).
 
 This will:
-1. Select your cloud provider (**GCP** — AWS and Azure coming soon)
+1. Select your cloud provider (**GCP**, or **AWS** for DB-only installs — Azure coming soon)
 2. Check that required tools are installed (Python 3.12+, uv, cloud CLI, Pulumi, kubectl)
 3. Verify your cloud credentials
 4. Prompt for the project directory and name (press Enter to accept the defaults)
@@ -68,7 +76,8 @@ cd pinecone-nexus-byoc
 pulumi up
 ```
 
-Provisioning takes approximately 25-30 minutes.
+Provisioning takes approximately 25-30 minutes on GCP, and 25-40 minutes for a
+DB-only install on AWS (see [AWS (DB-only preview)](#aws-db-only-preview)).
 
 ### 4. Connect to your cluster
 
@@ -80,8 +89,9 @@ gcloud container clusters get-credentials <cluster-name> --region <region> --pro
 kubectl get pods -A
 ```
 
-(GKE access also requires the `gke-gcloud-auth-plugin` component. AWS and Azure
-support is coming soon.)
+(GKE access also requires the `gke-gcloud-auth-plugin` component. See
+[Cluster Access](#cluster-access) for the AWS equivalent. Azure support is
+coming soon.)
 
 If Nexus is enabled, the first `pulumi up` also creates a default workspace and
 prints two more outputs once it's ready:
@@ -95,7 +105,8 @@ prints two more outputs once it's ready:
 | Requirement | Needed for | Notes |
 |-------------|-----------|-------|
 | **Pinecone API key** | All BYOC | Requires a Pinecone **Enterprise plan** |
-| **GCP project** | All BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
+| **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
+| **AWS account** | AWS BYOC (DB-only preview) | A **dedicated account** with administrator-level access (the deploy creates IAM roles and policies) |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
 | **Gemini API key** (BYOM) | **Nexus only** | From [Google AI Studio](https://aistudio.google.com/apikey) — the bring-your-own **generation LLM** (curation + search). Embedding (`multilingual-e5-large`) and rerank (`bge-reranker-v2-m3`) are **Pinecone-hosted** — no extra key needed |
 
@@ -132,7 +143,12 @@ prints two more outputs once it's ready:
 | gcloud CLI | GCP access | [GCP docs](https://cloud.google.com/sdk/docs/install) |
 | gke-gcloud-auth-plugin | GKE cluster access | `gcloud components install gke-gcloud-auth-plugin` |
 
-**AWS** _(coming soon)_ · **Azure** _(coming soon)_
+**AWS** _(DB-only preview)_
+| Tool | Purpose | Install |
+|------|---------|---------|
+| AWS CLI | AWS access | [AWS docs](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) |
+
+**Azure** _(coming soon)_
 
 ## Architecture
 
@@ -183,7 +199,7 @@ After deployment, configure kubectl:
 gcloud container clusters get-credentials <cluster-name> --region <region> --project <project-id>
 ```
 
-**AWS** _(coming soon)_:
+**AWS** _(DB-only preview)_:
 ```bash
 aws eks update-kubeconfig --region <region> --name <cluster-name>
 ```
@@ -205,11 +221,62 @@ pulumi up -c pinecone-version=<new-version>
 
 Replace `<new-version>` with the target Pinecone version (e.g., `main-abc1234`).
 
+## AWS (DB-only preview)
+
+On AWS, this repository currently supports **database-only** installs (Pinecone
+Database without Nexus), validated end-to-end with a real install and teardown.
+Nexus on AWS is still in progress — do not enable it. The notes below cover
+AWS-specific operational behavior.
+
+### Install expectations
+
+- A DB-only cold install takes roughly **25-40 minutes** (observed: ~23m30s for
+  ~215 resources).
+- The slowest single step is **VPC endpoint service private DNS verification**:
+  about 15 minutes of `Waiting for domain verification (pendingVerification)`
+  polling is **normal**, not a hang. Let it finish.
+
+### Updating the Pinecone version on a live stack
+
+```bash
+pulumi config set pinecone-version <tag>
+pulumi up
+```
+
+This is a surgical operation: it touches only the pinetools CronJob, the
+versioned install Job, and the uninstaller image reference. The install Job then
+rolls all DB components to the new tag.
+
+### Teardown notes
+
+`pulumi destroy` runs the uninstaller Job **before** deleting infrastructure, so
+in-cluster workloads — including load balancers created by the
+aws-load-balancer-controller — are removed while the controller still exists.
+Keep in mind:
+
+- **Extra ALB Ingresses:** if you created any ALB Ingresses outside the stack,
+  delete them and confirm the ALBs are actually gone
+  (`aws elbv2 describe-load-balancers`) **before** running `pulumi destroy` —
+  orphaned ALBs/ENIs will block VPC deletion. Deleting their namespace is a safe
+  one-shot: the controller's `ingress.k8s.aws/resources` finalizer holds the
+  namespace until the AWS resources are removed.
+- **ACM certificates** are created with `retain_on_delete` by design and survive
+  destroy. Delete them manually afterward (`aws acm list-certificates` /
+  `aws acm delete-certificate`; they will show `InUse: false`).
+- **CloudWatch logs:** EKS leaves a `/aws/eks/<cluster-name>/cluster` log group
+  behind. Delete it manually (or set a retention policy) for a truly clean
+  account.
+- **Environment deregistration** happens automatically during destroy — the
+  environment resource's delete hook calls the Pinecone control plane. To verify
+  the DNS delegation is gone, query the parent zone's authoritative nameservers
+  directly; your local resolver will keep serving cached NS records until the
+  TTL decays.
+
 ## Configuration
 
 The setup wizard creates a Pulumi stack with these configurable options:
 
-**AWS Configuration Options** _(coming soon — not yet supported)_**:**
+**AWS Configuration Options** _(DB-only preview)_**:**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -251,9 +318,9 @@ Edit `Pulumi.<stack>.yaml` to modify these values.
 
 ## Programmatic Usage
 
-For advanced users who want to integrate into existing infrastructure. GCP is the
-supported cloud today (the setup wizard generates the project for you); the AWS
-example below is illustrative — AWS and Azure are coming soon.
+For advanced users who want to integrate into existing infrastructure. GCP is
+fully supported and AWS is supported for DB-only installs (the setup wizard
+generates the project for you either way); Azure is coming soon.
 
 ```python
 import pulumi
@@ -290,8 +357,9 @@ your clone via an editable path source. To use it in your own project:
 ```bash
 git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git
 uv add --editable './pulumi-pinecone-nexus-byoc[gcp]'    # GCP (supported)
+uv add --editable './pulumi-pinecone-nexus-byoc[aws]'    # AWS (DB-only preview)
 
-# AWS and Azure — coming soon (not yet supported)
+# Azure — coming soon (not yet supported)
 ```
 
 ## Troubleshooting
@@ -300,7 +368,7 @@ uv add --editable './pulumi-pinecone-nexus-byoc[gcp]'    # GCP (supported)
 
 The setup wizard runs preflight checks for cloud quotas. If these fail:
 
-**AWS** _(coming soon)_:
+**AWS** _(DB-only preview)_:
 1. **VPC Quota** - Request a limit increase via AWS Service Quotas
 2. **Elastic IPs** - Release unused EIPs or request a limit increase
 3. **NAT Gateways** - Request a limit increase
@@ -352,6 +420,8 @@ pulumi destroy
 ```
 
 Note: If `deletion_protection` is enabled (default), you'll need to disable it first or manually delete protected resources.
+
+On AWS, read the [teardown notes](#teardown-notes) before running `pulumi destroy`.
 
 ## Support
 

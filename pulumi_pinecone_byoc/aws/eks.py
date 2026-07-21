@@ -13,11 +13,53 @@ import pulumi_eks as eks
 import pulumi_kubernetes as k8s
 
 from config.aws import AWSConfig
+from config.base import NodePoolConfig, NodePoolTaint
 
 from .vpc import VPC
 
 # https://docs.aws.amazon.com/eks/latest/userguide/clusters.html
 AWS_EKS_CLUSTER_NAME_LIMIT = 100
+
+# Nexus schedules its pods onto pools labeled `nexus-role: services` (long-lived
+# services) and `nexus-role: jobs` (ephemeral task pods) via nodeSelector +
+# tolerations. The label key/value and matching NoSchedule taint match the nexus
+# Helm chart (nexus/deploy/helm/nexus/values.yaml `scheduling.services`/
+# `scheduling.jobs`). Mirrors pulumi_pinecone_byoc/gcp/gke.py:nexus_node_pools.
+# The shared NodePoolTaint effect (NO_SCHEDULE) is already the form the EKS
+# managed-node-group API expects, so no translation is needed here.
+_NEXUS_ROLE_LABEL = "nexus-role"
+
+
+def nexus_node_pools() -> list[NodePoolConfig]:
+    """Node pools for the Nexus workloads (services + jobs).
+
+    AWS mirror of gcp/gke.py:nexus_node_pools — same labels/taints (matching
+    the nexus chart's nodeSelector/tolerations) but with EC2 sizing
+    (m6i.xlarge is the n2-standard-4 analog: 4 vCPU / 16 GiB). Gated by
+    `args.nexus` upstream so DB-only deploys are unaffected.
+    """
+    return [
+        NodePoolConfig(
+            name="nexus-services",
+            instance_type="m6i.xlarge",
+            min_size=1,
+            max_size=10,
+            desired_size=2,
+            disk_size_gb=100,
+            labels={_NEXUS_ROLE_LABEL: "services"},
+            taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="services", effect="NO_SCHEDULE")],
+        ),
+        NodePoolConfig(
+            name="nexus-jobs",
+            instance_type="m6i.xlarge",
+            min_size=1,
+            max_size=10,
+            desired_size=2,
+            disk_size_gb=100,
+            labels={_NEXUS_ROLE_LABEL: "jobs"},
+            taints=[NodePoolTaint(key=_NEXUS_ROLE_LABEL, value="jobs", effect="NO_SCHEDULE")],
+        ),
+    ]
 
 
 class EKS(pulumi.ComponentResource):

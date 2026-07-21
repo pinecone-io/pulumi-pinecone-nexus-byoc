@@ -60,14 +60,16 @@ class DNS(pulumi.ComponentResource):
                 opts=child_opts,
             )
 
-        # create ACM certificate - include *.svc subdomain for data plane endpoints
-        # wildcard certs only match one level, so we need explicit *.svc.{fqdn}
+        # create ACM certificate - include *.svc and *.wksp subdomains for data
+        # plane and workspace endpoints (wildcard certs only match one level, so
+        # each nested level needs its own SAN)
         self.certificate = aws.acm.Certificate(
             f"{name}-cert",
             domain_name=fqdn.apply(lambda f: f"*.{f}"),
             subject_alternative_names=[
                 fqdn,
                 fqdn.apply(lambda f: f"*.svc.{f}"),
+                fqdn.apply(lambda f: f"*.wksp.{f}"),
             ],
             validation_method="DNS",
             tags={**tags, "Name": f"{name}-cert"},
@@ -78,28 +80,27 @@ class DNS(pulumi.ComponentResource):
             ),
         )
 
-        # create DNS validation records (one per domain in the cert)
-        # ACM may reuse the same validation record for multiple domains
-        validation_records = []
-        for i in range(3):
-            validation_record = aws.route53.Record(
-                f"{name}-cert-validation-{i}",
-                zone_id=self.zone.id,
-                name=self.certificate.domain_validation_options[i].resource_record_name,
-                type=self.certificate.domain_validation_options[i].resource_record_type,
-                records=[self.certificate.domain_validation_options[i].resource_record_value],
-                ttl=300,
-                allow_overwrite=True,
-                opts=child_opts,
+        # DNS validation records, one per unique record ACM asks for. ACM reuses
+        # the same validation record across domains sharing a base (`*.{fqdn}`
+        # and `{fqdn}` here), so iterate domain_validation_options and dedupe by
+        # record name rather than assuming one record per cert domain.
+        validation_records = self.certificate.domain_validation_options.apply(
+            lambda opts: self._create_validation_records(
+                f"{name}-cert-validation", opts, child_opts
             )
-            validation_records.append(validation_record)
+        )
+        validation_record_fqdns = validation_records.apply(
+            lambda records: pulumi.Output.all(*[r.fqdn for r in records])
+        )
 
         # Certificate validation
         self.certificate_validation = aws.acm.CertificateValidation(
             f"{name}-cert-validation",
             certificate_arn=self.certificate.arn,
-            validation_record_fqdns=[r.fqdn for r in validation_records],
-            opts=pulumi.ResourceOptions(parent=self, depends_on=validation_records),
+            # Derived from the records' outputs, so this also sequences the
+            # validation after the records exist.
+            validation_record_fqdns=validation_record_fqdns,
+            opts=pulumi.ResourceOptions(parent=self, depends_on=[self.certificate]),
         )
 
         # private endpoint certificate - for PrivateLink access
@@ -156,6 +157,39 @@ class DNS(pulumi.ComponentResource):
                 "fqdn": fqdn,
             }
         )
+
+    def _create_validation_records(
+        self,
+        prefix: str,
+        options: list,
+        opts: pulumi.ResourceOptions,
+    ) -> list[aws.route53.Record]:
+        """One Route53 record per unique ACM validation record.
+
+        Runs inside an ``apply`` on ``domain_validation_options`` (the option
+        list is only known once the certificate exists), deduping by resource
+        record name so two cert domains that ACM validates with the same record
+        don't produce two Pulumi resources owning one RR set.
+        """
+        records: list[aws.route53.Record] = []
+        seen: set[str] = set()
+        for option in options or []:
+            if option.resource_record_name in seen:
+                continue
+            seen.add(option.resource_record_name)
+            records.append(
+                aws.route53.Record(
+                    f"{prefix}-{len(records)}",
+                    zone_id=self.zone.id,
+                    name=option.resource_record_name,
+                    type=option.resource_record_type,
+                    records=[option.resource_record_value],
+                    ttl=300,
+                    allow_overwrite=True,
+                    opts=opts,
+                )
+            )
+        return records
 
     @property
     def zone_id(self) -> pulumi.Output[str]:

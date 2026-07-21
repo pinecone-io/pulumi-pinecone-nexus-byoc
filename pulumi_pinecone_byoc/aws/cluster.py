@@ -8,8 +8,10 @@ import pulumi_aws as aws
 
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
-from ..common.k8s_secrets import K8sSecrets
+from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
+from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
+from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     DATADOG_DISABLED_PLACEHOLDER,
@@ -26,11 +28,12 @@ from ..common.providers import (
     ServiceAccount,
     ServiceAccountArgs,
 )
-from ..common.registry import AWS_REGISTRY
+from ..common.registry import AWS_REGISTRY, NEXUS_AWS_REGISTRY
 from ..common.uninstaller import ClusterUninstaller
 from .dns import DNS
 from .eks import EKS
 from .k8s_addons import K8sAddons
+from .nexus_s3 import NexusS3Buckets
 from .nlb import NLB
 from .pulumi_operator import PulumiOperator
 from .rds import RDS, RDSInstance
@@ -73,6 +76,8 @@ class PineconeAWSClusterArgs:
     # features
     public_access_enabled: bool = True  # false = private access only via privatelink
     deletion_protection: bool = True  # protect RDS and S3 from accidental deletion
+    # Set to a NexusConfig to deploy Nexus alongside the DB stack. None = DB-only.
+    nexus: NexusConfig | None = None
 
     # pinecone specific
     api_url: str = "https://api.pinecone.io"
@@ -89,6 +94,14 @@ class PineconeAWSClusterArgs:
 
     # tags
     tags: dict[str, str] | None = None
+
+    def __post_init__(self):
+        if self.nexus is not None and self.nexus.fdb_mode == "external":
+            raise ValueError(
+                "nexus.fdb_mode='external' (shared data-plane FDB cluster) is not "
+                "wired on AWS yet; Nexus on AWS runs its own single-pod FDB "
+                "(fdb_mode='single')."
+            )
 
 
 class PineconeAWSCluster(pulumi.ComponentResource):
@@ -114,6 +127,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 api_url=args.api_url,
                 secret=args.pinecone_api_key,
                 is_public_endpoint_enabled=args.public_access_enabled,
+                is_nexus_enabled=args.nexus is not None,
             ),
             opts=child_opts,
         )
@@ -337,6 +351,17 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 if self._datadog_api_key is not None
                 else DATADOG_DISABLED_PLACEHOLDER
             ),
+            nexus=NexusSecretConfig(
+                api_key=args.pinecone_api_key,
+                provider_keys=args.nexus.provider_keys,
+                provider_key_refs=(
+                    derive_api_key_refs(args.nexus.inference_models_toml)
+                    if args.nexus.inference_models_toml is not None
+                    else None
+                ),
+            )
+            if args.nexus is not None
+            else None,
             control_db=self._rds.control_db,
             system_db=self._rds.system_db,
             opts=pulumi.ResourceOptions(
@@ -433,6 +458,11 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             "aws_storage_integration_role_arn": self._storage_integration_role.arn,
             "customer_tags": args.tags or {},
             "public_access_enabled": args.public_access_enabled,
+            # Enable the netstack *.wksp route only when Nexus is wired -- the same
+            # condition that turns on gateway.workspaceAuth (common/nexus.py), so
+            # routing and its auth edge go live in lockstep and never on a
+            # non-Nexus BYOC cell (which has no nexus-gateway to route to).
+            "workspace_routing_enabled": args.nexus is not None,
             "external_dns_role_arn": self._k8s_addons.external_dns_role.arn,
             "pulumi_backend_url": self._pulumi_operator.backend_url,
             "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,
@@ -476,6 +506,104 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             config_map_dependencies=self._k8s_configmaps.config_maps,
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._eks, self._k8s_configmaps]),
         )
+
+        # Install Nexus after the DB stack is ready.
+        self._nexus = None
+        self._nexus_s3 = None
+        if args.nexus is not None:
+            nx = args.nexus
+            # Nexus versions independently of the DB stack (separate repo, separate
+            # image tags), so there is no meaningful fallback to pinecone_version --
+            # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
+            # rather than producing an unpullable image ref.
+            if nx.version is None:
+                raise ValueError(
+                    "nexus.version must be set to the Nexus image tag (the nexus "
+                    "images.yml build tag). It is unrelated to the DB pinecone_version."
+                )
+            # Durable S3 storage is always provisioned for AWS+Nexus (the `fs`
+            # default isn't durable and file upload needs object storage). The
+            # bucket prefix is derived from the cell name (`pc-nexus-{cell}`),
+            # mirroring the GCP derivation -- the cell name is minted server-side
+            # mid-deploy, so the operator can't supply it in advance.
+            # `storage_bucket_prefix` is an optional override, not a gate.
+            storage_prefix = nx.storage_bucket_prefix or self._cell_name.apply(
+                lambda cn: f"pc-nexus-{cn}"
+            )
+            self._nexus_s3 = NexusS3Buckets(
+                f"{config.resource_prefix}-nexus-s3",
+                config,
+                cell_name=self._cell_name,
+                prefix=storage_prefix,
+                oidc_provider_arn=self._eks.oidc_provider_arn,
+                oidc_provider_url=self._eks.oidc_provider_url,
+                kms_key_arn=args.kms_key_arn,
+                force_destroy=not args.deletion_protection,
+                # The IRSA trust policy references the cluster's OIDC provider,
+                # so the EKS component (which creates it) must exist first.
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._eks]),
+            )
+            blob_storage = NexusBlobStorage(
+                source=self._nexus_s3.source,
+                knowledge=self._nexus_s3.knowledge,
+                archive=self._nexus_s3.archive,
+            )
+            # Annotate the Nexus KSAs so the pods assume the S3 role via IRSA.
+            nexus_sa_annotations = self._nexus_s3.role_arn.apply(
+                lambda arn: {"eks.amazonaws.com/role-arn": arn}
+            )
+            self._nexus = Nexus(
+                f"{config.resource_prefix}-nexus",
+                k8s_provider=self._eks.provider,
+                image_registry=(nx.image_registry or NEXUS_AWS_REGISTRY.base_url),
+                nexus_version=nx.version,
+                byoc_env=nx.byoc_env or self._environment.env_name,
+                cloud="aws",
+                region=args.region,
+                pinecone_prod=args.global_env == "prod",
+                byoc_project_id=nx.byoc_project_id or self._api_key.project_id,
+                byoc_vault_id=(
+                    nx.byoc_vault_id or self._resource_suffix.apply(lambda s: f"byoc{s}")
+                ),
+                # gp3 via the EBS CSI addon (installed in K8sAddons).
+                storage_class="gp3",
+                # No controller serves a class-less Ingress on EKS; gateway
+                # exposure is the separate ALB-vs-Gloo decision (nexus#1362).
+                ingress_class=None,
+                blob_storage=blob_storage,
+                service_account_annotations=nexus_sa_annotations,
+                # CPGW index client: Nexus reaches the control-plane gateway at
+                # {api_url}/internal/cpgw (synchronous CPS db_index_id on create).
+                # Paired with the cpgw-api-key in the nexus-config secret.
+                cpgw_api_url=f"{args.api_url}/internal/cpgw",
+                inference_models_toml=nx.inference_models_toml,
+                opts=pulumi.ResourceOptions(
+                    parent=self,
+                    depends_on=[
+                        r
+                        for r in [
+                            self._eks,
+                            self._k8s_secrets,
+                            self._k8s_configmaps,
+                            self._ecr_refresher,
+                            self._pinetools,
+                            self._nlb,
+                            self._nexus_s3,
+                        ]
+                        if r is not None
+                    ],
+                ),
+            )
+            # `helm uninstall` the Nexus releases on destroy (no Pulumi Release to
+            # remove them now). Depends on the component so it runs while the
+            # cluster, the nexus-deploy SA, and regcred still exist.
+            self._nexus_uninstaller = NexusUninstaller(
+                f"{config.resource_prefix}-nexus-uninstaller",
+                kubeconfig=self._eks.kubeconfig.apply(json.dumps),
+                deploy_image=self._nexus.deploy_image,
+                cloud="aws",
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
+            )
 
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
@@ -572,6 +700,12 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                     disk_size_gb=100,
                 ),
             ]
+
+        # Add Nexus node pools when enabled; DB-only deploys are unaffected.
+        if args.nexus is not None:
+            from .eks import nexus_node_pools
+
+            node_pools.extend(nexus_node_pools())
 
         return AWSConfig(
             region=args.region,
@@ -799,3 +933,17 @@ class PineconeAWSCluster(pulumi.ComponentResource):
     @property
     def vpc_endpoint_service_name(self) -> pulumi.Output[str]:
         return self._nlb.vpc_endpoint_service.service_name
+
+    @property
+    def nexus(self) -> Nexus | None:
+        return self._nexus
+
+    @property
+    def nexus_byoc_project_id(self) -> pulumi.Input[str] | None:
+        """The BYOC single-tenant project id Nexus runs under, or None on DB-only deploys."""
+        return self._nexus.byoc_project_id if self._nexus is not None else None
+
+    @property
+    def nexus_byoc_session_credential(self) -> pulumi.Output[str] | None:
+        """The seeded BYOC login credential, or None on DB-only deploys. Marked secret."""
+        return self._k8s_secrets.byoc_session_credential
