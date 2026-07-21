@@ -120,7 +120,7 @@ def test_cluster_args_allow_external_on_fdb():
     assert args.nexus is not None and args.nexus.fdb_mode == "external"
 
 
-def test_aws_cluster_args_reject_external():
+def test_aws_cluster_args_reject_external_on_postgres():
     try:
         from pulumi_pinecone_byoc.aws import PineconeAWSClusterArgs
     except ModuleNotFoundError:
@@ -131,11 +131,28 @@ def test_aws_cluster_args_reject_external():
         PineconeAWSClusterArgs(
             pinecone_api_key="k",
             pinecone_version="v",
+            data_plane_backend="postgres",
             nexus=NexusConfig(fdb_mode="external"),
         )
     except ValueError:
         return
-    raise AssertionError("expected ValueError: external FDB is not wired on AWS")
+    raise AssertionError("expected ValueError: external requires data_plane_backend=fdb")
+
+
+def test_aws_cluster_args_allow_external_on_fdb():
+    try:
+        from pulumi_pinecone_byoc.aws import PineconeAWSClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_aws not installed)")
+        return
+
+    args = PineconeAWSClusterArgs(
+        pinecone_api_key="k",
+        pinecone_version="v",
+        data_plane_backend="fdb",
+        nexus=NexusConfig(fdb_mode="external"),
+    )
+    assert args.nexus is not None and args.nexus.fdb_mode == "external"
 
 
 if __name__ == "__main__":

@@ -284,6 +284,11 @@ class NLB(pulumi.ComponentResource):
         # the ALB is created by the AWS Load Balancer Controller when ingress is applied
         def get_private_alb_arn(_ingress_status, subdomain: str):
             """Wait for private ALB and return its ARN."""
+            if pulumi.runtime.is_dry_run():
+                return (
+                    f"arn:aws:elasticloadbalancing:{config.region}:000000000000:"
+                    "loadbalancer/app/placeholder/0000000000000000"
+                )
             import boto3
 
             elbv2 = boto3.client("elbv2", region_name=config.region)
@@ -593,6 +598,8 @@ class NLB(pulumi.ComponentResource):
 
             def get_public_alb_info(_ingress_status, subdomain: str):
                 """Wait for public ALB and return its DNS name and hosted zone ID."""
+                if pulumi.runtime.is_dry_run():
+                    return ("placeholder.elb.amazonaws.com", "Z00000000000000000000")
                 import boto3
 
                 elbv2 = boto3.client("elbv2", region_name=config.region)

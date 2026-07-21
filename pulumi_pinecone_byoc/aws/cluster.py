@@ -65,7 +65,9 @@ class PineconeAWSClusterArgs:
 
     # aws specific
     region: str = "us-east-1"
-    availability_zones: list[str] = field(default_factory=lambda: ["us-east-1a", "us-east-1b"])
+    availability_zones: list[str] = field(
+        default_factory=lambda: ["us-east-1a", "us-east-1b", "us-east-1c"]
+    )
 
     # networking
     vpc_cidr: str = "10.0.0.0/16"
@@ -90,6 +92,7 @@ class PineconeAWSClusterArgs:
     # Base URL of the Pinecone web console (workspace deep links). Override
     # for preprod/internal installs.
     console_url: str = "https://app.pinecone.io"
+    data_plane_backend: str = "postgres"  # "postgres" | "fdb"
     # gcp_project is needed by some helmfiles even for AWS clusters (cross-cloud monitoring/metrics)
     gcp_project: str = "production-pinecone"
 
@@ -103,11 +106,21 @@ class PineconeAWSClusterArgs:
     tags: dict[str, str] | None = None
 
     def __post_init__(self):
-        if self.nexus is not None and self.nexus.fdb_mode == "external":
+        if (
+            self.nexus is not None
+            and self.nexus.fdb_mode == "external"
+            and self.data_plane_backend != "fdb"
+        ):
             raise ValueError(
-                "nexus.fdb_mode='external' (shared data-plane FDB cluster) is not "
-                "wired on AWS yet; Nexus on AWS runs its own single-pod FDB "
-                "(fdb_mode='single')."
+                "nexus.fdb_mode='external' requires data_plane_backend='fdb', got "
+                f"{self.data_plane_backend!r}."
+            )
+        # With fewer than 3 AZs the FoundationDB CR silently degrades from zone
+        # to hostname fault domains, and nothing downstream validates it.
+        if self.data_plane_backend == "fdb" and len(self.availability_zones) < 3:
+            raise ValueError(
+                "data_plane_backend='fdb' requires at least 3 availability zones "
+                f"for zone fault domains, got {self.availability_zones!r}."
             )
 
 
@@ -283,13 +296,18 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._cpgw_api_key]),
         )
 
-        self._rds = RDS(
-            f"{config.resource_prefix}-rds",
-            config,
-            self._vpc,
-            cell_name=self._cell_name,
-            kms_key_arn=args.kms_key_arn,
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vpc]),
+        # fdb cells run on FoundationDB and need no RDS; only the postgres backend provisions it.
+        self._rds = (
+            RDS(
+                f"{config.resource_prefix}-rds",
+                config,
+                self._vpc,
+                cell_name=self._cell_name,
+                kms_key_arn=args.kms_key_arn,
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vpc]),
+            )
+            if args.data_plane_backend == "postgres"
+            else None
         )
 
         self._k8s_addons = K8sAddons(
@@ -369,8 +387,8 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             )
             if args.nexus is not None
             else None,
-            control_db=self._rds.control_db,
-            system_db=self._rds.system_db,
+            control_db=self._rds.control_db if self._rds is not None else None,
+            system_db=self._rds.system_db if self._rds is not None else None,
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[
@@ -447,6 +465,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
 
         pulumi_outputs = {
             "cell_name": self._cell_name,
+            "data_plane_backend": args.data_plane_backend,
             "org_name": self._environment.org_name,
             "cloud": "aws",
             "region": args.region,
@@ -493,8 +512,10 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             region=args.region,
             public_access_enabled=args.public_access_enabled,
             pulumi_outputs=pulumi_outputs,
+            data_plane_backend=args.data_plane_backend,
             opts=pulumi.ResourceOptions(
-                parent=self, depends_on=[self._eks, self._dns, self._s3, self._rds]
+                parent=self,
+                depends_on=list(filter(None, [self._eks, self._dns, self._s3, self._rds])),
             ),
         )
 
@@ -591,6 +612,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 # Paired with the cpgw-api-key in the nexus-config secret.
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
+                fdb_mode=nx.fdb_mode,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
@@ -668,8 +690,12 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 "cluster_endpoint": self._eks.cluster.eks_cluster.endpoint,
                 "kubeconfig": self._eks.kubeconfig,
                 "data_bucket": self._s3.data_bucket_name,
-                "control_db_endpoint": self._rds.control_db.endpoint,
-                "system_db_endpoint": self._rds.system_db.endpoint,
+                "control_db_endpoint": (
+                    self._rds.control_db.endpoint if self._rds is not None else None
+                ),
+                "system_db_endpoint": (
+                    self._rds.system_db.endpoint if self._rds is not None else None
+                ),
                 "certificate_arn": self._dns.certificate_arn,
                 "environment_id": self._environment.id,
                 "environment_name": self._environment.env_name,
@@ -799,28 +825,32 @@ class PineconeAWSCluster(pulumi.ComponentResource):
         return self._s3.wal_bucket_name
 
     @property
-    def control_db(self) -> RDSInstance:
-        return self._rds.control_db
+    def rds(self) -> RDS | None:
+        return self._rds
 
     @property
-    def system_db(self) -> RDSInstance:
-        return self._rds.system_db
+    def control_db(self) -> RDSInstance | None:
+        return self._rds.control_db if self._rds is not None else None
 
     @property
-    def control_db_endpoint(self) -> pulumi.Output[str]:
-        return self._rds.control_db.endpoint
+    def system_db(self) -> RDSInstance | None:
+        return self._rds.system_db if self._rds is not None else None
 
     @property
-    def system_db_endpoint(self) -> pulumi.Output[str]:
-        return self._rds.system_db.endpoint
+    def control_db_endpoint(self) -> pulumi.Output[str] | None:
+        return self._rds.control_db.endpoint if self._rds is not None else None
 
     @property
-    def control_db_connection_secret_arn(self) -> pulumi.Output[str]:
-        return self._rds.control_db.connection_secret_arn
+    def system_db_endpoint(self) -> pulumi.Output[str] | None:
+        return self._rds.system_db.endpoint if self._rds is not None else None
 
     @property
-    def system_db_connection_secret_arn(self) -> pulumi.Output[str]:
-        return self._rds.system_db.connection_secret_arn
+    def control_db_connection_secret_arn(self) -> pulumi.Output[str] | None:
+        return self._rds.control_db.connection_secret_arn if self._rds is not None else None
+
+    @property
+    def system_db_connection_secret_arn(self) -> pulumi.Output[str] | None:
+        return self._rds.system_db.connection_secret_arn if self._rds is not None else None
 
     @property
     def certificate_arn(self) -> pulumi.Output[str]:

@@ -1839,7 +1839,7 @@ class AWSSetupWizard(BaseSetupWizard):
             return False
 
         region = os.environ.get("PINECONE_REGION", "us-east-1")
-        azs_str = os.environ.get("PINECONE_AZS", f"{region}a,{region}b")
+        azs_str = os.environ.get("PINECONE_AZS", f"{region}a,{region}b,{region}c")
         azs = [az.strip() for az in azs_str.split(",") if az.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
@@ -1922,7 +1922,8 @@ class AWSSetupWizard(BaseSetupWizard):
             available = self._fetch_azs(region)
 
         console.print(f"  [dim]Available in {region}:[/] {', '.join(available)}")
-        default_azs = available[:2]
+        # 3 AZs so FDB data-plane cells keep zone fault domains (<3 silently degrades).
+        default_azs = available[:3]
 
         azs_input = self._prompt("Enter AZs (comma-separated)", ",".join(default_azs))
         azs = [az.strip() for az in azs_input.split(",")]
@@ -2023,6 +2024,9 @@ _nexus_enabled = config.get_bool("nexus-enabled")
 # next to this file. Shipped to the proxy as the `byoc` config profile.
 _models_toml_path = pathlib.Path(__file__).parent / "inference-proxy-models.toml"
 _nexus_models_toml = _models_toml_path.read_text() if _models_toml_path.exists() else None
+# Nexus enabled => default the DB data plane to FDB so the two share one cluster (Nexus is an external client); explicit config wins.
+_data_plane_backend = config.get("data-plane-backend") or ("fdb" if _nexus_enabled else "postgres")
+_default_fdb_mode = "external" if _data_plane_backend == "fdb" else "single"
 cluster = PineconeAWSCluster(
     name="pinecone-aws-cluster",
     args=PineconeAWSClusterArgs(
@@ -2036,6 +2040,7 @@ cluster = PineconeAWSCluster(
         custom_ami_id=config.get("custom-ami-id"),
         kms_key_arn=config.get("kms-key-arn"),
         tags=config.get_object("tags"),
+        data_plane_backend=_data_plane_backend,
         nexus=NexusConfig(
             version=config.get("nexus-version"),
             byoc_project_id=config.get("nexus-byoc-project-id"),
@@ -2044,6 +2049,7 @@ cluster = PineconeAWSCluster(
             storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
+            fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
         ) if _nexus_enabled else None,
     ),
 )
