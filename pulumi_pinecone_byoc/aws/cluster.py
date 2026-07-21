@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 import pulumi
 import pulumi_aws as aws
 
+from ..common import api
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
@@ -15,6 +16,7 @@ from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     DATADOG_DISABLED_PLACEHOLDER,
+    DEFAULT_WORKSPACE_NAME,
     AmpAccess,
     AmpAccessArgs,
     ApiKey,
@@ -23,6 +25,8 @@ from ..common.providers import (
     CpgwApiKeyArgs,
     DatadogApiKey,
     DatadogApiKeyArgs,
+    DefaultWorkspace,
+    DefaultWorkspaceArgs,
     Environment,
     EnvironmentArgs,
     ServiceAccount,
@@ -83,6 +87,9 @@ class PineconeAWSClusterArgs:
     api_url: str = "https://api.pinecone.io"
     global_env: str = "prod"
     auth0_domain: str = "https://login.pinecone.io"
+    # Base URL of the Pinecone web console (workspace deep links). Override
+    # for preprod/internal installs.
+    console_url: str = "https://app.pinecone.io"
     # gcp_project is needed by some helmfiles even for AWS clusters (cross-cloud monitoring/metrics)
     gcp_project: str = "production-pinecone"
 
@@ -510,6 +517,9 @@ class PineconeAWSCluster(pulumi.ComponentResource):
         # Install Nexus after the DB stack is ready.
         self._nexus = None
         self._nexus_s3 = None
+        self._nexus_project_id = None
+        self._default_workspace = None
+        self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
             # Nexus versions independently of the DB stack (separate repo, separate
@@ -552,6 +562,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             nexus_sa_annotations = self._nexus_s3.role_arn.apply(
                 lambda arn: {"eks.amazonaws.com/role-arn": arn}
             )
+            self._nexus_project_id = nx.byoc_project_id or self._api_key.project_id
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._eks.provider,
@@ -561,14 +572,17 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 cloud="aws",
                 region=args.region,
                 pinecone_prod=args.global_env == "prod",
-                byoc_project_id=nx.byoc_project_id or self._api_key.project_id,
+                byoc_project_id=self._nexus_project_id,
                 byoc_vault_id=(
                     nx.byoc_vault_id or self._resource_suffix.apply(lambda s: f"byoc{s}")
                 ),
-                # gp3 via the EBS CSI addon (installed in K8sAddons).
+                # The `gp3` StorageClass created in K8sAddons (EKS ships no gp3
+                # class of its own; the EBS CSI addon only installs the driver).
                 storage_class="gp3",
-                # No controller serves a class-less Ingress on EKS; gateway
-                # exposure is the separate ALB-vs-Gloo decision (nexus#1362).
+                # No gateway Ingress: nothing on EKS consumes one. The gateway is
+                # reached through the netstack *.wksp route via the Gloo edge
+                # (nexus#1362) -- the in-cluster nexus-gateway Service, not an
+                # Ingress, is the routing target.
                 ingress_class=None,
                 blob_storage=blob_storage,
                 service_account_annotations=nexus_sa_annotations,
@@ -583,6 +597,9 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                         r
                         for r in [
                             self._eks,
+                            # Explicit: the gp3 StorageClass the Nexus PVCs
+                            # reference is created inside K8sAddons.
+                            self._k8s_addons,
                             self._k8s_secrets,
                             self._k8s_configmaps,
                             self._ecr_refresher,
@@ -602,6 +619,21 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 kubeconfig=self._eks.kubeconfig.apply(json.dumps),
                 deploy_image=self._nexus.deploy_image,
                 cloud="aws",
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
+            )
+
+            # Depends on Nexus because the cell's operation poller is what
+            # promotes the workspace to Ready — creating before it exists would
+            # wait on nothing. First-run-only (no-op diff/delete): destroy
+            # leaves the workspace; delete it via gCPS before teardown.
+            self._default_workspace = DefaultWorkspace(
+                f"{config.resource_prefix}-default-workspace",
+                DefaultWorkspaceArgs(
+                    name=DEFAULT_WORKSPACE_NAME,
+                    environment=nx.byoc_env or self._environment.env_name,
+                    api_url=args.api_url,
+                    pinecone_api_key=args.pinecone_api_key,
+                ),
                 opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
             )
 
@@ -947,3 +979,73 @@ class PineconeAWSCluster(pulumi.ComponentResource):
     def nexus_byoc_session_credential(self) -> pulumi.Output[str] | None:
         """The seeded BYOC login credential, or None on DB-only deploys. Marked secret."""
         return self._k8s_secrets.byoc_session_credential
+
+    def _default_workspace_exists(self) -> pulumi.Output[bool]:
+        """Live existence of the `default` workspace, checked once per program run.
+
+        The bootstrap resource is first-run-only (never re-created, no-op
+        delete), so its stored outputs outlive a workspace the user later
+        deletes. The URL exports gate on this lookup instead, so they read
+        null once the workspace is gone. Previews skip the network call and
+        assume existence.
+        """
+        if self.__default_workspace_exists is None:
+            workspace = self._default_workspace
+            if workspace is None:
+                # both URL properties return early on DB-only deploys, so this
+                # is unreachable through them
+                raise RuntimeError("default-workspace existence check requires a Nexus deploy")
+            # unsecret: secretness taints everything derived from the API key,
+            # which would render the exported URLs as [secret]; the boolean
+            # reveals nothing about the key. The host input is purely for
+            # sequencing — key and api_url resolve at program start, and on a
+            # first deploy the check must not run before the workspace exists.
+            # Previews run the same check so preview and update agree
+            # (workspace_exists fails open, keeping offline previews working).
+            self.__default_workspace_exists = pulumi.Output.unsecret(
+                pulumi.Output.all(
+                    self.args.pinecone_api_key,
+                    self.args.api_url,
+                    workspace.host,
+                ).apply(lambda a: api.workspace_exists(a[0], a[1], DEFAULT_WORKSPACE_NAME))
+            )
+        return self.__default_workspace_exists
+
+    @property
+    def nexus_default_workspace_data_console_url(self) -> pulumi.Output[str] | None:
+        """Console URL of the first-run `default` workspace.
+
+        None on DB-only deploys; resolves to null once the workspace has been
+        deleted (existence is re-checked on every `pulumi up`).
+        """
+        if self._default_workspace is None:
+            return None
+        # Built from the stored host, not the stored url: resource state is
+        # frozen at creation, so anything persisted there can go stale. The
+        # host is the durable fact; the path is decided at read time.
+        url = pulumi.Output.concat("https://", self._default_workspace.host, "/contexts")
+        return pulumi.Output.all(self._default_workspace_exists(), url).apply(
+            lambda a: a[1] if a[0] else None
+        )
+
+    @property
+    def nexus_default_workspace_control_console_url(self) -> pulumi.Output[str] | None:
+        """Pinecone-console detail page for the default workspace.
+
+        None on DB-only deploys; resolves to null once the workspace has been
+        deleted (existence is re-checked on every `pulumi up`).
+        """
+        if self._default_workspace is None:
+            return None
+        url = pulumi.Output.concat(
+            self.args.console_url,
+            "/organizations/",
+            self._environment.org_id,
+            "/projects/",
+            pulumi.Output.from_input(self._nexus_project_id),
+            "/workspaces/",
+            DEFAULT_WORKSPACE_NAME,
+        )
+        return pulumi.Output.all(self._default_workspace_exists(), url).apply(
+            lambda a: a[1] if a[0] else None
+        )

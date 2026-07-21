@@ -2056,6 +2056,14 @@ pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
 if _nexus_enabled:
     pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
     pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
+    pulumi.export(
+        "nexus_default_workspace_data_console_url",
+        cluster.nexus_default_workspace_data_console_url,
+    )
+    pulumi.export(
+        "nexus_default_workspace_control_console_url",
+        cluster.nexus_default_workspace_control_console_url,
+    )
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("vpc_endpoint_service_name", cluster.vpc_endpoint_service_name)
 '''

@@ -304,6 +304,23 @@ class K8sAddons(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self.ebs_csi_role]),
         )
 
+        # The EBS CSI addon installs the driver but creates no StorageClass --
+        # EKS only ships the legacy in-tree `gp2`. Nexus PVCs (common/nexus.py)
+        # reference `gp3`, so provide it here. Not marked default: the DB stack
+        # owns the cluster default and other classes (e.g. gp2-csi-tagged).
+        self.gp3_storage_class = k8s.storage.v1.StorageClass(
+            f"{name}-gp3-storage-class",
+            metadata=k8s.meta.v1.ObjectMetaArgs(name="gp3"),
+            provisioner="ebs.csi.aws.com",
+            parameters={"type": "gp3"},
+            volume_binding_mode="WaitForFirstConsumer",
+            allow_volume_expansion=True,
+            reclaim_policy="Delete",
+            opts=pulumi.ResourceOptions(
+                parent=self, provider=eks.provider, depends_on=[self.ebs_csi_addon]
+            ),
+        )
+
         # Create azrebalance role for suspend-azrebalance cronjob
         self.azrebalance_role = self._create_azrebalance_role(
             name,
@@ -327,6 +344,7 @@ class K8sAddons(pulumi.ComponentResource):
                 "cluster_autoscaler_role_arn": self.cluster_autoscaler_role.arn,
                 "external_dns_role_arn": self.external_dns_role.arn,
                 "ebs_csi_role_arn": self.ebs_csi_role.arn,
+                "gp3_storage_class": self.gp3_storage_class.metadata.name,
                 "azrebalance_role_arn": self.azrebalance_role.arn,
                 "amp_ingest_role_arn": self.amp_ingest_role.arn,
             }
