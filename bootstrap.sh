@@ -171,6 +171,10 @@ if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/setup/wizard.py" ]; then
 fi
 cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
 cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py
+# validate_models.py is self-contained; it's kept in a Nexus-enabled project so
+# the operator can optionally probe their inference models after setup (and is
+# removed again below for a DB-only install).
+cp "$SCRIPT_DIR/setup/validate_models.py" validate_models.py
 LOCAL_PKG="$SCRIPT_DIR"
 
 # create a temp pyproject.toml for the setup wizard dependencies
@@ -212,3 +216,15 @@ fi
 
 # cleanup wizard setup files (keep .venv, pyproject.toml, uv.lock created by wizard)
 rm -f wizard.py preflight_checks.py
+
+# validate_models.py is only useful for a Nexus-enabled project — the wizard
+# writes inference-proxy-models.toml only in that case. Keep the script + surface
+# the optional command there; drop it for a DB-only install (cwd is the project).
+if [ -f "inference-proxy-models.toml" ]; then
+    echo ""
+    echo -e "${DIM}Optional — validate your Nexus inference models (live probe):${RESET}"
+    echo -e "  ${BLUE}cd $project_dir && uv run --no-project --with 'litellm==1.87.0' python validate_models.py${RESET}"
+    echo -e "  ${DIM}(litellm pinned to the proxy's version; add --help for options like --stack-dir / --stack)${RESET}"
+else
+    rm -f validate_models.py
+fi
