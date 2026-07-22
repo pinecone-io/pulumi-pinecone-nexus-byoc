@@ -8,9 +8,10 @@
 
 Deploy Pinecone in your own cloud account with full control over your infrastructure.
 
-> **Supported clouds:** **GCP** and **AWS** are fully supported today — on both,
-> you can install Pinecone Database with or without Nexus. **Azure** is
-> **coming soon**. See [AWS](#aws) for AWS-specific operational notes.
+> **Supported clouds:** **GCP** and **AWS** are fully supported today — the
+> installer deploys Pinecone Nexus, together with its Pinecone Database data
+> plane, into your own cloud account. **Azure** is **coming soon**. See
+> [AWS](#aws) for AWS-specific operational notes.
 
 ![Demo](./assets/demo.gif)
 
@@ -43,8 +44,8 @@ pulumi login
 If you use the local backend, choose a passphrase for encrypting stack secrets and
 export it as `PULUMI_CONFIG_PASSPHRASE` — every `pulumi` command needs it.
 
-You will also need a **Pinecone API key** (BYOC requires an Enterprise plan). If you
-enable **Nexus**, have a **Gemini API key** ready as well — the wizard prompts for both.
+You will also need a **Pinecone API key** (BYOC requires an Enterprise plan) and a
+**Gemini API key** — the wizard prompts for both.
 Gemini is the shipped default generation LLM; you can point the catalog at other
 providers by editing the generated `inference-proxy-models.toml`.
 
@@ -94,8 +95,8 @@ kubectl get pods -A
 [Cluster Access](#cluster-access) for the AWS equivalent. Azure support is
 coming soon.)
 
-If Nexus is enabled, the first `pulumi up` also creates a default workspace and
-prints two more outputs once it's ready:
+The first `pulumi up` also creates a default workspace and prints two more
+outputs once it's ready:
 - `nexus_default_workspace_data_console_url` — the in-cell workspace console for the `default` workspace.
 - `nexus_default_workspace_control_console_url` — the Pinecone Console page for that workspace.
 
@@ -117,10 +118,10 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 | **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
 | **AWS account** | AWS BYOC | A **dedicated account** with administrator-level access (the deploy creates IAM roles and policies) |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
-| **Generation-LLM key** (BYOM) | **Nexus only** | The default catalog's generation LLM (curation + search) is **Gemini** — get a key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as `nexus-provider-keys.gemini-api-key`. The catalog is editable (`inference-proxy-models.toml`): route the chat tiers to other providers, each with its own `nexus-provider-keys.<ref>` secret. Embedding and rerank default to **Pinecone-hosted** models (`multilingual-e5-large` / `bge-reranker-v2-m3`) that need no extra key; the embedding model is catalog-configurable (nexus#1234) |
+| **Generation-LLM key** (BYOM) | All BYOC | The default catalog's generation LLM (curation + search) is **Gemini** — get a key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as `nexus-provider-keys.gemini-api-key`. The catalog is editable (`inference-proxy-models.toml`): route the chat tiers to other providers, each with its own `nexus-provider-keys.<ref>` secret. Embedding and rerank default to **Pinecone-hosted** models (`multilingual-e5-large` / `bge-reranker-v2-m3`) that need no extra key; the embedding model is catalog-configurable (nexus#1234) |
 
 > **Create a dedicated GCP project.** BYOC provisions project-level infrastructure
-> (VPC, GKE, AlloyDB, GCS, DNS), enables several GCP APIs, and creates service accounts
+> (VPC, GKE, GCS, DNS), enables several GCP APIs, and creates service accounts
 > and IAM bindings, so a fresh project gives clean isolation and a clean teardown. You
 > must have the **Owner** role (`roles/owner`) on it — `roles/editor` is **not**
 > sufficient, because the deploy sets project and service-account IAM policy — and
@@ -180,9 +181,9 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 │  Observability (DD)  │   traces           │  │                                           ││
 │                      │                    │  └───────────────────────────────────────────┘│
 └──────────────────────┘                    │  ┌──────────┐  ┌───────────┐  ┌─────────────┐ │
-                                            │  │ S3/GCS/  │  |RDS/AlloyDB|  │ Route53/    │ │
-        No customer data                    │  │ AzureBlob│  │/AzurePGSQL|  | CloudDNS/   | │
-        leaves the cluster                  │  └──────────┘  └───────────┘  | Azure DNS   | │
+                                            │  │ S3/GCS/  │  │Foundation │  │ Route53/    │ │
+        No customer data                    │  │ AzureBlob│  │DB (shared)│  │ CloudDNS/   │ │
+        leaves the cluster                  │  └──────────┘  └───────────┘  │ Azure DNS   │ │
                                             │                               └─────────────┘ │
                                             └───────────────────────────────────────────────┘
 ```
@@ -224,24 +225,32 @@ The exact command is output after `pulumi up` completes.
 
 ## Upgrades
 
-Pinecone manages upgrades automatically in the background. If you need to trigger an upgrade manually:
+Pinecone manages upgrades automatically in the background. A cell is pinned to
+two independent image tags that roll separately — `pinecone-version` (the
+Pinecone Database images) and `nexus-version` (the Nexus images). If you need to
+trigger an upgrade manually, set either pin (or both) and re-run `pulumi up`:
 
 ```bash
-pulumi up -c pinecone-version=<new-version>
+# Bump the Pinecone Database version
+pulumi up -c pinecone-version=<new-db-tag>
+
+# Bump the Nexus version
+pulumi up -c nexus-version=<new-nexus-tag>
 ```
 
-Replace `<new-version>` with the target Pinecone version (e.g., `main-abc1234`).
+Replace the tags with the target versions (e.g., `main-abc1234`). The two pins
+are unrelated — bumping one does not touch the other.
 
 ## AWS
 
-On AWS, this repository supports **full installs** — Pinecone Database with or
-without Nexus — validated end-to-end with real installs and teardowns. The
-notes below cover AWS-specific operational behavior.
+On AWS, this repository installs Pinecone Nexus together with its Pinecone
+Database data plane — validated end-to-end with real installs and teardowns.
+The notes below cover AWS-specific operational behavior.
 
-### Nexus on AWS
+### AWS install shape
 
-Nexus-enabled AWS installs run on EKS with a **shared external FoundationDB
-cluster** serving both the Pinecone Database data plane and Nexus metadata.
+AWS installs run on EKS with a **shared external FoundationDB cluster** serving
+both the Pinecone Database data plane and Nexus metadata.
 The wizard defaults reflect this shape: `data-plane-backend=fdb`,
 `nexus-fdb-mode=external`, and **three availability zones** (fewer than three
 silently degrades FDB's zone fault domains).
@@ -279,23 +288,34 @@ This is an open item tracked separately.
 
 ### Install expectations
 
-- A DB-only cold install takes roughly **25-40 minutes** (observed: ~23m30s for
-  ~215 resources). A Nexus-enabled (fdb) install provisions ~225 resources in a
-  single hands-free `pulumi up`.
+- A cold install takes roughly **25-40 minutes** and provisions ~225 resources
+  in a single hands-free `pulumi up`.
 - The slowest single step is **VPC endpoint service private DNS verification**:
   about 15 minutes of `Waiting for domain verification (pendingVerification)`
   polling is **normal**, not a hang. Let it finish.
 
-### Updating the Pinecone version on a live stack
+### Updating versions on a live stack
+
+A live cell carries two independent version pins that roll separately — the
+Pinecone Database images (`pinecone-version`) and the Nexus images
+(`nexus-version`). Bump either one the same way: set the config key, then
+`pulumi up`.
 
 ```bash
-pulumi config set pinecone-version <tag>
+# Pinecone Database images
+pulumi config set pinecone-version <db-tag>
+pulumi up
+
+# Nexus images
+pulumi config set nexus-version <nexus-tag>
 pulumi up
 ```
 
-This is a surgical operation: it touches only the pinetools CronJob, the
-versioned install Job, and the uninstaller image reference. The install Job then
-rolls all DB components to the new tag.
+Bumping `pinecone-version` is a surgical operation: it touches only the pinetools
+CronJob, the versioned install Job, and the uninstaller image reference. The
+install Job then rolls all DB components to the new tag. Bumping `nexus-version`
+is likewise scoped to the Nexus images and their deploy — it does not touch the
+DB components.
 
 ### Teardown notes
 
@@ -316,8 +336,8 @@ Keep in mind:
 - **CloudWatch logs:** EKS leaves a `/aws/eks/<cluster-name>/cluster` log group
   behind. Delete it manually (or set a retention policy) for a truly clean
   account.
-- **FDB volumes:** on Nexus-enabled (fdb) installs, the EBS volumes backing
-  the FoundationDB PersistentVolumeClaims can be left behind after destroy.
+- **FDB volumes:** the EBS volumes backing the FoundationDB PersistentVolumeClaims
+  can be left behind after destroy.
   Check for orphans (`aws ec2 describe-volumes
   --filters Name=status,Values=available`) and delete them manually.
 - **Environment deregistration** happens automatically during destroy — the
@@ -335,10 +355,11 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `pinecone-version` | Pinecone release version (required) | — |
+| `nexus-version` | Nexus release version | — |
 | `region` | AWS region | `us-east-1` |
 | `availability_zones` | AZs for high availability (3 recommended — FDB zone fault domains) | first 3 available AZs, e.g. `["us-east-1a", "us-east-1b", "us-east-1c"]` |
 | `vpc_cidr` | VPC IP range | `10.0.0.0/16` |
-| `deletion_protection` | Protect RDS/S3 from accidental deletion | `true` |
+| `deletion_protection` | Protect S3 from accidental deletion | `true` |
 | `public_access_enabled` | Enable public endpoint (false = PrivateLink only) | `true` |
 | `tags` | Custom tags to apply to all resources | `{}` |
 
@@ -347,11 +368,12 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `pinecone-version` | Pinecone release version (required) | — |
+| `nexus-version` | Nexus release version | — |
 | `gcp_project` | GCP project ID (required) | — |
 | `region` | GCP region | `us-central1` |
-| `availability_zones` | Zones for high availability | `["us-central1-a", "us-central1-b"]` |
+| `availability_zones` | Zones for high availability (3 recommended — FDB zone fault domains) | first 3 available zones, e.g. `["us-central1-a", "us-central1-b", "us-central1-c"]` |
 | `vpc_cidr` | VPC IP range | `10.112.0.0/12` |
-| `deletion_protection` | Protect AlloyDB/GCS from accidental deletion | `true` |
+| `deletion_protection` | Protect GCS from accidental deletion | `true` |
 | `public_access_enabled` | Enable public endpoint (false = Private Service Connect only) | `true` |
 | `labels` | Custom labels to apply to all resources | `{}` |
 
@@ -360,6 +382,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | Option | Description | Default |
 |--------|-------------|---------|
 | `pinecone-version` | Pinecone release version (required) | — |
+| `nexus-version` | Nexus release version | — |
 | `subscription-id` | Azure subscription ID (required) | — |
 | `region` | Azure region | `eastus` |
 | `availability_zones` | Zones for high availability | `["1", "2"]` |
