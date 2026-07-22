@@ -98,6 +98,14 @@ prints two more outputs once it's ready:
 - `nexus_default_workspace_data_console_url` — the in-cell workspace console for the `default` workspace.
 - `nexus_default_workspace_control_console_url` — the Pinecone Console page for that workspace.
 
+The workspace is named `default` unless you set `nexus-default-workspace-name`.
+Workspace names are unique across the whole BYOC project, so when several cells
+share one project each additional cell needs a distinct name:
+
+```bash
+pulumi config set nexus-default-workspace-name default-<cell-suffix>
+```
+
 ## Prerequisites
 
 ### Accounts & API Keys

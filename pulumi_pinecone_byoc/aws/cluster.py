@@ -540,9 +540,13 @@ class PineconeAWSCluster(pulumi.ComponentResource):
         self._nexus_s3 = None
         self._nexus_project_id = None
         self._default_workspace = None
+        self._default_workspace_name = DEFAULT_WORKSPACE_NAME
         self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
+            # Workspace names are unique per BYOC project, not per cell: a second
+            # cell sharing the project must deviate from "default" or create fails.
+            self._default_workspace_name = nx.default_workspace_name or DEFAULT_WORKSPACE_NAME
             # Nexus versions independently of the DB stack (separate repo, separate
             # image tags), so there is no meaningful fallback to pinecone_version --
             # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
@@ -651,7 +655,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             self._default_workspace = DefaultWorkspace(
                 f"{config.resource_prefix}-default-workspace",
                 DefaultWorkspaceArgs(
-                    name=DEFAULT_WORKSPACE_NAME,
+                    name=self._default_workspace_name,
                     environment=nx.byoc_env or self._environment.env_name,
                     api_url=args.api_url,
                     pinecone_api_key=args.pinecone_api_key,
@@ -1037,7 +1041,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                     self.args.pinecone_api_key,
                     self.args.api_url,
                     workspace.host,
-                ).apply(lambda a: api.workspace_exists(a[0], a[1], DEFAULT_WORKSPACE_NAME))
+                ).apply(lambda a: api.workspace_exists(a[0], a[1], self._default_workspace_name))
             )
         return self.__default_workspace_exists
 
@@ -1074,7 +1078,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             "/projects/",
             pulumi.Output.from_input(self._nexus_project_id),
             "/workspaces/",
-            DEFAULT_WORKSPACE_NAME,
+            self._default_workspace_name,
         )
         return pulumi.Output.all(self._default_workspace_exists(), url).apply(
             lambda a: a[1] if a[0] else None
