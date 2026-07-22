@@ -45,6 +45,8 @@ export it as `PULUMI_CONFIG_PASSPHRASE` — every `pulumi` command needs it.
 
 You will also need a **Pinecone API key** (BYOC requires an Enterprise plan). If you
 enable **Nexus**, have a **Gemini API key** ready as well — the wizard prompts for both.
+Gemini is the shipped default generation LLM; you can point the catalog at other
+providers by editing the generated `inference-proxy-models.toml`.
 
 ### 2. Clone this repository and run the interactive setup
 
@@ -115,7 +117,7 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 | **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
 | **AWS account** | AWS BYOC | A **dedicated account** with administrator-level access (the deploy creates IAM roles and policies) |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
-| **Gemini API key** (BYOM) | **Nexus only** | From [Google AI Studio](https://aistudio.google.com/apikey) — the bring-your-own **generation LLM** (curation + search). Embedding (`multilingual-e5-large`) and rerank (`bge-reranker-v2-m3`) are **Pinecone-hosted** — no extra key needed |
+| **Generation-LLM key** (BYOM) | **Nexus only** | The default catalog's generation LLM (curation + search) is **Gemini** — get a key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as `nexus-provider-keys.gemini-api-key`. The catalog is editable (`inference-proxy-models.toml`): route the chat tiers to other providers, each with its own `nexus-provider-keys.<ref>` secret. Embedding and rerank default to **Pinecone-hosted** models (`multilingual-e5-large` / `bge-reranker-v2-m3`) that need no extra key; the embedding model is catalog-configurable (nexus#1234) |
 
 > **Create a dedicated GCP project.** BYOC provisions project-level infrastructure
 > (VPC, GKE, AlloyDB, GCS, DNS), enables several GCP APIs, and creates service accounts
@@ -124,9 +126,11 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 > sufficient, because the deploy sets project and service-account IAM policy — and
 > **billing must be enabled**.
 
-> **Nexus model capacity:** Gemini is the only model you bring. Its quota is per Google
-> Cloud project and best-effort (no reserved capacity), so a low free-tier project will
-> throttle real curation workloads — use a billing-enabled project/tier sized to your
+> **Nexus generation-LLM capacity:** the generation LLM is the model you bring. The
+> shipped default catalog routes all three chat tiers to Gemini (edit
+> `inference-proxy-models.toml` to route tiers to other providers). Gemini quota is per
+> Google Cloud project and best-effort (no reserved capacity), so a low free-tier project
+> will throttle real curation workloads — use a billing-enabled project/tier sized to your
 > ingest volume. Create the key in [Google AI Studio](https://aistudio.google.com/apikey);
 > associating it with the **same GCP project** as the deployment keeps Gemini
 > cost-tracking unified (the key may live in any project, but a shared one consolidates
@@ -250,14 +254,18 @@ a small manual-cleanup delta documented under
 
 Two install-time knobs to know about:
 
-- **Gemini API key on headless installs:** the interactive wizard prompts for
-  the Gemini key, but headless wizard runs do not collect it
+- **Provider keys on headless installs:** the interactive wizard prompts for the
+  default catalog's Gemini key, but headless wizard runs do not collect it
   ([#34](https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc/issues/34)) —
-  set it manually before deploying:
+  set each key your catalog references manually before deploying. For the default
+  (Gemini) catalog:
 
   ```bash
   pulumi config set --path --secret nexus-provider-keys.gemini-api-key <key>
   ```
+
+  A customized catalog needs one secret per `api_key_ref` it defines
+  (`nexus-provider-keys.<ref>`); the setup preflight lists the refs it expects.
 
 - **Default workspace name:** workspace names are unique across a Pinecone
   project, so when several cells share one project, give each additional cell
