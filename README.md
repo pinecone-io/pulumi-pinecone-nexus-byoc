@@ -180,11 +180,11 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 │  Pinecone            │   metrics &        │  │              Data Plane                   ││
 │  Observability (DD)  │   traces           │  │                                           ││
 │                      │                    │  └───────────────────────────────────────────┘│
-└──────────────────────┘                    │  ┌──────────┐  ┌───────────┐  ┌─────────────┐ │
-                                            │  │ S3/GCS/  │  │Foundation │  │ Route53/    │ │
-        No customer data                    │  │ AzureBlob│  │DB (shared)│  │ CloudDNS/   │ │
-        leaves the cluster                  │  └──────────┘  └───────────┘  │ Azure DNS   │ │
-                                            │                               └─────────────┘ │
+└──────────────────────┘                    │      ┌──────────┐        ┌─────────────┐      │
+                                            │      │ S3/GCS/  │        │ Route53/    │      │
+        No customer data                    │      │ AzureBlob│        │ CloudDNS/   │      │
+        leaves the cluster                  │      └──────────┘        │ Azure DNS   │      │
+                                            │                          └─────────────┘      │
                                             └───────────────────────────────────────────────┘
 ```
 
