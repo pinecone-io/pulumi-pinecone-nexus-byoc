@@ -40,9 +40,7 @@ except ModuleNotFoundError:
 _HOST = "default-byocab12.wksp.aws-us-east-1-ab12.pinecone.io"
 
 
-def _cluster(
-    nexus_deployed: bool = True, workspace_name: str = "default"
-) -> "PineconeAWSCluster":
+def _cluster(nexus_deployed: bool = True, workspace_name: str = "default") -> "PineconeAWSCluster":
     """A cluster with just the attributes the console-URL properties read."""
     cluster = object.__new__(PineconeAWSCluster)
     cluster.args = PineconeAWSClusterArgs(pinecone_api_key="key-1", pinecone_version="v")
