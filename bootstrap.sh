@@ -221,9 +221,16 @@ rm -f wizard.py preflight_checks.py
 # writes inference-proxy-models.toml only in that case. Keep the script + surface
 # the optional command there; drop it for a DB-only install (cwd is the project).
 if [ -f "inference-proxy-models.toml" ]; then
+    # Pin litellm to the exact version the validator expects (single source of
+    # truth: _EXPECTED_LITELLM_VERSION in validate_models.py) so a version bump is
+    # one edit. Fall back to a literal only if the grep somehow misses.
+    litellm_pin="$(grep -oE '_EXPECTED_LITELLM_VERSION = "[^"]+"' validate_models.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+    litellm_pin="${litellm_pin:-1.87.0}"
+    py_pin="$(grep -oE '_EXPECTED_PYTHON_VERSION = "[^"]+"' validate_models.py | grep -oE '[0-9]+\.[0-9]+')"
+    py_pin="${py_pin:-3.12}"
     echo ""
     echo -e "${DIM}Optional — validate your Nexus inference models (live probe):${RESET}"
-    echo -e "  ${BLUE}cd $project_dir && uv run --no-project --with 'litellm==1.87.0' python validate_models.py${RESET}"
+    echo -e "  ${BLUE}cd \"$project_dir\" && uv run --no-project --with 'litellm==${litellm_pin}' --python ${py_pin} python validate_models.py${RESET}"
     echo -e "  ${DIM}(litellm pinned to the proxy's version; add --help for options like --stack-dir / --stack)${RESET}"
 else
     rm -f validate_models.py
