@@ -40,10 +40,13 @@ except ModuleNotFoundError:
 _HOST = "default-byocab12.wksp.aws-us-east-1-ab12.pinecone.io"
 
 
-def _cluster(nexus_deployed: bool = True) -> "PineconeAWSCluster":
+def _cluster(
+    nexus_deployed: bool = True, workspace_name: str = "default"
+) -> "PineconeAWSCluster":
     """A cluster with just the attributes the console-URL properties read."""
     cluster = object.__new__(PineconeAWSCluster)
     cluster.args = PineconeAWSClusterArgs(pinecone_api_key="key-1", pinecone_version="v")
+    cluster._default_workspace_name = workspace_name
     # Outputs need an event loop, so only build them on the Nexus-deployed
     # path (called from inside a coroutine); DB-only reads no Outputs.
     cluster._environment = SimpleNamespace(
@@ -58,7 +61,7 @@ def _cluster(nexus_deployed: bool = True) -> "PineconeAWSCluster":
     return cluster
 
 
-def _resolve(workspace_exists: bool, read_urls):
+def _resolve(workspace_exists: bool, read_urls, workspace_name: str = "default"):
     """Build the cluster and resolve ``read_urls(cluster)`` on a private loop.
 
     Outputs bind futures to the loop current at creation time, so both the
@@ -68,7 +71,7 @@ def _resolve(workspace_exists: bool, read_urls):
         return None
 
     async def go():
-        cluster = _cluster()
+        cluster = _cluster(workspace_name=workspace_name)
         urls = read_urls(cluster)
         return await pulumi.Output.all(*urls).future()
 
@@ -97,6 +100,21 @@ def test_control_console_url_deep_links_org_project_workspace():
     urls = _resolve(True, lambda c: [c.nexus_default_workspace_control_console_url])
     assert urls == [
         "https://app.pinecone.io/organizations/org-1/projects/proj-1/workspaces/default"
+    ]
+
+
+def test_control_console_url_follows_configured_workspace_name():
+    # Multi-cell-per-project installs override the name; the deep link must follow.
+    if not _HAS_AWS:
+        print("  (skipped: pulumi_aws not installed)")
+        return
+    urls = _resolve(
+        True,
+        lambda c: [c.nexus_default_workspace_control_console_url],
+        workspace_name="default-e35a",
+    )
+    assert urls == [
+        "https://app.pinecone.io/organizations/org-1/projects/proj-1/workspaces/default-e35a"
     ]
 
 

@@ -149,6 +149,10 @@ class NexusConfig:
     # Override for the storage bucket prefix. GCP: None => derived `pc-nexus-{cell}`
     # (storage always provisioned); set to override. Azure: None => fs backend, set => blob.
     storage_bucket_prefix: str | None = None
+    # Name of the first-run bootstrap workspace. gCPS enforces workspace-name
+    # uniqueness across the whole BYOC project, so when several cells share one
+    # project each additional cell must pick a distinct name. None => "default".
+    default_workspace_name: str | None = None
     # Inference-proxy model routing. When set, the proxy loads this TOML as the
     # `byoc` config profile -- the deployment's ONLY routing layer. BYOC omits the
     # chart's `managed` profile (see nexus#864), so nothing is inherited: this TOML
