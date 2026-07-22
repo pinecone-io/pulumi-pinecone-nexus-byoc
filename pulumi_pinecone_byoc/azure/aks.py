@@ -14,13 +14,15 @@ from config.base import NodePoolConfig, NodePoolTaint
 
 _AGENT_POOL_NAME_MAX_LEN = 12
 
-# Kubernetes ClusterIP range. Must be RFC1918 (like the GCP/AWS cells) and not
-# overlap the VNet CIDR (default 10.0.0.0/16) -- pods black-hole any real host
-# inside the service range, so a public range here (the old 112.0.0.0/16 APNIC
-# block) silently breaks egress to those addresses. 10.96.0.0/16 is the
-# conventional kube service range and sits clear of the 10.0.0.0/16 VNet.
-_SERVICE_CIDR = "10.96.0.0/16"
-_DNS_SERVICE_IP = "10.96.0.10"
+# Kubernetes ClusterIP range. It is virtual (kube-proxy NATs it; it is never
+# routed), so it need not be globally unique -- but it must be RFC1918 (like the
+# GCP/AWS cells) and must not overlap any network the cluster actually reaches,
+# or pods black-hole real hosts inside the range (the old 112.0.0.0/16 APNIC
+# block did exactly that). 10.96.0.0/16 is the conventional kube service range
+# and sits clear of the default 10.0.0.0/16 VNet; the VNet-overlap guard lives
+# in PineconeAzureClusterArgs.__post_init__.
+SERVICE_CIDR = "10.96.0.0/16"
+DNS_SERVICE_IP = "10.96.0.10"
 
 # Nexus schedules its pods onto pools labeled `nexus-role: services` (long-lived
 # services) and `nexus-role: jobs` (ephemeral task pods) via nodeSelector +
@@ -179,8 +181,8 @@ class AKS(pulumi.ComponentResource):
             },
             network_profile=containerservice.ContainerServiceNetworkProfileArgs(
                 network_plugin="azure",
-                dns_service_ip=_DNS_SERVICE_IP,
-                service_cidr=_SERVICE_CIDR,
+                dns_service_ip=DNS_SERVICE_IP,
+                service_cidr=SERVICE_CIDR,
             ),
             auto_scaler_profile=containerservice.ManagedClusterPropertiesAutoScalerProfileArgs(
                 balance_similar_node_groups="true",

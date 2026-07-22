@@ -1,5 +1,6 @@
 """PineconeAzureCluster - main component for BYOC deployments on Azure."""
 
+import ipaddress
 from dataclasses import dataclass, field
 
 import pulumi
@@ -34,7 +35,7 @@ from ..common.providers import (
 )
 from ..common.registry import AZURE_REGISTRY, NEXUS_AZURE_REGISTRY
 from ..common.uninstaller import ClusterUninstaller
-from .aks import AKS
+from .aks import AKS, SERVICE_CIDR
 from .database import Database
 from .dns import DNS
 from .k8s_addons import K8sAddons
@@ -123,6 +124,16 @@ class PineconeAzureClusterArgs:
             raise ValueError(
                 "data_plane_backend='fdb' requires at least 3 availability zones "
                 f"for zone fault domains, got {self.availability_zones!r}."
+            )
+        # The AKS service CIDR is virtual, but pods (real VNet IPs under Azure
+        # CNI) black-hole any host inside it -- so a VNet that overlaps the
+        # service range silently breaks egress to that range. Fail fast. This
+        # only sees the VNet; peered/on-prem ranges are the operator's to keep
+        # clear of SERVICE_CIDR.
+        if ipaddress.ip_network(self.vpc_cidr).overlaps(ipaddress.ip_network(SERVICE_CIDR)):
+            raise ValueError(
+                f"vpc_cidr {self.vpc_cidr!r} overlaps the AKS service CIDR {SERVICE_CIDR!r}; "
+                "choose a VNet range clear of it (pods black-hole hosts in the overlap)."
             )
 
 
