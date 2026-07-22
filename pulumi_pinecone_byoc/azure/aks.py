@@ -14,6 +14,14 @@ from config.base import NodePoolConfig, NodePoolTaint
 
 _AGENT_POOL_NAME_MAX_LEN = 12
 
+# Kubernetes ClusterIP range. Must be RFC1918 (like the GCP/AWS cells) and not
+# overlap the VNet CIDR (default 10.0.0.0/16) -- pods black-hole any real host
+# inside the service range, so a public range here (the old 112.0.0.0/16 APNIC
+# block) silently breaks egress to those addresses. 10.96.0.0/16 is the
+# conventional kube service range and sits clear of the 10.0.0.0/16 VNet.
+_SERVICE_CIDR = "10.96.0.0/16"
+_DNS_SERVICE_IP = "10.96.0.10"
+
 # Nexus schedules its pods onto pools labeled `nexus-role: services` (long-lived
 # services) and `nexus-role: jobs` (ephemeral task pods) via nodeSelector +
 # tolerations. The label key/value and matching NoSchedule taint match the nexus
@@ -171,8 +179,8 @@ class AKS(pulumi.ComponentResource):
             },
             network_profile=containerservice.ContainerServiceNetworkProfileArgs(
                 network_plugin="azure",
-                dns_service_ip="112.0.0.10",
-                service_cidr="112.0.0.0/16",
+                dns_service_ip=_DNS_SERVICE_IP,
+                service_cidr=_SERVICE_CIDR,
             ),
             auto_scaler_profile=containerservice.ManagedClusterPropertiesAutoScalerProfileArgs(
                 balance_similar_node_groups="true",
