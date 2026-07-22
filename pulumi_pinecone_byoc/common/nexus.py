@@ -173,8 +173,8 @@ class NexusConfig:
 
 
 def require_external_fdb_for_nexus(nexus: "NexusConfig | None", data_plane_backend: str) -> None:
-    """Nexus is supported only on the shared external FDB data plane; the single-node
-    interim and any non-fdb backend are rejected whenever Nexus is enabled."""
+    """Nexus runs as an external client of the DB's shared FoundationDB, so it requires
+    data_plane_backend='fdb' with fdb_mode='external' -- no other data plane is valid."""
     if nexus is None:
         return
     if data_plane_backend != "fdb" or nexus.fdb_mode != "external":

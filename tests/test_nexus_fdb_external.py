@@ -5,9 +5,9 @@ Covers the contract for `fdb_mode="external"`:
   (fdb-values `.foundationdb.mode = external`) and points the nexus chart at the
   shared cluster file (app-values `.foundationdb.source = external`);
 - when Nexus is enabled, validation requires the shared external FDB data plane:
-  the data plane must be `fdb` AND `fdb_mode` must be `external`. The single-node
-  interim and any non-fdb backend are rejected (single-mode is not a supported
-  Nexus configuration, though the Nexus component still renders it).
+  the data plane must be `fdb` AND `fdb_mode` must be `external`. A non-fdb backend
+  or single-node `fdb_mode` is rejected for Nexus. The Nexus component itself still
+  renders single mode (covered by the component-level tests below).
 
 Run standalone (`python tests/test_nexus_fdb_external.py`) or under pytest.
 """
