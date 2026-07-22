@@ -3885,6 +3885,7 @@ cluster = PineconeAzureCluster(
             byoc_vault_id=config.get("nexus-byoc-vault-id"),
             byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
             storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+            default_workspace_name=config.get("nexus-default-workspace-name"),
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
             fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
@@ -3901,6 +3902,14 @@ pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
 if _nexus_enabled:
     pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
     pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
+    pulumi.export(
+        "nexus_default_workspace_data_console_url",
+        cluster.nexus_default_workspace_data_console_url,
+    )
+    pulumi.export(
+        "nexus_default_workspace_control_console_url",
+        cluster.nexus_default_workspace_control_console_url,
+    )
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("private_link_service_name", cluster.private_link_service_name)
     pulumi.export("private_link_service_resource_group", cluster.private_link_service_resource_group)
