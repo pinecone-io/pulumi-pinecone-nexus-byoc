@@ -356,11 +356,8 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             ),
             nexus=NexusSecretConfig(
                 api_key=args.pinecone_api_key,
-                azure_storage_access_key=(
-                    self._storage.access_key
-                    if args.nexus.storage_bucket_prefix is not None
-                    else None
-                ),
+                # Blob storage is always provisioned, so the driver always needs the key.
+                azure_storage_access_key=self._storage.access_key,
                 provider_keys=args.nexus.provider_keys,
                 provider_key_refs=(
                     derive_api_key_refs(args.nexus.inference_models_toml)
@@ -521,21 +518,25 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                     "nexus.version must be set to the Nexus image tag (the nexus "
                     "images.yml build tag). It is unrelated to the DB pinecone_version."
                 )
-            blob_storage = None
-            if nx.storage_bucket_prefix is not None:
-                self._nexus_containers = NexusBlobContainers(
-                    f"{config.resource_prefix}-nexus-containers",
-                    prefix=nx.storage_bucket_prefix,
-                    storage_account_name=self._storage.storage_account.name,
-                    resource_group_name=self._vnet.resource_group_name,
-                    opts=pulumi.ResourceOptions(parent=self, depends_on=[self._storage]),
-                )
-                blob_storage = NexusBlobStorage(
-                    source=self._nexus_containers.source,
-                    knowledge=self._nexus_containers.knowledge,
-                    archive=self._nexus_containers.archive,
-                    account_name=self._storage.account_name,
-                )
+            # Always provision blob storage -- the Azure blob driver needs the
+            # account unconditionally, so `fs` mode isn't durable. Prefix
+            # defaults to `pc-nexus-{cell}`; the config value is an override.
+            storage_prefix = nx.storage_bucket_prefix or self._cell_name.apply(
+                lambda cn: f"pc-nexus-{cn}"
+            )
+            self._nexus_containers = NexusBlobContainers(
+                f"{config.resource_prefix}-nexus-containers",
+                prefix=storage_prefix,
+                storage_account_name=self._storage.storage_account.name,
+                resource_group_name=self._vnet.resource_group_name,
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._storage]),
+            )
+            blob_storage = NexusBlobStorage(
+                source=self._nexus_containers.source,
+                knowledge=self._nexus_containers.knowledge,
+                archive=self._nexus_containers.archive,
+                account_name=self._storage.account_name,
+            )
             self._nexus_project_id = nx.byoc_project_id or self._api_key.project_id
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
