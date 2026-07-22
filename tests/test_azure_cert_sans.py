@@ -1,9 +1,9 @@
 """Azure netstack TLS SANs: the cert Gloo serves must cover the wksp host.
 
-Azure terminates workspace TLS at Gloo with this Let's Encrypt cert (AWS
-dodged it via the ALB ACM cert), so the ``*.wksp`` host needs its own SAN or
-it fails TLS even on the public path (nexus#1404). The private-endpoint
-``*.wksp.private`` SAN is a separate cross-cloud gap and intentionally absent.
+Gloo terminates workspace TLS with this Let's Encrypt cert, so the ``*.wksp``
+host needs its own SAN or it fails TLS even on the public path. The
+private-endpoint ``*.wksp.private`` SAN is a separate gap and intentionally
+absent.
 
 The Ingress is built inside the InternalLoadBalancer component, so this
 constructs it under the Pulumi mock runtime and reads back the TLS host set.

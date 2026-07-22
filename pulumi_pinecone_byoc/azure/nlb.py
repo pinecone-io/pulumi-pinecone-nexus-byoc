@@ -187,10 +187,10 @@ class InternalLoadBalancer(pulumi.ComponentResource):
                             subdomain.apply(lambda s: f"*.svc.{s}"),
                             subdomain.apply(lambda s: f"*.private.{s}"),
                             subdomain.apply(lambda s: f"*.svc.private.{s}"),
-                            # Azure terminates workspace TLS at Gloo with this
-                            # cert (AWS dodged it via the ALB ACM cert), so the
-                            # `.wksp` host needs its own SAN even on the public
-                            # path. Keep in sync with netstack's sslConfig secret.
+                            # Gloo terminates workspace TLS here, so the `.wksp`
+                            # host needs its own SAN or it fails TLS even on the
+                            # public path. Keep in sync with the hosts netstack's
+                            # sslConfig secret serves.
                             subdomain.apply(lambda s: f"*.wksp.{s}"),
                         ],
                         secret_name=tls_secret_name,

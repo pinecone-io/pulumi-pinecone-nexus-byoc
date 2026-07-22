@@ -1,7 +1,6 @@
-"""Azure shared-FDB wiring: the fdb data-plane backend on AKS (nexus#1404).
+"""Azure shared-FDB wiring: the fdb data-plane backend on AKS.
 
-Azure port of the AWS wiring (nexus#1378). Covers the PineconeAzureCluster
-layer:
+Covers the PineconeAzureCluster layer:
 
 - the zone-count guard: with <3 zones the FoundationDB CR silently degrades
   from zone to hostname fault domains, so the fdb backend rejects short zone
@@ -9,7 +8,7 @@ layer:
 - the Database-less property layer: fdb cells provision no Flexible Server, so
   the ``database`` property must read as None instead of raising.
 
-The Nexus deploy-values contract for ``fdb_mode`` and the cross-cloud
+The Nexus deploy-values contract for ``fdb_mode`` and the
 ``external``-requires-``fdb`` arg guards live in ``test_nexus_fdb_external.py``.
 The cluster here is built with ``object.__new__`` so only the attributes the
 properties read need to exist (a full component construction reaches for real

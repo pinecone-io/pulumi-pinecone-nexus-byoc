@@ -14,13 +14,11 @@ from config.base import NodePoolConfig, NodePoolTaint
 
 _AGENT_POOL_NAME_MAX_LEN = 12
 
-# Kubernetes ClusterIP range. It is virtual (kube-proxy NATs it; it is never
-# routed), so it need not be globally unique -- but it must be RFC1918 (like the
-# GCP/AWS cells) and must not overlap any network the cluster actually reaches,
-# or pods black-hole real hosts inside the range (the old 112.0.0.0/16 APNIC
-# block did exactly that). 10.96.0.0/16 is the conventional kube service range
-# and sits clear of the default 10.0.0.0/16 VNet; the VNet-overlap guard lives
-# in PineconeAzureClusterArgs.__post_init__.
+# Kubernetes ClusterIP range. It is virtual (kube-proxy NATs it; never routed),
+# so it need not be globally unique -- but it must be RFC1918 and must not
+# overlap any network the cluster reaches, or pods black-hole real hosts inside
+# the range. 10.96.0.0/16 is the conventional kube service range and clears the
+# default 10.0.0.0/16 VNet; PineconeAzureClusterArgs enforces the no-overlap.
 SERVICE_CIDR = "10.96.0.0/16"
 DNS_SERVICE_IP = "10.96.0.10"
 

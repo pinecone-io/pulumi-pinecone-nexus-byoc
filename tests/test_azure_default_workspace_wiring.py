@@ -1,11 +1,11 @@
 """Azure default-workspace console-link wiring: URL shapes + existence gating.
 
 The DefaultWorkspace provider and workspace API are covered by their own
-(cloud-agnostic) tests; this covers the PineconeAzureCluster property layer
-ported from AWS/GCP — the data/control console URLs and how they gate on the
-live workspace-existence check. The cluster is built with ``object.__new__``
-so only the attributes the properties read need to exist (a full component
-construction reaches for real Azure waiters).
+(cloud-agnostic) tests; this covers the PineconeAzureCluster property layer —
+the data/control console URLs and how they gate on the live workspace-existence
+check. The cluster is built with ``object.__new__`` so only the attributes the
+properties read need to exist (a full component construction reaches for real
+Azure waiters).
 
 No Pulumi mock runtime: the properties only combine Outputs (no resources
 are registered), so each test resolves them on a private event loop. This

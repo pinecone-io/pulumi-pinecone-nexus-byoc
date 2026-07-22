@@ -1,8 +1,7 @@
 """Azure AKS service CIDR must be private and clear of the VNet.
 
-The cluster ClusterIP range used to be 112.0.0.0/16 -- public APNIC space, so
-pods black-holed any real host in that range (nexus#1404). It must be RFC1918
-(like the GCP/AWS cells) and not overlap the default 10.0.0.0/16 VNet, and the
+The ClusterIP range must be RFC1918 (a public range makes pods black-hole real
+hosts inside it) and must not overlap the default 10.0.0.0/16 VNet, and the
 kube-dns service IP must sit inside the service range. The cluster args reject a
 `vpc_cidr` that overlaps the service range, so a custom VNet collision fails at
 construction instead of silently black-holing.
