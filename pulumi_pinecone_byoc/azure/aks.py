@@ -16,9 +16,10 @@ _AGENT_POOL_NAME_MAX_LEN = 12
 
 # Kubernetes ClusterIP range. It is virtual (kube-proxy NATs it; never routed),
 # so it need not be globally unique -- but it must be RFC1918 and must not
-# overlap any network the cluster reaches, or pods black-hole real hosts inside
-# the range. 10.96.0.0/16 is the conventional kube service range and clears the
-# default 10.0.0.0/16 VNet; PineconeAzureClusterArgs enforces the no-overlap.
+# overlap any network the cluster reaches: an address inside the range gets
+# routed as a ClusterIP, so the real host at that address is never reached.
+# 10.96.0.0/16 is the conventional kube service range and clears the default
+# 10.0.0.0/16 VNet; PineconeAzureClusterArgs enforces the no-overlap.
 SERVICE_CIDR = "10.96.0.0/16"
 DNS_SERVICE_IP = "10.96.0.10"
 

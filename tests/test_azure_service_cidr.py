@@ -1,10 +1,11 @@
 """Azure AKS service CIDR must be private and clear of the VNet.
 
-The ClusterIP range must be RFC1918 (a public range makes pods black-hole real
-hosts inside it) and must not overlap the default 10.0.0.0/16 VNet, and the
-kube-dns service IP must sit inside the service range. The cluster args reject a
-`vpc_cidr` that overlaps the service range, so a custom VNet collision fails at
-construction instead of silently black-holing.
+The ClusterIP range must be RFC1918 (an address inside the range is routed as a
+ClusterIP, so the real host at that address is never reached) and must not
+overlap the default 10.0.0.0/16 VNet, and the kube-dns service IP must sit
+inside the service range. The cluster args reject a `vpc_cidr` that overlaps the
+service range, so a custom VNet collision fails at construction instead of
+silently breaking connectivity.
 
 Run standalone (`python tests/test_azure_service_cidr.py`) or under pytest.
 """
