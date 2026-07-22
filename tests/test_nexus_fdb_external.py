@@ -1,10 +1,13 @@
 """External FDB mode: Nexus consumes the shared FDB data-plane cluster.
 
-Covers the PR-2 contract for `fdb_mode="external"`:
+Covers the contract for `fdb_mode="external"`:
 - the deploy-values ConfigMap signals the installer to skip the FDB charts
   (fdb-values `.foundationdb.mode = external`) and points the nexus chart at the
   shared cluster file (app-values `.foundationdb.source = external`);
-- validation rejects `external` unless the data plane is `fdb`.
+- when Nexus is enabled, validation requires the shared external FDB data plane:
+  the data plane must be `fdb` AND `fdb_mode` must be `external`. A non-fdb backend
+  or single-node `fdb_mode` is rejected for Nexus. The Nexus component itself still
+  renders single mode (covered by the component-level tests below).
 
 Run standalone (`python tests/test_nexus_fdb_external.py`) or under pytest.
 """
@@ -153,6 +156,120 @@ def test_aws_cluster_args_allow_external_on_fdb():
         nexus=NexusConfig(fdb_mode="external"),
     )
     assert args.nexus is not None and args.nexus.fdb_mode == "external"
+
+
+def test_azure_cluster_args_reject_external_on_postgres():
+    try:
+        from pulumi_pinecone_byoc.azure import PineconeAzureClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_azure_native not installed)")
+        return
+
+    try:
+        PineconeAzureClusterArgs(
+            pinecone_api_key="k",
+            pinecone_version="v",
+            data_plane_backend="postgres",
+            nexus=NexusConfig(fdb_mode="external"),
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError: external requires data_plane_backend=fdb")
+
+
+def test_azure_cluster_args_allow_external_on_fdb():
+    try:
+        from pulumi_pinecone_byoc.azure import PineconeAzureClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_azure_native not installed)")
+        return
+
+    args = PineconeAzureClusterArgs(
+        pinecone_api_key="k",
+        pinecone_version="v",
+        data_plane_backend="fdb",
+        nexus=NexusConfig(fdb_mode="external"),
+    )
+    assert args.nexus is not None and args.nexus.fdb_mode == "external"
+
+
+def test_gcp_cluster_args_reject_single_on_fdb():
+    try:
+        from pulumi_pinecone_byoc.gcp import PineconeGCPClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_gcp not installed)")
+        return
+
+    try:
+        PineconeGCPClusterArgs(
+            pinecone_api_key="k",
+            pinecone_version="v",
+            project="p",
+            data_plane_backend="fdb",
+            nexus=NexusConfig(fdb_mode="single"),
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError: Nexus requires fdb_mode=external")
+
+
+def test_aws_cluster_args_reject_single_on_fdb():
+    try:
+        from pulumi_pinecone_byoc.aws import PineconeAWSClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_aws not installed)")
+        return
+
+    try:
+        PineconeAWSClusterArgs(
+            pinecone_api_key="k",
+            pinecone_version="v",
+            data_plane_backend="fdb",
+            nexus=NexusConfig(fdb_mode="single"),
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError: Nexus requires fdb_mode=external")
+
+
+def test_azure_cluster_args_reject_single_on_fdb():
+    try:
+        from pulumi_pinecone_byoc.azure import PineconeAzureClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_azure_native not installed)")
+        return
+
+    try:
+        PineconeAzureClusterArgs(
+            pinecone_api_key="k",
+            pinecone_version="v",
+            data_plane_backend="fdb",
+            nexus=NexusConfig(fdb_mode="single"),
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError: Nexus requires fdb_mode=external")
+
+
+def test_azure_cluster_args_reject_default_nexus_config_single():
+    # NexusConfig() defaults to single mode; the cluster guard must reject it
+    # even on the fdb backend so the default is never a silent single-node deploy.
+    try:
+        from pulumi_pinecone_byoc.azure import PineconeAzureClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_azure_native not installed)")
+        return
+
+    try:
+        PineconeAzureClusterArgs(
+            pinecone_api_key="k",
+            pinecone_version="v",
+            data_plane_backend="fdb",
+            nexus=NexusConfig(),
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError: default (single) Nexus config rejected")
 
 
 if __name__ == "__main__":

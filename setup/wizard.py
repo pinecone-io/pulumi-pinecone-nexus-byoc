@@ -3621,7 +3621,7 @@ class AzureSetupWizard(BaseSetupWizard):
             return False
 
         region = os.environ.get("PINECONE_REGION", "eastus")
-        zones_str = os.environ.get("PINECONE_AZS", "1,2")
+        zones_str = os.environ.get("PINECONE_AZS", "1,2,3")
         zones = [z.strip() for z in zones_str.split(",") if z.strip()]
         cidr = os.environ.get("PINECONE_VPC_CIDR", self.DEFAULT_CIDR)
         deletion_protection = (
@@ -3787,7 +3787,8 @@ class AzureSetupWizard(BaseSetupWizard):
             available = self._fetch_zones(subscription_id, region)
 
         console.print(f"  [dim]Available in {region}:[/] {', '.join(available)}")
-        default_zones = available[:2]
+        # 3 zones so FDB data-plane cells keep zone fault domains (<3 silently degrades).
+        default_zones = available[:3]
 
         zones_input = self._prompt("Enter zones (comma-separated)", ",".join(default_zones))
         zones = [zone.strip() for zone in zones_input.split(",")]
@@ -3862,6 +3863,9 @@ _nexus_enabled = config.get_bool("nexus-enabled")
 # next to this file. Shipped to the proxy as the `byoc` config profile.
 _models_toml_path = pathlib.Path(__file__).parent / "inference-proxy-models.toml"
 _nexus_models_toml = _models_toml_path.read_text() if _models_toml_path.exists() else None
+# Nexus enabled => default the DB data plane to FDB so the two share one cluster (Nexus is an external client); explicit config wins.
+_data_plane_backend = config.get("data-plane-backend") or ("fdb" if _nexus_enabled else "postgres")
+_default_fdb_mode = "external" if _data_plane_backend == "fdb" else "single"
 cluster = PineconeAzureCluster(
     "pinecone-byoc",
     PineconeAzureClusterArgs(
@@ -3874,14 +3878,17 @@ cluster = PineconeAzureCluster(
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         tags=config.get_object("tags"),
+        data_plane_backend=_data_plane_backend,
         nexus=NexusConfig(
             version=config.get("nexus-version"),
             byoc_project_id=config.get("nexus-byoc-project-id"),
             byoc_vault_id=config.get("nexus-byoc-vault-id"),
             byoc_docs_api_url=config.get("nexus-byoc-docs-api-url"),
             storage_bucket_prefix=config.get("nexus-storage-bucket-prefix"),
+            default_workspace_name=config.get("nexus-default-workspace-name"),
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
+            fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
         ) if _nexus_enabled else None,
     ),
 )
@@ -3895,6 +3902,14 @@ pulumi.export("update_kubeconfig_command", update_kubeconfig_command)
 if _nexus_enabled:
     pulumi.export("nexus_byoc_project_id", cluster.nexus_byoc_project_id)
     pulumi.export("nexus_byoc_session_credential", cluster.nexus_byoc_session_credential)
+    pulumi.export(
+        "nexus_default_workspace_data_console_url",
+        cluster.nexus_default_workspace_data_console_url,
+    )
+    pulumi.export(
+        "nexus_default_workspace_control_console_url",
+        cluster.nexus_default_workspace_control_console_url,
+    )
 if config.get_bool("public-access-enabled") is False:
     pulumi.export("private_link_service_name", cluster.private_link_service_name)
     pulumi.export("private_link_service_resource_group", cluster.private_link_service_resource_group)

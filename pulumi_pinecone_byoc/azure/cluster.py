@@ -1,20 +1,29 @@
 """PineconeAzureCluster - main component for BYOC deployments on Azure."""
 
+import ipaddress
 from dataclasses import dataclass, field
 
 import pulumi
 import pulumi_azure_native as azure_native
 import pulumi_azuread as azuread
 
+from ..common import api
 from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
-from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
+from ..common.nexus import (
+    Nexus,
+    NexusBlobStorage,
+    NexusConfig,
+    derive_api_key_refs,
+    require_external_fdb_for_nexus,
+)
 from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.pinetools import Pinetools
 from ..common.providers import (
     DATADOG_DISABLED_PLACEHOLDER,
+    DEFAULT_WORKSPACE_NAME,
     AmpAccess,
     AmpAccessArgs,
     ApiKey,
@@ -23,6 +32,8 @@ from ..common.providers import (
     CpgwApiKeyArgs,
     DatadogApiKey,
     DatadogApiKeyArgs,
+    DefaultWorkspace,
+    DefaultWorkspaceArgs,
     Environment,
     EnvironmentArgs,
     ServiceAccount,
@@ -30,7 +41,7 @@ from ..common.providers import (
 )
 from ..common.registry import AZURE_REGISTRY, NEXUS_AZURE_REGISTRY
 from ..common.uninstaller import ClusterUninstaller
-from .aks import AKS
+from .aks import AKS, SERVICE_CIDR
 from .database import Database
 from .dns import DNS
 from .k8s_addons import K8sAddons
@@ -61,7 +72,7 @@ class PineconeAzureClusterArgs:
     # azure specific
     subscription_id: str = ""
     region: str = "eastus"
-    availability_zones: list[str] = field(default_factory=lambda: ["1", "2"])
+    availability_zones: list[str] = field(default_factory=lambda: ["1", "2", "3"])
 
     # networking
     vpc_cidr: str = "10.0.0.0/16"
@@ -89,6 +100,10 @@ class PineconeAzureClusterArgs:
     api_url: str = "https://api.pinecone.io"
     global_env: str = "prod"
     auth0_domain: str = "https://login.pinecone.io"
+    # Base URL of the Pinecone web console (workspace deep links). Override
+    # for preprod/internal installs.
+    console_url: str = "https://app.pinecone.io"
+    data_plane_backend: str = "postgres"  # "postgres" | "fdb"
 
     # cross-cloud: AWS account for AMP federation
     amp_aws_account_id: str = "713131977538"
@@ -98,6 +113,27 @@ class PineconeAzureClusterArgs:
 
     # tags
     tags: dict[str, str] | None = None
+
+    def __post_init__(self):
+        require_external_fdb_for_nexus(self.nexus, self.data_plane_backend)
+        # With fewer than 3 zones the FoundationDB CR silently degrades from zone
+        # to hostname fault domains, and nothing downstream validates it.
+        if self.data_plane_backend == "fdb" and len(self.availability_zones) < 3:
+            raise ValueError(
+                "data_plane_backend='fdb' requires at least 3 availability zones "
+                f"for zone fault domains, got {self.availability_zones!r}."
+            )
+        # The AKS service CIDR is virtual, but under Azure CNI pods hold real
+        # VNet IPs -- so if the VNet overlaps the service range, the node routes
+        # those addresses as ClusterIPs and the real hosts behind them are never
+        # reached. Fail fast. This only sees the VNet; peered/on-prem ranges are
+        # the operator's to keep clear of SERVICE_CIDR.
+        if ipaddress.ip_network(self.vpc_cidr).overlaps(ipaddress.ip_network(SERVICE_CIDR)):
+            raise ValueError(
+                f"vpc_cidr {self.vpc_cidr!r} overlaps the AKS service CIDR {SERVICE_CIDR!r}; "
+                "choose a VNet range clear of it (addresses in the overlap never reach "
+                "their real host)."
+            )
 
 
 class PineconeAzureCluster(pulumi.ComponentResource):
@@ -206,14 +242,20 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._aks]),
         )
 
-        self._database = Database(
-            f"{config.resource_prefix}-database",
-            config,
-            resource_group_name=self._vnet.resource_group_name,
-            vnet_id=self._vnet.vnet_id,
-            delegated_subnet_id=self._vnet.db_subnet_id,
-            cell_name=self._cell_name,
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vnet]),
+        # fdb cells run on FoundationDB and need no Flexible Server; only the
+        # postgres backend provisions it.
+        self._database = (
+            Database(
+                f"{config.resource_prefix}-database",
+                config,
+                resource_group_name=self._vnet.resource_group_name,
+                vnet_id=self._vnet.vnet_id,
+                delegated_subnet_id=self._vnet.db_subnet_id,
+                cell_name=self._cell_name,
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vnet]),
+            )
+            if args.data_plane_backend == "postgres"
+            else None
         )
 
         self._subdomain = self._environment.env_name
@@ -328,8 +370,8 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             )
             if args.nexus is not None
             else None,
-            control_db=self._database.control_db,
-            system_db=self._database.system_db,
+            control_db=self._database.control_db if self._database is not None else None,
+            system_db=self._database.system_db if self._database is not None else None,
             azure_storage_access_key=self._storage.access_key,
             storage_integration_credentials=(
                 {"client-secret": storage_integration_password_value}
@@ -378,6 +420,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
 
         pulumi_outputs = {
             "cell_name": self._cell_name,
+            "data_plane_backend": args.data_plane_backend,
             "org_name": self._environment.org_name,
             "cloud": "azure",
             "region": config.region,
@@ -431,9 +474,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             region=config.region,
             public_access_enabled=args.public_access_enabled,
             pulumi_outputs=pulumi_outputs,
+            data_plane_backend=args.data_plane_backend,
             opts=pulumi.ResourceOptions(
                 parent=self,
-                depends_on=[self._aks, self._dns, self._storage, self._database],
+                depends_on=list(
+                    filter(None, [self._aks, self._dns, self._storage, self._database])
+                ),
             ),
         )
 
@@ -457,8 +503,15 @@ class PineconeAzureCluster(pulumi.ComponentResource):
         # Install Nexus after the DB stack is ready.
         self._nexus = None
         self._nexus_containers = None
+        self._nexus_project_id = None
+        self._default_workspace = None
+        self._default_workspace_name = DEFAULT_WORKSPACE_NAME
+        self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
+            # Workspace names are unique per BYOC project, not per cell: a second
+            # cell sharing the project must deviate from "default" or create fails.
+            self._default_workspace_name = nx.default_workspace_name or DEFAULT_WORKSPACE_NAME
             # Nexus versions independently of the DB stack (separate repo, separate
             # image tags), so there is no meaningful fallback to pinecone_version --
             # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
@@ -483,6 +536,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                     archive=self._nexus_containers.archive,
                     account_name=self._storage.account_name,
                 )
+            self._nexus_project_id = nx.byoc_project_id or self._api_key.project_id
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._aks.k8s_provider,
@@ -492,7 +546,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 cloud="azure",
                 region=args.region,
                 pinecone_prod=args.global_env == "prod",
-                byoc_project_id=nx.byoc_project_id or self._api_key.project_id,
+                byoc_project_id=self._nexus_project_id,
                 byoc_vault_id=(
                     nx.byoc_vault_id or self._resource_suffix.apply(lambda s: f"byoc{s}")
                 ),
@@ -504,6 +558,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 # Paired with the cpgw-api-key in the nexus-config secret.
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
+                fdb_mode=nx.fdb_mode,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
@@ -529,6 +584,21 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 kubeconfig=self._aks.kubeconfig,
                 deploy_image=self._nexus.deploy_image,
                 cloud="azure",
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
+            )
+
+            # Depends on Nexus because the cell's operation poller is what
+            # promotes the workspace to Ready — creating before it exists would
+            # wait on nothing. First-run-only (no-op diff/delete): destroy
+            # leaves the workspace; delete it via gCPS before teardown.
+            self._default_workspace = DefaultWorkspace(
+                f"{config.resource_prefix}-default-workspace",
+                DefaultWorkspaceArgs(
+                    name=self._default_workspace_name,
+                    environment=nx.byoc_env or self._environment.env_name,
+                    api_url=args.api_url,
+                    pinecone_api_key=args.pinecone_api_key,
+                ),
                 opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
             )
 
@@ -562,8 +632,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 "vnet_id": self._vnet.vnet_id,
                 "kubeconfig": self._aks.kubeconfig,
                 "storage_account_name": self._storage.account_name,
-                "control_db_endpoint": self._database.control_db.endpoint,
-                "system_db_endpoint": self._database.system_db.endpoint,
+                "control_db_endpoint": (
+                    self._database.control_db.endpoint if self._database is not None else None
+                ),
+                "system_db_endpoint": (
+                    self._database.system_db.endpoint if self._database is not None else None
+                ),
                 "environment_id": self._environment.id,
                 "environment_name": self._environment.env_name,
                 "service_account_id": self._service_account.id,
@@ -658,7 +732,8 @@ class PineconeAzureCluster(pulumi.ComponentResource):
         return self._storage
 
     @property
-    def database(self) -> Database:
+    def database(self) -> Database | None:
+        """The Flexible Server pair, or None on fdb-backend cells."""
         return self._database
 
     @property
@@ -686,3 +761,73 @@ class PineconeAzureCluster(pulumi.ComponentResource):
     @property
     def private_link_service_resource_group(self) -> pulumi.Output[str]:
         return self._vnet.resource_group_name.apply(lambda rg: f"{rg}-nodepool")
+
+    def _default_workspace_exists(self) -> pulumi.Output[bool]:
+        """Live existence of the default workspace, checked once per program run.
+
+        The bootstrap resource is first-run-only (never re-created, no-op
+        delete), so its stored outputs outlive a workspace the user later
+        deletes. The URL exports gate on this lookup instead, so they read
+        null once the workspace is gone. Previews skip the network call and
+        assume existence.
+        """
+        if self.__default_workspace_exists is None:
+            workspace = self._default_workspace
+            if workspace is None:
+                # both URL properties return early on DB-only deploys, so this
+                # is unreachable through them
+                raise RuntimeError("default-workspace existence check requires a Nexus deploy")
+            # unsecret: secretness taints everything derived from the API key,
+            # which would render the exported URLs as [secret]; the boolean
+            # reveals nothing about the key. The host input is purely for
+            # sequencing — key and api_url resolve at program start, and on a
+            # first deploy the check must not run before the workspace exists.
+            # Previews run the same check so preview and update agree
+            # (workspace_exists fails open, keeping offline previews working).
+            self.__default_workspace_exists = pulumi.Output.unsecret(
+                pulumi.Output.all(
+                    self.args.pinecone_api_key,
+                    self.args.api_url,
+                    workspace.host,
+                ).apply(lambda a: api.workspace_exists(a[0], a[1], self._default_workspace_name))
+            )
+        return self.__default_workspace_exists
+
+    @property
+    def nexus_default_workspace_data_console_url(self) -> pulumi.Output[str] | None:
+        """Console URL of the first-run default workspace.
+
+        None on DB-only deploys; resolves to null once the workspace has been
+        deleted (existence is re-checked on every ``pulumi up``).
+        """
+        if self._default_workspace is None:
+            return None
+        # Built from the stored host, not the stored url: resource state is
+        # frozen at creation, so anything persisted there can go stale. The
+        # host is the durable fact; the path is decided at read time.
+        url = pulumi.Output.concat("https://", self._default_workspace.host, "/contexts")
+        return pulumi.Output.all(self._default_workspace_exists(), url).apply(
+            lambda a: a[1] if a[0] else None
+        )
+
+    @property
+    def nexus_default_workspace_control_console_url(self) -> pulumi.Output[str] | None:
+        """Pinecone-console detail page for the default workspace.
+
+        None on DB-only deploys; resolves to null once the workspace has been
+        deleted (existence is re-checked on every ``pulumi up``).
+        """
+        if self._default_workspace is None:
+            return None
+        url = pulumi.Output.concat(
+            self.args.console_url,
+            "/organizations/",
+            self._environment.org_id,
+            "/projects/",
+            pulumi.Output.from_input(self._nexus_project_id),
+            "/workspaces/",
+            self._default_workspace_name,
+        )
+        return pulumi.Output.all(self._default_workspace_exists(), url).apply(
+            lambda a: a[1] if a[0] else None
+        )

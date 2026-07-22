@@ -14,6 +14,15 @@ from config.base import NodePoolConfig, NodePoolTaint
 
 _AGENT_POOL_NAME_MAX_LEN = 12
 
+# Kubernetes ClusterIP range. It is virtual (kube-proxy NATs it; never routed),
+# so it need not be globally unique -- but it must be RFC1918 and must not
+# overlap any network the cluster reaches: an address inside the range gets
+# routed as a ClusterIP, so the real host at that address is never reached.
+# 10.96.0.0/16 is the conventional kube service range and clears the default
+# 10.0.0.0/16 VNet; PineconeAzureClusterArgs enforces the no-overlap.
+SERVICE_CIDR = "10.96.0.0/16"
+DNS_SERVICE_IP = "10.96.0.10"
+
 # Nexus schedules its pods onto pools labeled `nexus-role: services` (long-lived
 # services) and `nexus-role: jobs` (ephemeral task pods) via nodeSelector +
 # tolerations. The label key/value and matching NoSchedule taint match the nexus
@@ -171,8 +180,8 @@ class AKS(pulumi.ComponentResource):
             },
             network_profile=containerservice.ContainerServiceNetworkProfileArgs(
                 network_plugin="azure",
-                dns_service_ip="112.0.0.10",
-                service_cidr="112.0.0.0/16",
+                dns_service_ip=DNS_SERVICE_IP,
+                service_cidr=SERVICE_CIDR,
             ),
             auto_scaler_profile=containerservice.ManagedClusterPropertiesAutoScalerProfileArgs(
                 balance_similar_node_groups="true",

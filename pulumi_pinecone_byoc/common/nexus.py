@@ -172,6 +172,19 @@ class NexusConfig:
             )
 
 
+def require_external_fdb_for_nexus(nexus: "NexusConfig | None", data_plane_backend: str) -> None:
+    """Nexus runs as an external client of the DB's shared FoundationDB, so it requires
+    data_plane_backend='fdb' with fdb_mode='external' -- no other data plane is valid."""
+    if nexus is None:
+        return
+    if data_plane_backend != "fdb" or nexus.fdb_mode != "external":
+        raise ValueError(
+            "Nexus requires data_plane_backend='fdb' and nexus.fdb_mode='external' "
+            f"(the shared FDB data plane), got data_plane_backend={data_plane_backend!r} "
+            f"and nexus.fdb_mode={nexus.fdb_mode!r}."
+        )
+
+
 class Nexus(pulumi.ComponentResource):
     def __init__(
         self,
