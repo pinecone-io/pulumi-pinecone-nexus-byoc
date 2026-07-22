@@ -155,6 +155,37 @@ def test_headless_config_missing_gemini_aborts():
     assert cfg is None
 
 
+def test_default_catalog_refs_match_deploy():
+    """The None (default-template) ref set headless validates must equal what the
+    deploy derives from the written default template. `_api_key_refs_from_toml(None)`
+    hardcodes {gemini-api-key}; if the template ever adds a provider, this guard
+    fails before the drift ships a blank secret for the new ref."""
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+    try:
+        from pulumi_pinecone_byoc.common.nexus import derive_api_key_refs
+    except ImportError:
+        print("  (skipped: pulumi_pinecone_byoc not importable)")
+        return
+    from wizard import NEXUS_INFERENCE_MODELS_TEMPLATE, _api_key_refs_from_toml
+
+    assert sorted(_api_key_refs_from_toml(None)) == sorted(
+        derive_api_key_refs(NEXUS_INFERENCE_MODELS_TEMPLATE)
+    )
+
+
+def test_headless_config_default_catalog_missing_ok_with_opt_out():
+    """No LLM_MODELS + no keys + opt-out => default template, empty provider_keys."""
+    with _env(
+        PINECONE_NEXUS_ENABLED="true",
+        PINECONE_BYOC_PROJECT_ID=_UUID,
+        PINECONE_NEXUS_ALLOW_MISSING_PROVIDER_KEYS="true",
+    ):
+        cfg = _wizard()._headless_nexus_config()
+    assert cfg is not None
+    assert cfg["inference_models_toml"] is None  # default template written at generation
+    assert cfg["provider_keys"] == {}
+
+
 def test_headless_config_custom_catalog_multiple_providers():
     """Acceptance: custom catalog referencing multiple providers => every ref set."""
     llm = (
