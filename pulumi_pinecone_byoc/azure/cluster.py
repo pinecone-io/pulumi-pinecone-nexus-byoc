@@ -61,7 +61,7 @@ class PineconeAzureClusterArgs:
     # azure specific
     subscription_id: str = ""
     region: str = "eastus"
-    availability_zones: list[str] = field(default_factory=lambda: ["1", "2"])
+    availability_zones: list[str] = field(default_factory=lambda: ["1", "2", "3"])
 
     # networking
     vpc_cidr: str = "10.0.0.0/16"
@@ -89,6 +89,7 @@ class PineconeAzureClusterArgs:
     api_url: str = "https://api.pinecone.io"
     global_env: str = "prod"
     auth0_domain: str = "https://login.pinecone.io"
+    data_plane_backend: str = "postgres"  # "postgres" | "fdb"
 
     # cross-cloud: AWS account for AMP federation
     amp_aws_account_id: str = "713131977538"
@@ -98,6 +99,24 @@ class PineconeAzureClusterArgs:
 
     # tags
     tags: dict[str, str] | None = None
+
+    def __post_init__(self):
+        if (
+            self.nexus is not None
+            and self.nexus.fdb_mode == "external"
+            and self.data_plane_backend != "fdb"
+        ):
+            raise ValueError(
+                "nexus.fdb_mode='external' requires data_plane_backend='fdb', got "
+                f"{self.data_plane_backend!r}."
+            )
+        # With fewer than 3 zones the FoundationDB CR silently degrades from zone
+        # to hostname fault domains, and nothing downstream validates it.
+        if self.data_plane_backend == "fdb" and len(self.availability_zones) < 3:
+            raise ValueError(
+                "data_plane_backend='fdb' requires at least 3 availability zones "
+                f"for zone fault domains, got {self.availability_zones!r}."
+            )
 
 
 class PineconeAzureCluster(pulumi.ComponentResource):
@@ -206,14 +225,20 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             opts=pulumi.ResourceOptions(parent=self, depends_on=[self._aks]),
         )
 
-        self._database = Database(
-            f"{config.resource_prefix}-database",
-            config,
-            resource_group_name=self._vnet.resource_group_name,
-            vnet_id=self._vnet.vnet_id,
-            delegated_subnet_id=self._vnet.db_subnet_id,
-            cell_name=self._cell_name,
-            opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vnet]),
+        # fdb cells run on FoundationDB and need no Flexible Server; only the
+        # postgres backend provisions it.
+        self._database = (
+            Database(
+                f"{config.resource_prefix}-database",
+                config,
+                resource_group_name=self._vnet.resource_group_name,
+                vnet_id=self._vnet.vnet_id,
+                delegated_subnet_id=self._vnet.db_subnet_id,
+                cell_name=self._cell_name,
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._vnet]),
+            )
+            if args.data_plane_backend == "postgres"
+            else None
         )
 
         self._subdomain = self._environment.env_name
@@ -328,8 +353,8 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             )
             if args.nexus is not None
             else None,
-            control_db=self._database.control_db,
-            system_db=self._database.system_db,
+            control_db=self._database.control_db if self._database is not None else None,
+            system_db=self._database.system_db if self._database is not None else None,
             azure_storage_access_key=self._storage.access_key,
             storage_integration_credentials=(
                 {"client-secret": storage_integration_password_value}
@@ -378,6 +403,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
 
         pulumi_outputs = {
             "cell_name": self._cell_name,
+            "data_plane_backend": args.data_plane_backend,
             "org_name": self._environment.org_name,
             "cloud": "azure",
             "region": config.region,
@@ -431,9 +457,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
             region=config.region,
             public_access_enabled=args.public_access_enabled,
             pulumi_outputs=pulumi_outputs,
+            data_plane_backend=args.data_plane_backend,
             opts=pulumi.ResourceOptions(
                 parent=self,
-                depends_on=[self._aks, self._dns, self._storage, self._database],
+                depends_on=list(
+                    filter(None, [self._aks, self._dns, self._storage, self._database])
+                ),
             ),
         )
 
@@ -504,6 +533,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 # Paired with the cpgw-api-key in the nexus-config secret.
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
+                fdb_mode=nx.fdb_mode,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
@@ -562,8 +592,12 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 "vnet_id": self._vnet.vnet_id,
                 "kubeconfig": self._aks.kubeconfig,
                 "storage_account_name": self._storage.account_name,
-                "control_db_endpoint": self._database.control_db.endpoint,
-                "system_db_endpoint": self._database.system_db.endpoint,
+                "control_db_endpoint": (
+                    self._database.control_db.endpoint if self._database is not None else None
+                ),
+                "system_db_endpoint": (
+                    self._database.system_db.endpoint if self._database is not None else None
+                ),
                 "environment_id": self._environment.id,
                 "environment_name": self._environment.env_name,
                 "service_account_id": self._service_account.id,
@@ -658,7 +692,8 @@ class PineconeAzureCluster(pulumi.ComponentResource):
         return self._storage
 
     @property
-    def database(self) -> Database:
+    def database(self) -> Database | None:
+        """The Flexible Server pair, or None on fdb-backend cells."""
         return self._database
 
     @property

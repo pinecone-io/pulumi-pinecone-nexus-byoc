@@ -155,6 +155,41 @@ def test_aws_cluster_args_allow_external_on_fdb():
     assert args.nexus is not None and args.nexus.fdb_mode == "external"
 
 
+def test_azure_cluster_args_reject_external_on_postgres():
+    try:
+        from pulumi_pinecone_byoc.azure import PineconeAzureClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_azure_native not installed)")
+        return
+
+    try:
+        PineconeAzureClusterArgs(
+            pinecone_api_key="k",
+            pinecone_version="v",
+            data_plane_backend="postgres",
+            nexus=NexusConfig(fdb_mode="external"),
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError: external requires data_plane_backend=fdb")
+
+
+def test_azure_cluster_args_allow_external_on_fdb():
+    try:
+        from pulumi_pinecone_byoc.azure import PineconeAzureClusterArgs
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_azure_native not installed)")
+        return
+
+    args = PineconeAzureClusterArgs(
+        pinecone_api_key="k",
+        pinecone_version="v",
+        data_plane_backend="fdb",
+        nexus=NexusConfig(fdb_mode="external"),
+    )
+    assert args.nexus is not None and args.nexus.fdb_mode == "external"
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
