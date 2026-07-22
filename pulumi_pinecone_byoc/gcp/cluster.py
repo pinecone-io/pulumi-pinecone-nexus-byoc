@@ -9,7 +9,13 @@ from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
-from ..common.nexus import Nexus, NexusBlobStorage, NexusConfig, derive_api_key_refs
+from ..common.nexus import (
+    Nexus,
+    NexusBlobStorage,
+    NexusConfig,
+    derive_api_key_refs,
+    require_external_fdb_for_nexus,
+)
 from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.pinetools import Pinetools
 from ..common.providers import (
@@ -109,15 +115,7 @@ class PineconeGCPClusterArgs:
     reader_k8s_service_accounts: list[str] | None = None
 
     def __post_init__(self):
-        if (
-            self.nexus is not None
-            and self.nexus.fdb_mode == "external"
-            and self.data_plane_backend != "fdb"
-        ):
-            raise ValueError(
-                "nexus.fdb_mode='external' requires data_plane_backend='fdb', got "
-                f"{self.data_plane_backend!r}."
-            )
+        require_external_fdb_for_nexus(self.nexus, self.data_plane_backend)
         # With fewer than 3 zones the FoundationDB CR silently degrades from zone
         # to hostname fault domains, and nothing downstream validates it.
         if self.data_plane_backend == "fdb" and len(self.availability_zones) < 3:
