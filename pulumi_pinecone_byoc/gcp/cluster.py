@@ -118,6 +118,13 @@ class PineconeGCPClusterArgs:
                 "nexus.fdb_mode='external' requires data_plane_backend='fdb', got "
                 f"{self.data_plane_backend!r}."
             )
+        # With fewer than 3 zones the FoundationDB CR silently degrades from zone
+        # to hostname fault domains, and nothing downstream validates it.
+        if self.data_plane_backend == "fdb" and len(self.availability_zones) < 3:
+            raise ValueError(
+                "data_plane_backend='fdb' requires at least 3 availability zones "
+                f"for zone fault domains, got {self.availability_zones!r}."
+            )
 
 
 class PineconeGCPCluster(pulumi.ComponentResource):
