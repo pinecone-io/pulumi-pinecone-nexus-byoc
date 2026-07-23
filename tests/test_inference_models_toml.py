@@ -104,6 +104,90 @@ def test_embedding_tier_must_be_defined():
     raise AssertionError("expected ValueError for undefined embedding tier model_ref")
 
 
+def test_llm_tier_must_be_defined():
+    try:
+        build_inference_models_toml(_LLM, _RERANK, {**_TIERS, "standard": "ghost"})
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for undefined chat tier model_ref")
+
+
+def test_rerank_tier_must_be_defined():
+    try:
+        build_inference_models_toml(_LLM, _RERANK, {**_TIERS, "rerank": "ghost"})
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for undefined rerank tier model_ref")
+
+
+# --- Per-surface independent customization --------------------------------
+
+
+def test_all_surfaces_default_when_nothing_passed():
+    # No catalog for any surface -> a complete TOML built entirely from shipped
+    # defaults (chat + embedding + rerank), matching the static template's ids.
+    parsed = tomllib.loads(build_inference_models_toml())
+    assert set(parsed["llm_models"]) == {
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+    }
+    assert "multilingual-e5-large" in parsed["embedding_models"]
+    assert "bge-reranker-v2-m3" in parsed["rerank_models"]
+    assert parsed["default"]["llm"]["tiers"]["standard"]["model_ref"] == "gemini-3.5-flash"
+    assert parsed["default"]["rerank"]["tiers"]["default"]["model_ref"] == "bge-reranker-v2-m3"
+
+
+def test_customize_embedding_only_keeps_default_chat_and_rerank():
+    embedding = {"my-embed": {"api_style": "litellm", "model": "voyage/voyage-3", "dimension": 1024}}
+    parsed = tomllib.loads(
+        build_inference_models_toml(embedding_models=embedding, tiers={"embedding": "my-embed"})
+    )
+    # embedding is the operator's; chat + rerank fall back to shipped defaults.
+    assert set(parsed["embedding_models"]) == {"my-embed"}
+    assert parsed["default"]["embedding"]["tiers"]["default"]["model_ref"] == "my-embed"
+    assert set(parsed["llm_models"]) == {
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+    }
+    assert "bge-reranker-v2-m3" in parsed["rerank_models"]
+    assert parsed["default"]["llm"]["tiers"]["lite"]["model_ref"] == "gemini-3.1-flash-lite"
+
+
+def test_customize_chat_only_keeps_default_embedding_and_rerank():
+    parsed = tomllib.loads(build_inference_models_toml(_LLM, tiers=_TIERS))
+    assert set(parsed["llm_models"]) == set(_LLM)
+    assert "multilingual-e5-large" in parsed["embedding_models"]
+    assert "bge-reranker-v2-m3" in parsed["rerank_models"]
+    assert parsed["default"]["rerank"]["tiers"]["default"]["model_ref"] == "bge-reranker-v2-m3"
+
+
+def test_customize_rerank_only_keeps_default_chat_and_embedding():
+    rerank = {"my-rerank": {"api_style": "litellm", "model": "cohere/rerank-v3.5"}}
+    parsed = tomllib.loads(
+        build_inference_models_toml(rerank_models=rerank, tiers={"rerank": "my-rerank"})
+    )
+    assert set(parsed["rerank_models"]) == {"my-rerank"}
+    assert parsed["default"]["rerank"]["tiers"]["default"]["model_ref"] == "my-rerank"
+    assert set(parsed["llm_models"]) == {
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+    }
+    assert "multilingual-e5-large" in parsed["embedding_models"]
+
+
+def test_customized_chat_without_tiers_raises():
+    # Customizing chat but omitting the tier ids is a hard error (not a silent
+    # fallback to the default chat tiers, which wouldn't reference these ids).
+    try:
+        build_inference_models_toml(_LLM)
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError when a customized chat surface has no tiers")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
