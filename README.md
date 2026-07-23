@@ -64,7 +64,7 @@ bash pulumi-pinecone-nexus-byoc/bootstrap.sh --cloud gcp
 ```
 
 Use `--stack-name <name>` to name the Pulumi stack (default: `prod`). Use
-`--cloud aws` for an AWS install.
+`--cloud aws` for an AWS install or `--cloud azure` for an Azure install.
 
 This will:
 1. Select your cloud provider (**GCP**, **AWS**, or **Azure**)
@@ -82,8 +82,8 @@ cd pinecone-nexus-byoc
 pulumi up
 ```
 
-Provisioning takes approximately 25-30 minutes on GCP, and 25-40 minutes on
-AWS (see [AWS](#aws)).
+Provisioning takes approximately 25-30 minutes on GCP, 25-40 minutes on
+AWS (see [AWS](#aws)), and roughly 35 minutes on Azure.
 
 ### 4. Connect to your cluster
 
@@ -120,8 +120,9 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 | **Pinecone API key** | All BYOC | Requires a Pinecone **Enterprise plan** |
 | **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
 | **AWS account** | AWS BYOC | A **dedicated account** with administrator-level access (the deploy creates IAM roles and policies) |
+| **Azure subscription** | Azure BYOC | A **dedicated subscription** with **Owner** / administrator-level access |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
-| **Generation-LLM key** (BYOM) | All BYOC | The default catalog's generation LLM (curation + search) is **Gemini** — get a key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as `nexus-provider-keys.gemini-api-key`. The catalog is editable (`inference-proxy-models.toml`): route the chat tiers to other providers, each with its own `nexus-provider-keys.<ref>` secret. Embedding and rerank default to **Pinecone-hosted** models (`multilingual-e5-large` / `bge-reranker-v2-m3`) that need no extra key; the embedding model is catalog-configurable (nexus#1234) |
+| **Generation-LLM key** (BYOM) | All BYOC | The default catalog's generation LLM (curation + search) is **Gemini** — get a key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as `nexus-provider-keys.gemini-api-key`. The catalog is editable (`inference-proxy-models.toml`): route the chat tiers to other providers, each with its own `nexus-provider-keys.<ref>` secret. Embedding and rerank default to **Pinecone-hosted** models (`multilingual-e5-large` / `bge-reranker-v2-m3`) that need no extra key; the embedding model is catalog-configurable |
 
 > **Create a dedicated GCP project.** BYOC provisions project-level infrastructure
 > (VPC, GKE, GCS, DNS), enables several GCP APIs, and creates service accounts
@@ -250,8 +251,7 @@ are unrelated — bumping one does not touch the other.
 ## AWS
 
 On AWS, this repository installs Pinecone Nexus together with its Pinecone
-Database data plane — validated end-to-end with real installs and teardowns.
-The notes below cover AWS-specific operational behavior.
+Database data plane. The notes below cover AWS-specific operational behavior.
 
 ### AWS install shape
 
@@ -261,19 +261,16 @@ The wizard defaults reflect this shape: `data-plane-backend=fdb`,
 `nexus-fdb-mode=external`, and **three availability zones** (fewer than three
 silently degrades FDB's zone fault domains).
 
-This shape is validated end-to-end: a single hands-free `pulumi up` cold
-install, the full workspace flow (multi-document curation at scale, grounded
-queries, delete cascade), workspace auth, and a destroy-to-zero teardown (with
-a small manual-cleanup delta documented under
-[Teardown notes](#teardown-notes)).
+A cold install runs as a single hands-free `pulumi up`, and `pulumi destroy`
+tears the stack back down to zero (with a small manual-cleanup delta documented
+under [Teardown notes](#teardown-notes)).
 
 Two install-time knobs to know about:
 
 - **Provider keys on headless installs:** the interactive wizard prompts for the
-  default catalog's Gemini key, but headless wizard runs do not collect it
-  ([#34](https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc/issues/34)) —
-  set each key your catalog references manually before deploying. For the default
-  (Gemini) catalog:
+  default catalog's Gemini key. If you run the wizard non-interactively, set each
+  key your catalog references manually before deploying. For the default (Gemini)
+  catalog:
 
   ```bash
   pulumi config set --path --secret nexus-provider-keys.gemini-api-key <key>
@@ -287,10 +284,9 @@ Two install-time knobs to know about:
   a distinct name via `nexus-default-workspace-name` (see
   [Quick Start](#quick-start)).
 
-**Not yet covered:** the private workspace endpoint path (`*.wksp.private`
-over PrivateLink) has not been validated — on private-only cells
-(`public_access_enabled = false`), workspace endpoints are not yet supported.
-This is an open item tracked separately.
+**Private-only cells:** on private-only cells (`public_access_enabled = false`),
+workspace endpoints over PrivateLink (`*.wksp.private`) are not currently
+supported.
 
 ### Install expectations
 
@@ -330,12 +326,6 @@ in-cluster workloads — including load balancers created by the
 aws-load-balancer-controller — are removed while the controller still exists.
 Keep in mind:
 
-- **Extra ALB Ingresses:** if you created any ALB Ingresses outside the stack,
-  delete them and confirm the ALBs are actually gone
-  (`aws elbv2 describe-load-balancers`) **before** running `pulumi destroy` —
-  orphaned ALBs/ENIs will block VPC deletion. Deleting their namespace is a safe
-  one-shot: the controller's `ingress.k8s.aws/resources` finalizer holds the
-  namespace until the AWS resources are removed.
 - **ACM certificates** are created with `retain_on_delete` by design and survive
   destroy. Delete them manually afterward (`aws acm list-certificates` /
   `aws acm delete-certificate`; they will show `InUse: false`).
@@ -391,7 +381,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | `nexus-version` | Nexus release version | — |
 | `subscription-id` | Azure subscription ID (required) | — |
 | `region` | Azure region | `eastus` |
-| `availability_zones` | Zones for high availability | `["1", "2"]` |
+| `availability_zones` | Zones for high availability (3 recommended — FDB zone fault domains) | first 3 available zones, e.g. `["1", "2", "3"]` |
 | `vpc_cidr` | VNet IP range | `10.0.0.0/16` |
 | `deletion_protection` | Protect databases/storage from accidental deletion | `true` |
 | `public_access_enabled` | Enable public endpoint (false = Private Link only) | `true` |
