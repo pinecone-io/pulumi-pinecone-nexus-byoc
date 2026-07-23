@@ -221,7 +221,7 @@ def _import_litellm():
     """Import litellm with its own console chatter silenced — the feedback banner,
     the "LiteLLM.Info" hints, and its ERROR-level logging — so only our per-model
     lines show. The exception objects we classify are unaffected."""
-    import litellm
+    import litellm  # ty: ignore[unresolved-import]
 
     litellm.suppress_debug_info = True  # drops the "Give Feedback / Get Help" + Info lines
     with contextlib.suppress(Exception):
