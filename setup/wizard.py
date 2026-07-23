@@ -94,7 +94,7 @@ def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
 
 
 PINECONE_VERSION = "main-7f97b66"
-NEXUS_VERSION = "main-a34dcd7"
+NEXUS_VERSION = "main-a7a73f7"
 
 # Inference-proxy model-routing template written into the generated project when
 # Nexus is enabled. It IS the `byoc` config profile -- BYOC omits the chart's
