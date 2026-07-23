@@ -1233,6 +1233,66 @@ class BaseSetupWizard:
             "provider_keys": provider_keys,
         }
 
+    def _headless_provider_keys(self, refs: set[str]) -> dict[str, str] | None:
+        """Provider-key secrets from the environment (headless mode).
+
+        Mirrors the interactive flow's ref-driven collection: one secret per
+        distinct ``api_key_ref`` the effective catalog references (``refs``,
+        derived from the same TOML the deploy reads), with no ref special-cased.
+        Read from a single JSON env var (mirroring how PINECONE_NEXUS_LLM_MODELS
+        already takes JSON):
+
+          PINECONE_NEXUS_PROVIDER_KEYS   JSON object {api_key_ref: key}
+
+        Returns the {ref: value} map restricted to ``refs``. Any referenced ref
+        with no value is a hard error (returns None, aborting the run) so a
+        headless deploy never silently ships blank provider credentials --
+        unless PINECONE_NEXUS_ALLOW_MISSING_PROVIDER_KEYS=true is set as a
+        deliberate escape hatch, in which case the missing refs are warned and
+        left unset (K8sSecrets then writes an empty string for them).
+        """
+        keys: dict[str, str] = {}
+        raw = os.environ.get("PINECONE_NEXUS_PROVIDER_KEYS")
+        if raw:
+            try:
+                parsed = json.loads(raw)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"invalid JSON in PINECONE_NEXUS_PROVIDER_KEYS: {exc}") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(
+                    "PINECONE_NEXUS_PROVIDER_KEYS must be a JSON object mapping "
+                    "api_key_ref -> provider key"
+                )
+            for ref, value in parsed.items():
+                if isinstance(value, str) and value.strip():
+                    keys[ref] = value.strip()
+
+        missing = sorted(ref for ref in refs if not keys.get(ref))
+        if missing:
+            allow_missing = (
+                os.environ.get("PINECONE_NEXUS_ALLOW_MISSING_PROVIDER_KEYS", "false").lower()
+                == "true"
+            )
+            if allow_missing:
+                console.print(
+                    f"  [yellow]⚠[/] No provider key for: {', '.join(missing)}."
+                    " PINECONE_NEXUS_ALLOW_MISSING_PROVIDER_KEYS=true is set, so the"
+                    " inference proxy deploys with blank credentials for these refs"
+                    " (inference through them fails until they are set)."
+                )
+            else:
+                console.print(
+                    "  [red]✗[/] Missing provider key(s) for the referenced"
+                    f" api_key_ref(s): {', '.join(missing)}. Set them in"
+                    " PINECONE_NEXUS_PROVIDER_KEYS (a JSON object of api_key_ref ->"
+                    " key), or set PINECONE_NEXUS_ALLOW_MISSING_PROVIDER_KEYS=true to"
+                    " deploy without them."
+                )
+                return None
+
+        # Restrict to refs the catalog references (drop stray JSON entries).
+        return {ref: keys[ref] for ref in refs if keys.get(ref)}
+
     def _headless_nexus_config(self) -> NexusWizardConfig | None:
         """Nexus answers from the environment (headless mode).
 
@@ -1281,14 +1341,24 @@ class BaseSetupWizard:
                 " <= 63)"
             )
             return None
+        # Inference models from env JSON, or None -> default template.
+        inference_models_toml = self._headless_inference_models_toml()
+        # Provider-key secrets, one per api_key_ref the effective catalog
+        # references (None -> default template -> just `gemini-api-key`). Read
+        # from the env and validated here so a headless deploy fails loudly
+        # rather than shipping blank provider credentials. None => a required
+        # key was missing (the caller aborts).
+        provider_keys = self._headless_provider_keys(_api_key_refs_from_toml(inference_models_toml))
+        if provider_keys is None:
+            return None
         return {
             "enabled": True,
             "nexus_version": os.environ.get("PINECONE_NEXUS_VERSION", NEXUS_VERSION),
             "byoc_project_id": byoc_project_id,
             # Optional override; blank => package derives `pc-nexus-{cell}`.
             "storage_bucket_prefix": storage_bucket_prefix,
-            # Inference models from env JSON, or None -> default template.
-            "inference_models_toml": self._headless_inference_models_toml(),
+            "inference_models_toml": inference_models_toml,
+            "provider_keys": provider_keys,
         }
 
     def _write_nexus_models_file(self, output_dir: str, nexus: NexusWizardConfig) -> None:
