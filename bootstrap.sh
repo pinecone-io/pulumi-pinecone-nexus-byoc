@@ -171,6 +171,10 @@ if [ -z "$SCRIPT_DIR" ] || [ ! -f "$SCRIPT_DIR/setup/wizard.py" ]; then
 fi
 cp "$SCRIPT_DIR/setup/wizard.py" wizard.py
 cp "$SCRIPT_DIR/setup/preflight_checks.py" preflight_checks.py
+# validate_models.py is self-contained; it's kept in a Nexus-enabled project so
+# the operator can optionally probe their inference models after setup (and is
+# removed again below for a DB-only install).
+cp "$SCRIPT_DIR/setup/validate_models.py" validate_models.py
 LOCAL_PKG="$SCRIPT_DIR"
 
 # create a temp pyproject.toml for the setup wizard dependencies
@@ -212,3 +216,22 @@ fi
 
 # cleanup wizard setup files (keep .venv, pyproject.toml, uv.lock created by wizard)
 rm -f wizard.py preflight_checks.py
+
+# validate_models.py is only useful for a Nexus-enabled project — the wizard
+# writes inference-proxy-models.toml only in that case. Keep the script + surface
+# the optional command there; drop it for a DB-only install (cwd is the project).
+if [ -f "inference-proxy-models.toml" ]; then
+    # Pin litellm to the exact version the validator expects (single source of
+    # truth: _EXPECTED_LITELLM_VERSION in validate_models.py) so a version bump is
+    # one edit. Fall back to a literal only if the grep somehow misses.
+    litellm_pin="$(grep -oE '_EXPECTED_LITELLM_VERSION = "[^"]+"' validate_models.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
+    litellm_pin="${litellm_pin:-1.87.0}"
+    py_pin="$(grep -oE '_EXPECTED_PYTHON_VERSION = "[^"]+"' validate_models.py | grep -oE '[0-9]+\.[0-9]+')"
+    py_pin="${py_pin:-3.12}"
+    echo ""
+    echo -e "${DIM}Optional — validate your Nexus inference models (live probe):${RESET}"
+    echo -e "  ${BLUE}cd \"$project_dir\" && uv run --no-project --with 'litellm==${litellm_pin}' --python ${py_pin} python validate_models.py${RESET}"
+    echo -e "  ${DIM}(litellm pinned to the proxy's version; add --help for options like --stack-dir / --stack)${RESET}"
+else
+    rm -f validate_models.py
+fi
