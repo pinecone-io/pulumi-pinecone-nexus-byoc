@@ -329,6 +329,96 @@ def _emit_model_table(map_name: str, model_id: str, fields: dict) -> str:
     return "\n".join(lines)
 
 
+# Per-surface structural rules, mirroring what the interactive collectors enforce
+# by construction (_choose_from / _prompt_required / _prompt_int) so the headless
+# JSON path is validated identically. Keys are the surface names used throughout.
+_SURFACE_API_STYLES = {
+    "llm": ("litellm", "openai"),
+    "embedding": ("pinecone", "litellm"),
+    "rerank": ("pinecone", "litellm"),
+}
+# Non-empty string fields the proxy schema requires (interactive: _prompt_required).
+_SURFACE_REQUIRED_STRS = {
+    "llm": ("model", "label", "provider"),
+    "embedding": ("model",),
+    "rerank": ("model",),
+}
+# Fields that must be whole numbers when present (interactive: _prompt_int).
+# ``dimension`` is validated separately (it is required, not merely int-typed).
+_SURFACE_INT_FIELDS = {
+    "llm": ("max_retries", "context_window", "max_output_tokens"),
+    "embedding": ("max_retries", "max_input_chars", "max_batch_size"),
+    "rerank": ("max_retries", "max_query_chars", "max_doc_chars", "max_docs_per_request"),
+}
+# String fields that, when present, must be strings (loose type guard).
+_SURFACE_OPTIONAL_STRS = ("api_key_ref", "base_url", "api_version", "provider", "label")
+
+
+def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
+    """Validate one surface's model definitions the way the interactive wizard
+    does, so a headless JSON catalog can't smuggle in a shape the guided path
+    makes impossible. Raises ValueError on the first problem.
+
+    Covers: ``api_style`` enumeration, required non-empty strings, integer-typed
+    numeric fields, and the two documented placement rules -- ``pinecone`` models
+    take no ``api_key_ref`` (the caller supplies it per request) and ``litellm``
+    rerank models take no ``api_version`` (litellm.arerank has no such param).
+
+    Runs only on operator-supplied catalogs (headless JSON / interactive), never
+    on the shipped ``_DEFAULT_*`` constants.
+    """
+    if not isinstance(models, dict):
+        raise ValueError(
+            f"{surface} catalog must be a JSON object mapping model id -> definition"
+        )
+    for model_id, fields in models.items():
+        if not isinstance(fields, dict):
+            raise ValueError(f"{surface} model {model_id!r} must be a table of fields")
+
+        api_style = fields.get("api_style")
+        if api_style not in _SURFACE_API_STYLES[surface]:
+            raise ValueError(
+                f"{surface} model {model_id!r} has api_style {api_style!r}; must be one of "
+                f"{list(_SURFACE_API_STYLES[surface])}"
+            )
+
+        for req in _SURFACE_REQUIRED_STRS[surface]:
+            val = fields.get(req)
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(
+                    f"{surface} model {model_id!r} needs a non-empty string {req!r}"
+                )
+
+        for opt in _SURFACE_OPTIONAL_STRS:
+            if opt in fields and not isinstance(fields[opt], str):
+                raise ValueError(f"{surface} model {model_id!r} field {opt!r} must be a string")
+
+        for num in _SURFACE_INT_FIELDS[surface]:
+            # bool is an int subclass -- reject it explicitly so `true` isn't a count.
+            if num in fields and (isinstance(fields[num], bool) or not isinstance(fields[num], int)):
+                raise ValueError(
+                    f"{surface} model {model_id!r} field {num!r} must be a whole number"
+                )
+
+        if surface == "llm" and "vision" in fields and not isinstance(fields["vision"], bool):
+            raise ValueError(f"llm model {model_id!r} field 'vision' must be true/false")
+
+        # pinecone embed/rerank models carry no api_key_ref (key is per-request).
+        if surface in ("embedding", "rerank") and api_style == "pinecone" and fields.get(
+            "api_key_ref"
+        ):
+            raise ValueError(
+                f"{surface} model {model_id!r} is api_style 'pinecone' and must NOT set "
+                "an api_key_ref (the caller supplies the key per request)"
+            )
+        # litellm rerank rejects api_version (litellm.arerank has no such kwarg).
+        if surface == "rerank" and api_style == "litellm" and fields.get("api_version"):
+            raise ValueError(
+                f"rerank model {model_id!r} is api_style 'litellm' and must NOT set an "
+                "api_version (litellm rerank has no api_version parameter)"
+            )
+
+
 def build_inference_models_toml(
     llm_models: dict[str, dict] | None = None,
     rerank_models: dict[str, dict] | None = None,
@@ -367,6 +457,12 @@ def build_inference_models_toml(
     if not embedding_models:
         embedding_models = dict(_DEFAULT_EMBEDDING_MODELS)
         tiers.setdefault("embedding", DEFAULT_EMBEDDING_MODEL_ID)
+
+    # NOTE: model-definition structure is validated by _validate_surface_catalog
+    # at the point operator-supplied catalogs enter (headless JSON parse and the
+    # interactive collectors), NOT here -- the shipped _DEFAULT_* catalogs are
+    # trusted constants, so validating the post-default merge would only re-check
+    # them. This function stays a pure renderer.
 
     # A customized surface must supply its tier id(s); a defaulted one just got
     # them above. Fail loudly rather than KeyError deep in the emit below.
@@ -960,6 +1056,13 @@ class BaseSetupWizard:
             tiers["embedding"] = self._choose_from("Embedding model", list(embedding))
         if rerank:
             tiers["rerank"] = self._choose_from("Rerank model", list(rerank))
+        # Validate the customized surfaces. The collectors already produce valid
+        # models by construction, so this is a backstop (it can't fire today) that
+        # keeps every operator-supplied catalog going through the same check as
+        # the headless path -- guarding against future collector drift.
+        for surface, models in (("llm", llm), ("embedding", embedding), ("rerank", rerank)):
+            if models:
+                _validate_surface_catalog(surface, models)
         return build_inference_models_toml(
             llm or None, rerank or None, tiers, embedding_models=embedding or None
         )
@@ -1268,6 +1371,13 @@ class BaseSetupWizard:
                 " keeps its shipped default.[/]"
             )
             return None
+
+        # Validate only the surfaces the operator actually supplied (untrusted
+        # JSON). Surfaces left default are filled from the trusted _DEFAULT_*
+        # catalogs inside build_inference_models_toml and need no checking.
+        for surface, models in (("llm", llm), ("rerank", rerank), ("embedding", embedding)):
+            if models is not None:
+                _validate_surface_catalog(surface, models)
 
         tiers = {**llm_tiers, **rerank_tiers, **embedding_tiers}
         return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding)

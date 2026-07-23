@@ -9,12 +9,34 @@ import tomllib
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "setup"))
 
-from wizard import NEXUS_INFERENCE_MODELS_TEMPLATE, build_inference_models_toml  # noqa: E402
+from wizard import (  # noqa: E402
+    _DEFAULT_EMBEDDING_MODELS,
+    _DEFAULT_LLM_MODELS,
+    _DEFAULT_RERANK_MODELS,
+    NEXUS_INFERENCE_MODELS_TEMPLATE,
+    _validate_surface_catalog,
+    build_inference_models_toml,
+)
 
 _LLM = {
-    "gemini-3.1-flash-lite": {"api_style": "litellm", "model": "gemini/gemini-3.1-flash-lite"},
-    "gemini-3.5-flash": {"api_style": "litellm", "model": "gemini/gemini-3.5-flash"},
-    "gemini-3.1-pro-preview": {"api_style": "litellm", "model": "gemini/gemini-3.1-pro-preview"},
+    "gemini-3.1-flash-lite": {
+        "api_style": "litellm",
+        "model": "gemini/gemini-3.1-flash-lite",
+        "label": "Flash Lite",
+        "provider": "gemini",
+    },
+    "gemini-3.5-flash": {
+        "api_style": "litellm",
+        "model": "gemini/gemini-3.5-flash",
+        "label": "Flash",
+        "provider": "gemini",
+    },
+    "gemini-3.1-pro-preview": {
+        "api_style": "litellm",
+        "model": "gemini/gemini-3.1-pro-preview",
+        "label": "Pro",
+        "provider": "gemini",
+    },
 }
 _RERANK = {"bge-reranker-v2-m3": {"api_style": "pinecone", "model": "bge-reranker-v2-m3"}}
 _TIERS = {
@@ -35,7 +57,15 @@ def test_generator_curate_is_llm_minus_pro():
 
 
 def test_generator_keeps_extra_non_pro_models_in_curate():
-    llm = {**_LLM, "gemini-3.5-flash-preview": {"api_style": "litellm", "model": "x"}}
+    llm = {
+        **_LLM,
+        "gemini-3.5-flash-preview": {
+            "api_style": "litellm",
+            "model": "x",
+            "label": "Flash Preview",
+            "provider": "gemini",
+        },
+    }
     profile = tomllib.loads(build_inference_models_toml(llm, _RERANK, _TIERS))["default"]
     assert "gemini-3.5-flash-preview" in set(profile["supported_curate_models"])
 
@@ -118,6 +148,66 @@ def test_rerank_tier_must_be_defined():
     except ValueError:
         return
     raise AssertionError("expected ValueError for undefined rerank tier model_ref")
+
+
+# --- Shared structural validation (headless JSON + interactive custom catalogs) --
+# These exercise _validate_surface_catalog directly: it is the unit both operator
+# paths call on their custom (untrusted) catalogs. It is intentionally NOT run
+# inside build_inference_models_toml, so the shipped defaults are never re-checked.
+
+
+def _expect_value_error(msg, surface, models):
+    try:
+        _validate_surface_catalog(surface, models)
+    except ValueError:
+        return
+    raise AssertionError(msg)
+
+
+def test_bad_api_style_rejected():
+    llm = {"m": {**_LLM["gemini-3.1-flash-lite"], "api_style": "bogus"}}
+    _expect_value_error("expected ValueError for invalid api_style", "llm", llm)
+
+
+def test_chat_missing_required_field_rejected():
+    # Drop 'provider' from a chat model -- the proxy schema requires it.
+    broken = {k: v for k, v in _LLM["gemini-3.5-flash"].items() if k != "provider"}
+    _expect_value_error("expected ValueError for chat model missing 'provider'", "llm", {"m": broken})
+
+
+def test_non_int_numeric_field_rejected():
+    llm = {"m": {**_LLM["gemini-3.5-flash"], "max_retries": "two"}}
+    _expect_value_error("expected ValueError for non-integer max_retries", "llm", llm)
+
+
+def test_pinecone_model_with_api_key_ref_rejected():
+    rerank = {"bge-reranker-v2-m3": {**_RERANK["bge-reranker-v2-m3"], "api_key_ref": "nope"}}
+    _expect_value_error(
+        "expected ValueError for pinecone model carrying an api_key_ref", "rerank", rerank
+    )
+
+
+def test_litellm_rerank_with_api_version_rejected():
+    rerank = {
+        "my-rr": {"api_style": "litellm", "model": "cohere/rerank-v3.5", "api_version": "2024-01"}
+    }
+    _expect_value_error(
+        "expected ValueError for litellm rerank carrying an api_version", "rerank", rerank
+    )
+
+
+def test_non_object_catalog_rejected():
+    # Headless JSON that parses to a non-object (e.g. a list) must be rejected.
+    _expect_value_error("expected ValueError for a non-object catalog", "llm", ["not", "a", "dict"])
+
+
+def test_default_catalogs_pass_validation():
+    # The shipped defaults must satisfy the same validator every operator catalog
+    # is held to -- guards against future drift in the _DEFAULT_* tables. (These
+    # are NOT validated at runtime; this is a CI-only consistency guard.)
+    _validate_surface_catalog("llm", _DEFAULT_LLM_MODELS)
+    _validate_surface_catalog("embedding", _DEFAULT_EMBEDDING_MODELS)
+    _validate_surface_catalog("rerank", _DEFAULT_RERANK_MODELS)
 
 
 # --- Per-surface independent customization --------------------------------
