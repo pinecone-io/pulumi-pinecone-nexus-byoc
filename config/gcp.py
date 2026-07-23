@@ -45,6 +45,7 @@ class GCPConfig(BaseConfig):
             "pc-index-builder-slab/index-builders-sa",
             "pc-index-builder-slab/index-builders-slab-sa",
             "pc-janitor/janitor-sa",
+            "pc-poolsnapper/poolsnapper-sa",
             "pc-query-executors-slab/query-executors-slab-prov-sa",
             "pc-query-executors-slab/query-executors-slab-sa",
             "pc-query-executors-slab/query-executors-slab-shared-sa",
