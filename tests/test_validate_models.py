@@ -251,7 +251,7 @@ def test_embedding_dimension_mismatch_fails():
     cfg = _embed_cfg(dimension=300)
     with _patch(
         _pinecone_probe_key=lambda *a, **k: "key",
-        _probe_pinecone_embed=lambda *a, **k: (200, "", 1024),
+        _probe_pinecone_embed=lambda *a, **k: (200, "", 1024, False),
     ):
         assert _check(cfg, surface="embedding") == "fail"
 
@@ -260,9 +260,20 @@ def test_embedding_dimension_match_passes():
     cfg = _embed_cfg(dimension=1024)
     with _patch(
         _pinecone_probe_key=lambda *a, **k: "key",
-        _probe_pinecone_embed=lambda *a, **k: (200, "", 1024),
+        _probe_pinecone_embed=lambda *a, **k: (200, "", 1024, False),
     ):
         assert _check(cfg, surface="embedding") == "pass"
+
+
+def test_embedding_sparse_model_fails():
+    # The probe answers with sparse_values/sparse_indices (is_sparse=True) — Nexus
+    # embedding needs a dense model, so this must fail even though the call is 200.
+    cfg = _embed_cfg(model="pinecone-sparse-english-v0", dimension=1024)
+    with _patch(
+        _pinecone_probe_key=lambda *a, **k: "key",
+        _probe_pinecone_embed=lambda *a, **k: (200, "", None, True),
+    ):
+        assert _check(cfg, surface="embedding") == "fail"
 
 
 def test_missing_key_fails():
@@ -315,6 +326,21 @@ def test_litellm_rerank_with_api_version_fails():
     }
     with _patch(_resolve_provider_key=lambda *a, **k: "key"):
         assert _check(cfg, surface="rerank") == "fail"
+
+
+def test_pinecone_rerank_model_passes():
+    cfg = {
+        "api_style": "pinecone",
+        "model": "bge-reranker-v2-m3",
+        "max_query_chars": 1000,
+        "max_doc_chars": 800,
+        "max_docs_per_request": 100,
+    }
+    with _patch(
+        _pinecone_probe_key=lambda *a, **k: "key",
+        _probe_pinecone_rerank=lambda *a, **k: (200, ""),
+    ):
+        assert _check(cfg, surface="rerank") == "pass"
 
 
 if __name__ == "__main__":

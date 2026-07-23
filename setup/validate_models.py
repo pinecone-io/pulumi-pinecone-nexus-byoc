@@ -345,7 +345,10 @@ def _pinecone_headers(api_key, api_version) -> dict:
 
 def _probe_pinecone_embed(
     model, api_key, base_url, api_version
-) -> tuple[int | None, str, int | None]:
+) -> tuple[int | None, str, int | None, bool]:
+    """Returns (status, detail, dim, is_sparse). A sparse model answers with
+    `sparse_values`/`sparse_indices` instead of `values` — Nexus embedding needs a
+    dense model, so the caller turns is_sparse into a fail."""
     base = (base_url or _DEFAULT_PINECONE_BASE_URL).rstrip("/")
     status, detail, text = _http_post(
         f"{base}/embed",
@@ -357,10 +360,15 @@ def _probe_pinecone_embed(
         },
     )
     dim = None
+    is_sparse = False
     if status == 200:
         with contextlib.suppress(Exception):
-            dim = len(json.loads(text)["data"][0]["values"])
-    return (status, detail, dim)
+            item = json.loads(text)["data"][0]
+            if "values" in item:
+                dim = len(item["values"])
+            elif "sparse_values" in item or "sparse_indices" in item:
+                is_sparse = True
+    return (status, detail, dim, is_sparse)
 
 
 def _probe_pinecone_rerank(model, api_key, base_url, api_version) -> tuple[int | None, str]:
@@ -543,6 +551,7 @@ def _check_one_model(stack_dir, stack, model_id, surface, cfg, have_litellm) -> 
     # registry ceiling BEFORE the request, so probe with the clamped value — sending
     # the raw oversized value would be a false positive (see PR review).
     observed_dim = None
+    pinecone_sparse = False
     if surface == "chat":
         if api_style == "litellm":
             status, detail = _probe_litellm_chat(
@@ -558,7 +567,9 @@ def _check_one_model(stack_dir, stack, model_id, surface, cfg, have_litellm) -> 
         if api_style == "litellm":
             status, detail, observed_dim = _probe_litellm_embed(model, key, base_url, api_version)
         else:
-            status, detail, observed_dim = _probe_pinecone_embed(model, key, base_url, api_version)
+            status, detail, observed_dim, pinecone_sparse = _probe_pinecone_embed(
+                model, key, base_url, api_version
+            )
     else:  # rerank
         if api_style == "litellm":
             status, detail = _probe_litellm_rerank(model, key, base_url)
@@ -572,6 +583,15 @@ def _check_one_model(stack_dir, stack, model_id, surface, cfg, have_litellm) -> 
     if state == "warn":
         warn(f"{label}: {reason}")
         return "pass"  # network / 5xx — don't fail the run on a transient condition
+
+    # 4a) the model answered as sparse (sparse_values/sparse_indices) — Nexus
+    # embedding needs dense vectors, and an index built on it would mismatch.
+    if pinecone_sparse:
+        fail(
+            f"{label}: {model!r} returned a sparse embedding (sparse_values/sparse_indices); "
+            "Nexus embedding requires a dense model"
+        )
+        return "fail"
 
     # 4) embedding: the returned vector width must match the declared dimension.
     if (
