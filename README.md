@@ -118,7 +118,7 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 | Requirement | Needed for | Notes |
 |-------------|-----------|-------|
 | **Pinecone API key** | All BYOC | Requires a Pinecone **Enterprise plan** |
-| **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`, not `roles/editor`) and **billing enabled** |
+| **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** |
 | **AWS account** | AWS BYOC | A **dedicated account** with administrator-level access (the deploy creates IAM roles and policies) |
 | **Azure subscription** | Azure BYOC | A **dedicated subscription** with **Owner** / administrator-level access |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
