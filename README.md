@@ -8,10 +8,10 @@
 
 Deploy Pinecone in your own cloud account with full control over your infrastructure.
 
-> **Supported clouds:** **GCP** and **AWS** are fully supported today — the
-> installer deploys Pinecone Nexus, together with its Pinecone Database data
-> plane, into your own cloud account. **Azure** is **coming soon**. See
-> [AWS](#aws) for AWS-specific operational notes.
+> **Supported clouds:** **GCP**, **AWS**, and **Azure** are fully supported
+> today — the installer deploys Pinecone Nexus, together with its Pinecone
+> Database data plane, into your own cloud account. See [AWS](#aws) for
+> AWS-specific operational notes.
 
 ![Demo](./assets/demo.gif)
 
@@ -34,7 +34,11 @@ aws configure                  # or aws sso login / exported AWS_* env vars
 aws sts get-caller-identity    # verify
 ```
 
-_Azure authentication: coming soon (not yet supported)._
+**Azure** — Pulumi deploys using your Azure CLI credentials:
+```bash
+az login
+az account show                # verify
+```
 
 **Pulumi** (state backend — Pulumi Cloud, or `pulumi login --local` for local state):
 ```bash
@@ -63,7 +67,7 @@ Use `--stack-name <name>` to name the Pulumi stack (default: `prod`). Use
 `--cloud aws` for an AWS install.
 
 This will:
-1. Select your cloud provider (**GCP** or **AWS** — Azure coming soon)
+1. Select your cloud provider (**GCP**, **AWS**, or **Azure**)
 2. Check that required tools are installed (Python 3.12+, uv, cloud CLI, Pulumi, kubectl)
 3. Verify your cloud credentials
 4. Prompt for the project directory and name (press Enter to accept the defaults)
@@ -92,8 +96,7 @@ kubectl get pods -A
 ```
 
 (GKE access also requires the `gke-gcloud-auth-plugin` component. See
-[Cluster Access](#cluster-access) for the AWS equivalent. Azure support is
-coming soon.)
+[Cluster Access](#cluster-access) for the AWS and Azure equivalents.)
 
 The first `pulumi up` also creates a default workspace and prints two more
 outputs once it's ready:
@@ -160,7 +163,10 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 |------|---------|---------|
 | AWS CLI | AWS access | [AWS docs](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) |
 
-**Azure** _(coming soon)_
+**Azure** (supported)
+| Tool | Purpose | Install |
+|------|---------|---------|
+| Azure CLI | Azure access | [Azure docs](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) |
 
 ## Architecture
 
@@ -216,7 +222,7 @@ gcloud container clusters get-credentials <cluster-name> --region <region> --pro
 aws eks update-kubeconfig --region <region> --name <cluster-name>
 ```
 
-**Azure** _(coming soon)_:
+**Azure:**
 ```bash
 az aks get-credentials --resource-group <resource-group> --name <cluster-name>
 ```
@@ -377,7 +383,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | `public_access_enabled` | Enable public endpoint (false = Private Service Connect only) | `true` |
 | `labels` | Custom labels to apply to all resources | `{}` |
 
-**Azure Configuration Options** _(coming soon — not yet supported)_**:**
+**Azure Configuration Options:**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -395,9 +401,9 @@ Edit `Pulumi.<stack>.yaml` to modify these values.
 
 ## Programmatic Usage
 
-For advanced users who want to integrate into existing infrastructure. GCP and
-AWS are fully supported (the setup wizard generates the project for you either
-way); Azure is coming soon.
+For advanced users who want to integrate into existing infrastructure. GCP,
+AWS, and Azure are fully supported (the setup wizard generates the project for
+you in every case).
 
 ```python
 import pulumi
@@ -435,8 +441,7 @@ your clone via an editable path source. To use it in your own project:
 git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git
 uv add --editable './pulumi-pinecone-nexus-byoc[gcp]'    # GCP (supported)
 uv add --editable './pulumi-pinecone-nexus-byoc[aws]'    # AWS (supported)
-
-# Azure — coming soon (not yet supported)
+uv add --editable './pulumi-pinecone-nexus-byoc[azure]'  # Azure (supported)
 ```
 
 ## Troubleshooting
@@ -457,7 +462,7 @@ The setup wizard runs preflight checks for cloud quotas. If these fail:
 3. **GKE Clusters** - Request a limit increase if at quota
 4. **IP Addresses** - Release unused static IPs or request more
 
-**Azure** _(coming soon)_:
+**Azure:**
 1. **Resource Providers** - Register required providers (Microsoft.Compute, Microsoft.ContainerService, etc.)
 2. **vCPU Quotas** - Request vCPU quota increases via Azure Portal
 3. **AKS Clusters** - Request a limit increase if at quota
