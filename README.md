@@ -118,18 +118,11 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 | Requirement | Needed for | Notes |
 |-------------|-----------|-------|
 | **Pinecone API key** | All BYOC | Requires a Pinecone **Enterprise plan** |
-| **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
+| **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`; `roles/editor` is not sufficient) and **billing enabled** |
 | **AWS account** | AWS BYOC | A **dedicated account** with administrator-level access (the deploy creates IAM roles and policies) |
 | **Azure subscription** | Azure BYOC | A **dedicated subscription** with **Owner** / administrator-level access |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
 | **Generation-LLM key** (BYOM) | All BYOC | The default catalog's generation LLM (curation + search) is **Gemini** — get a key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as `nexus-provider-keys.gemini-api-key`. The catalog is editable (`inference-proxy-models.toml`): route the chat tiers to other providers, each with its own `nexus-provider-keys.<ref>` secret. Embedding and rerank default to **Pinecone-hosted** models (`multilingual-e5-large` / `bge-reranker-v2-m3`) that need no extra key; the embedding model is catalog-configurable |
-
-> **Create a dedicated GCP project.** BYOC provisions project-level infrastructure
-> (VPC, GKE, GCS, DNS), enables several GCP APIs, and creates service accounts
-> and IAM bindings, so a fresh project gives clean isolation and a clean teardown. You
-> must have the **Owner** role (`roles/owner`) on it — `roles/editor` is **not**
-> sufficient, because the deploy sets project and service-account IAM policy — and
-> **billing must be enabled**.
 
 > **Nexus generation-LLM capacity:** the generation LLM is the model you bring. The
 > shipped default catalog routes all three chat tiers to Gemini (edit
