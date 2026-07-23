@@ -85,6 +85,24 @@ class DNS(pulumi.ComponentResource):
             )
             cname_records.append(cname_record)
 
+        # ACME DNS-01 delegation for the *.wksp cert SAN. The *.wksp wildcard CNAME above
+        # also matches _acme-challenge.wksp, shadowing the record cert-manager needs to
+        # validate the challenge. Delegating to a two-label target the single-label wildcard
+        # cannot match lets cert-manager (cnameStrategy: Follow) place the challenge TXT at an
+        # isolated location.
+        wksp_acme_delegation = network.RecordSet(
+            f"{name}-acme-wksp-delegation-cname",
+            zone_name=dns_zone.name,
+            relative_record_set_name="_acme-challenge.wksp",
+            record_type="CNAME",
+            cname_record=fqdn.apply(
+                lambda s: network.CnameRecordArgs(cname=f"wksp.acme.{s}"),
+            ),
+            ttl=300,
+            resource_group_name=resource_group_name,
+            opts=pulumi.ResourceOptions(parent=self, depends_on=[dns_zone]),
+        )
+
         dns_delegation = DnsDelegation(
             f"{name}-delegation",
             DnsDelegationArgs(
@@ -101,6 +119,7 @@ class DNS(pulumi.ComponentResource):
         self._subdomain = fqdn
         self._ingress_a_record = ingress_a_record
         self._cname_records = cname_records
+        self._wksp_acme_delegation = wksp_acme_delegation
         self._dns_delegation = dns_delegation
 
         self.register_outputs(
