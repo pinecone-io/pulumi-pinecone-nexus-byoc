@@ -9,18 +9,19 @@ _NEXUS_CONTAINERS = ("source", "knowledge", "archive")
 class NexusBlobContainers(pulumi.ComponentResource):
     """Three blob containers backing the Nexus blob storage backend.
 
-    Provisioned when ``NexusConfig.storage_bucket_prefix`` is set. Containers
-    are created inside the existing DB storage account so the same access key
-    covers both the DB and Nexus blob data. Container names follow the pattern
-    ``{prefix}-{suffix}`` where suffix is one of ``source``, ``knowledge``,
-    ``archive``. Pass the outputs to ``NexusBlobStorage`` to wire them into
-    the Nexus helm release.
+    Always provisioned for Azure+Nexus. ``prefix`` is a derived
+    ``pc-nexus-{cell}`` Output unless ``NexusConfig.storage_bucket_prefix``
+    overrides it. Containers are created inside the existing DB storage account
+    so the same access key covers both the DB and Nexus blob data. Container
+    names follow the pattern ``{prefix}-{suffix}`` where suffix is one of
+    ``source``, ``knowledge``, ``archive``. Pass the outputs to
+    ``NexusBlobStorage`` to wire them into the Nexus helm release.
     """
 
     def __init__(
         self,
         name: str,
-        prefix: str,
+        prefix: pulumi.Input[str],
         storage_account_name: pulumi.Input[str],
         resource_group_name: pulumi.Input[str],
         opts: pulumi.ResourceOptions | None = None,
@@ -29,12 +30,15 @@ class NexusBlobContainers(pulumi.ComponentResource):
 
         child_opts = pulumi.ResourceOptions(parent=self)
 
+        # `prefix` may be a derived Output, so resolve it before naming containers.
+        prefix_out = pulumi.Output.from_input(prefix)
+
         self._containers: dict[str, azure_native.storage.BlobContainer] = {}
         for suffix in _NEXUS_CONTAINERS:
             self._containers[suffix] = azure_native.storage.BlobContainer(
                 f"{name}-{suffix}",
                 account_name=storage_account_name,
-                container_name=f"{prefix}-{suffix}",
+                container_name=prefix_out.apply(lambda p, s=suffix: f"{p}-{s}"),
                 resource_group_name=resource_group_name,
                 opts=child_opts,
             )
