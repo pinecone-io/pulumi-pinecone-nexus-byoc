@@ -8,10 +8,10 @@
 
 Deploy Pinecone in your own cloud account with full control over your infrastructure.
 
-> **Supported clouds:** **GCP** and **AWS** are fully supported today — the
-> installer deploys Pinecone Nexus, together with its Pinecone Database data
-> plane, into your own cloud account. **Azure** is **coming soon**. See
-> [AWS](#aws) for AWS-specific operational notes.
+> **Supported clouds:** **GCP**, **AWS**, and **Azure** are fully supported
+> today — the installer deploys Pinecone Nexus, together with its Pinecone
+> Database data plane, into your own cloud account. See [AWS](#aws) for
+> AWS-specific operational notes.
 
 ![Demo](./assets/demo.gif)
 
@@ -34,7 +34,11 @@ aws configure                  # or aws sso login / exported AWS_* env vars
 aws sts get-caller-identity    # verify
 ```
 
-_Azure authentication: coming soon (not yet supported)._
+**Azure** — Pulumi deploys using your Azure CLI credentials:
+```bash
+az login
+az account show                # verify
+```
 
 **Pulumi** (state backend — Pulumi Cloud, or `pulumi login --local` for local state):
 ```bash
@@ -60,10 +64,10 @@ bash pulumi-pinecone-nexus-byoc/bootstrap.sh --cloud gcp
 ```
 
 Use `--stack-name <name>` to name the Pulumi stack (default: `prod`). Use
-`--cloud aws` for an AWS install.
+`--cloud aws` for an AWS install or `--cloud azure` for an Azure install.
 
 This will:
-1. Select your cloud provider (**GCP** or **AWS** — Azure coming soon)
+1. Select your cloud provider (**GCP**, **AWS**, or **Azure**)
 2. Check that required tools are installed (Python 3.12+, uv, cloud CLI, Pulumi, kubectl)
 3. Verify your cloud credentials
 4. Prompt for the project directory and name (press Enter to accept the defaults)
@@ -78,8 +82,8 @@ cd pinecone-nexus-byoc
 pulumi up
 ```
 
-Provisioning takes approximately 25-30 minutes on GCP, and 25-40 minutes on
-AWS (see [AWS](#aws)).
+Provisioning takes approximately 25-30 minutes on GCP, 25-40 minutes on
+AWS (see [AWS](#aws)), and roughly 35 minutes on Azure.
 
 ### 4. Connect to your cluster
 
@@ -92,8 +96,7 @@ kubectl get pods -A
 ```
 
 (GKE access also requires the `gke-gcloud-auth-plugin` component. See
-[Cluster Access](#cluster-access) for the AWS equivalent. Azure support is
-coming soon.)
+[Cluster Access](#cluster-access) for the AWS and Azure equivalents.)
 
 The first `pulumi up` also creates a default workspace and prints two more
 outputs once it's ready:
@@ -115,17 +118,11 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 | Requirement | Needed for | Notes |
 |-------------|-----------|-------|
 | **Pinecone API key** | All BYOC | Requires a Pinecone **Enterprise plan** |
-| **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** (see note below) |
+| **GCP project** | GCP BYOC | A **dedicated project** with the **Owner** role (`roles/owner`) and **billing enabled** |
 | **AWS account** | AWS BYOC | A **dedicated account** with administrator-level access (the deploy creates IAM roles and policies) |
+| **Azure subscription** | Azure BYOC | A **dedicated subscription** with **Owner** / administrator-level access |
 | **Pulumi account** | All BYOC | A state backend (Pulumi Cloud, or `pulumi login --local` for local state) |
-| **Generation-LLM key** (BYOM) | All BYOC | The default catalog's generation LLM (curation + search) is **Gemini** — get a key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as `nexus-provider-keys.gemini-api-key`. The catalog is editable (`inference-proxy-models.toml`): route the chat tiers to other providers, each with its own `nexus-provider-keys.<ref>` secret. Embedding and rerank default to **Pinecone-hosted** models (`multilingual-e5-large` / `bge-reranker-v2-m3`) that need no extra key; the embedding model is catalog-configurable (nexus#1234) |
-
-> **Create a dedicated GCP project.** BYOC provisions project-level infrastructure
-> (VPC, GKE, GCS, DNS), enables several GCP APIs, and creates service accounts
-> and IAM bindings, so a fresh project gives clean isolation and a clean teardown. You
-> must have the **Owner** role (`roles/owner`) on it — `roles/editor` is **not**
-> sufficient, because the deploy sets project and service-account IAM policy — and
-> **billing must be enabled**.
+| **Generation-LLM key** (BYOM) | All BYOC | The default catalog's generation LLM (curation + search) is **Gemini** — get a key from [Google AI Studio](https://aistudio.google.com/apikey) and set it as `nexus-provider-keys.gemini-api-key`. The catalog is editable (`inference-proxy-models.toml`): route the chat tiers to other providers, each with its own `nexus-provider-keys.<ref>` secret. Embedding and rerank default to **Pinecone-hosted** models (`multilingual-e5-large` / `bge-reranker-v2-m3`) that need no extra key; the embedding model is catalog-configurable |
 
 > **Nexus generation-LLM capacity:** the generation LLM is the model you bring. The
 > shipped default catalog routes all three chat tiers to Gemini (edit
@@ -160,7 +157,10 @@ pulumi config set nexus-default-workspace-name default-<cell-suffix>
 |------|---------|---------|
 | AWS CLI | AWS access | [AWS docs](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) |
 
-**Azure** _(coming soon)_
+**Azure** (supported)
+| Tool | Purpose | Install |
+|------|---------|---------|
+| Azure CLI | Azure access | [Azure docs](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli) |
 
 ## Architecture
 
@@ -216,7 +216,7 @@ gcloud container clusters get-credentials <cluster-name> --region <region> --pro
 aws eks update-kubeconfig --region <region> --name <cluster-name>
 ```
 
-**Azure** _(coming soon)_:
+**Azure:**
 ```bash
 az aks get-credentials --resource-group <resource-group> --name <cluster-name>
 ```
@@ -244,8 +244,7 @@ are unrelated — bumping one does not touch the other.
 ## AWS
 
 On AWS, this repository installs Pinecone Nexus together with its Pinecone
-Database data plane — validated end-to-end with real installs and teardowns.
-The notes below cover AWS-specific operational behavior.
+Database data plane. The notes below cover AWS-specific operational behavior.
 
 ### AWS install shape
 
@@ -255,19 +254,16 @@ The wizard defaults reflect this shape: `data-plane-backend=fdb`,
 `nexus-fdb-mode=external`, and **three availability zones** (fewer than three
 silently degrades FDB's zone fault domains).
 
-This shape is validated end-to-end: a single hands-free `pulumi up` cold
-install, the full workspace flow (multi-document curation at scale, grounded
-queries, delete cascade), workspace auth, and a destroy-to-zero teardown (with
-a small manual-cleanup delta documented under
-[Teardown notes](#teardown-notes)).
+A cold install runs as a single hands-free `pulumi up`, and `pulumi destroy`
+tears the stack back down to zero (with a small manual-cleanup delta documented
+under [Teardown notes](#teardown-notes)).
 
 Two install-time knobs to know about:
 
 - **Provider keys on headless installs:** the interactive wizard prompts for the
-  default catalog's Gemini key, but headless wizard runs do not collect it
-  ([#34](https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc/issues/34)) —
-  set each key your catalog references manually before deploying. For the default
-  (Gemini) catalog:
+  default catalog's Gemini key. If you run the wizard non-interactively, set each
+  key your catalog references manually before deploying. For the default (Gemini)
+  catalog:
 
   ```bash
   pulumi config set --path --secret nexus-provider-keys.gemini-api-key <key>
@@ -281,10 +277,9 @@ Two install-time knobs to know about:
   a distinct name via `nexus-default-workspace-name` (see
   [Quick Start](#quick-start)).
 
-**Not yet covered:** the private workspace endpoint path (`*.wksp.private`
-over PrivateLink) has not been validated — on private-only cells
-(`public_access_enabled = false`), workspace endpoints are not yet supported.
-This is an open item tracked separately.
+**Private-only cells:** on private-only cells (`public_access_enabled = false`),
+workspace endpoints over PrivateLink (`*.wksp.private`) are not currently
+supported.
 
 ### Install expectations
 
@@ -324,12 +319,6 @@ in-cluster workloads — including load balancers created by the
 aws-load-balancer-controller — are removed while the controller still exists.
 Keep in mind:
 
-- **Extra ALB Ingresses:** if you created any ALB Ingresses outside the stack,
-  delete them and confirm the ALBs are actually gone
-  (`aws elbv2 describe-load-balancers`) **before** running `pulumi destroy` —
-  orphaned ALBs/ENIs will block VPC deletion. Deleting their namespace is a safe
-  one-shot: the controller's `ingress.k8s.aws/resources` finalizer holds the
-  namespace until the AWS resources are removed.
 - **ACM certificates** are created with `retain_on_delete` by design and survive
   destroy. Delete them manually afterward (`aws acm list-certificates` /
   `aws acm delete-certificate`; they will show `InUse: false`).
@@ -377,7 +366,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | `public_access_enabled` | Enable public endpoint (false = Private Service Connect only) | `true` |
 | `labels` | Custom labels to apply to all resources | `{}` |
 
-**Azure Configuration Options** _(coming soon — not yet supported)_**:**
+**Azure Configuration Options:**
 
 | Option | Description | Default |
 |--------|-------------|---------|
@@ -385,7 +374,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | `nexus-version` | Nexus release version | — |
 | `subscription-id` | Azure subscription ID (required) | — |
 | `region` | Azure region | `eastus` |
-| `availability_zones` | Zones for high availability | `["1", "2"]` |
+| `availability_zones` | Zones for high availability (3 recommended — FDB zone fault domains) | first 3 available zones, e.g. `["1", "2", "3"]` |
 | `vpc_cidr` | VNet IP range | `10.0.0.0/16` |
 | `deletion_protection` | Protect databases/storage from accidental deletion | `true` |
 | `public_access_enabled` | Enable public endpoint (false = Private Link only) | `true` |
@@ -395,9 +384,9 @@ Edit `Pulumi.<stack>.yaml` to modify these values.
 
 ## Programmatic Usage
 
-For advanced users who want to integrate into existing infrastructure. GCP and
-AWS are fully supported (the setup wizard generates the project for you either
-way); Azure is coming soon.
+For advanced users who want to integrate into existing infrastructure. GCP,
+AWS, and Azure are fully supported (the setup wizard generates the project for
+you in every case).
 
 ```python
 import pulumi
@@ -435,8 +424,7 @@ your clone via an editable path source. To use it in your own project:
 git clone https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc.git
 uv add --editable './pulumi-pinecone-nexus-byoc[gcp]'    # GCP (supported)
 uv add --editable './pulumi-pinecone-nexus-byoc[aws]'    # AWS (supported)
-
-# Azure — coming soon (not yet supported)
+uv add --editable './pulumi-pinecone-nexus-byoc[azure]'  # Azure (supported)
 ```
 
 ## Troubleshooting
@@ -457,7 +445,7 @@ The setup wizard runs preflight checks for cloud quotas. If these fail:
 3. **GKE Clusters** - Request a limit increase if at quota
 4. **IP Addresses** - Release unused static IPs or request more
 
-**Azure** _(coming soon)_:
+**Azure:**
 1. **Resource Providers** - Register required providers (Microsoft.Compute, Microsoft.ContainerService, etc.)
 2. **vCPU Quotas** - Request vCPU quota increases via Azure Portal
 3. **AKS Clusters** - Request a limit increase if at quota
