@@ -196,7 +196,10 @@ def test_headless_config_custom_catalog_multiple_providers():
         ' "gpt-4o-mini": {"api_style": "openai", "model": "gpt-4o-mini", "label": "GPT-4o mini",'
         ' "provider": "openai", "api_key_ref": "openai-api-key"}}'
     )
-    rerank = '{"bge-reranker-v2-m3": {"api_style": "pinecone", "model": "bge-reranker-v2-m3"}}'
+    rerank = (
+        '{"bge-reranker-v2-m3": {"api_style": "pinecone", "model": "bge-reranker-v2-m3",'
+        ' "max_query_chars": 1000, "max_doc_chars": 800, "max_docs_per_request": 100}}'
+    )
     with _env(
         PINECONE_NEXUS_ENABLED="true",
         PINECONE_BYOC_PROJECT_ID=_UUID,

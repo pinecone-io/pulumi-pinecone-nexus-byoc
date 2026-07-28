@@ -39,6 +39,26 @@ _LLM = {
     },
 }
 _RERANK = {"bge-reranker-v2-m3": {"api_style": "pinecone", "model": "bge-reranker-v2-m3"}}
+# Full, valid single-model catalogs for the size-limit validation tests below.
+_VALID_EMBEDDING = {
+    "my-embed": {
+        "api_style": "litellm",
+        "model": "voyage/voyage-3",
+        "max_retries": 2,
+        "max_input_chars": 1000,
+        "max_batch_size": 96,
+    }
+}
+_VALID_RERANK = {
+    "my-rr": {
+        "api_style": "pinecone",
+        "model": "bge-reranker-v2-m3",
+        "max_retries": 2,
+        "max_query_chars": 1000,
+        "max_doc_chars": 800,
+        "max_docs_per_request": 100,
+    }
+}
 _TIERS = {
     "lite": "gemini-3.1-flash-lite",
     "standard": "gemini-3.5-flash",
@@ -126,6 +146,31 @@ def test_embedding_model_requires_dimension():
     raise AssertionError("expected ValueError: embedding model needs a 'dimension'")
 
 
+def test_embedding_nonpositive_dimension_rejected():
+    embedding = {"my-embed": {"api_style": "litellm", "model": "voyage/voyage-3", "dimension": 0}}
+    try:
+        build_inference_models_toml(
+            _LLM, _RERANK, {**_TIERS, "embedding": "my-embed"}, embedding_models=embedding
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for a non-positive dimension")
+
+
+def test_embedding_bool_dimension_rejected():
+    # bool is an int subclass -- `dimension = true` must not be read as 1.
+    embedding = {
+        "my-embed": {"api_style": "litellm", "model": "voyage/voyage-3", "dimension": True}
+    }
+    try:
+        build_inference_models_toml(
+            _LLM, _RERANK, {**_TIERS, "embedding": "my-embed"}, embedding_models=embedding
+        )
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for a boolean dimension")
+
+
 def test_embedding_tier_must_be_defined():
     try:
         build_inference_models_toml(_LLM, _RERANK, {**_TIERS, "embedding": "ghost"})
@@ -201,6 +246,51 @@ def test_litellm_rerank_with_api_version_rejected():
 def test_non_object_catalog_rejected():
     # Headless JSON that parses to a non-object (e.g. a list) must be rejected.
     _expect_value_error("expected ValueError for a non-object catalog", "llm", ["not", "a", "dict"])
+
+
+def test_zero_size_limit_rejected():
+    # A 0 limit is a valid int but makes the proxy reject its config at startup.
+    rerank = {"my-rr": {**_VALID_RERANK["my-rr"], "max_query_chars": 0}}
+    _expect_value_error("expected ValueError for max_query_chars: 0", "rerank", rerank)
+
+
+def test_negative_size_limit_rejected():
+    embedding = {"my-embed": {**_VALID_EMBEDDING["my-embed"], "max_input_chars": -1}}
+    _expect_value_error("expected ValueError for negative max_input_chars", "embedding", embedding)
+
+
+def test_missing_required_size_limit_rejected():
+    # Embedding/rerank size limits are required -- the proxy has no fallback.
+    embedding = {k: v for k, v in _VALID_EMBEDDING["my-embed"].items() if k != "max_batch_size"}
+    _expect_value_error(
+        "expected ValueError for embedding missing max_batch_size",
+        "embedding",
+        {"my-embed": embedding},
+    )
+
+
+def test_zero_max_retries_accepted():
+    # 0 = no retries, a legitimate setting (must NOT raise).
+    _validate_surface_catalog(
+        "embedding", {"e": {**_VALID_EMBEDDING["my-embed"], "max_retries": 0}}
+    )
+    _validate_surface_catalog("rerank", {"r": {**_VALID_RERANK["my-rr"], "max_retries": 0}})
+
+
+def test_negative_max_retries_rejected():
+    rerank = {"my-rr": {**_VALID_RERANK["my-rr"], "max_retries": -1}}
+    _expect_value_error("expected ValueError for negative max_retries", "rerank", rerank)
+
+
+def test_llm_zero_token_budget_rejected():
+    # context_window / max_output_tokens are optional, but > 0 when set.
+    llm = {"m": {**_LLM["gemini-3.5-flash"], "context_window": 0}}
+    _expect_value_error("expected ValueError for context_window: 0", "llm", llm)
+
+
+def test_llm_omitted_token_budgets_accepted():
+    # llm token budgets are optional; omitting them is valid (must NOT raise).
+    _validate_surface_catalog("llm", {"m": _LLM["gemini-3.5-flash"]})
 
 
 def test_default_catalogs_pass_validation():

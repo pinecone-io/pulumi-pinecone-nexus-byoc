@@ -350,6 +350,17 @@ _SURFACE_INT_FIELDS = {
     "embedding": ("max_retries", "max_input_chars", "max_batch_size"),
     "rerank": ("max_retries", "max_query_chars", "max_doc_chars", "max_docs_per_request"),
 }
+# Int fields the proxy requires PRESENT on every operator-supplied model of the
+# surface (the shipped defaults set them too). They must also be > 0 -- omitting
+# them or passing 0 makes nexus-inference-proxy reject its config at startup.
+_SURFACE_REQUIRED_INT_FIELDS = {
+    "llm": (),
+    "embedding": ("max_input_chars", "max_batch_size"),
+    "rerank": ("max_query_chars", "max_doc_chars", "max_docs_per_request"),
+}
+# Int fields where 0 is a valid setting (>= 0). Every other int field must be
+# strictly positive. ``max_retries`` = 0 means "no retries".
+_NONNEG_INT_FIELDS = frozenset({"max_retries"})
 # String fields that, when present, must be strings (loose type guard).
 _SURFACE_OPTIONAL_STRS = ("api_key_ref", "base_url", "api_version", "provider", "label")
 
@@ -360,9 +371,11 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
     makes impossible. Raises ValueError on the first problem.
 
     Covers: ``api_style`` enumeration, required non-empty strings, integer-typed
-    numeric fields, and the two documented placement rules -- ``pinecone`` models
-    take no ``api_key_ref`` (the caller supplies it per request) and ``litellm``
-    rerank models take no ``api_version`` (litellm.arerank has no such param).
+    numeric fields (embedding/rerank size limits must be present and > 0; llm
+    token budgets are optional but > 0 when set; ``max_retries`` >= 0), and the
+    two documented placement rules -- ``pinecone`` models take no ``api_key_ref``
+    (the caller supplies it per request) and ``litellm`` rerank models take no
+    ``api_version`` (litellm.arerank has no such param).
 
     Runs only on operator-supplied catalogs (headless JSON / interactive), never
     on the shipped ``_DEFAULT_*`` constants.
@@ -390,12 +403,28 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
                 raise ValueError(f"{surface} model {model_id!r} field {opt!r} must be a string")
 
         for num in _SURFACE_INT_FIELDS[surface]:
+            if num not in fields:
+                # Required limits (embedding/rerank sizes) must be present -- the
+                # proxy has no fallback and refuses to boot without them.
+                if num in _SURFACE_REQUIRED_INT_FIELDS[surface]:
+                    raise ValueError(
+                        f"{surface} model {model_id!r} needs a positive whole number {num!r}"
+                    )
+                continue
+            val = fields[num]
             # bool is an int subclass -- reject it explicitly so `true` isn't a count.
-            if num in fields and (
-                isinstance(fields[num], bool) or not isinstance(fields[num], int)
-            ):
+            if isinstance(val, bool) or not isinstance(val, int):
                 raise ValueError(
                     f"{surface} model {model_id!r} field {num!r} must be a whole number"
+                )
+            # max_retries may be 0 (no retries); every other limit must be > 0. A
+            # zero/negative limit is a valid int but makes the proxy reject its
+            # config at startup, so catch it here rather than at CrashLoop.
+            floor = 0 if num in _NONNEG_INT_FIELDS else 1
+            if val < floor:
+                unit = "non-negative" if floor == 0 else "positive"
+                raise ValueError(
+                    f"{surface} model {model_id!r} field {num!r} must be a {unit} whole number"
                 )
 
         if surface == "llm" and "vision" in fields and not isinstance(fields["vision"], bool):
@@ -498,7 +527,8 @@ def build_inference_models_toml(
     # source of truth for output width that the API reads to provision indexes.
     for model_id, fields in embedding_models.items():
         dim = fields.get("dimension")
-        if not isinstance(dim, int) or dim <= 0:
+        # bool is an int subclass -- reject it so `dimension = true` isn't read as 1.
+        if isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0:
             raise ValueError(
                 f"embedding model {model_id!r} needs a positive integer 'dimension' "
                 "(the model's output vector width)"
@@ -939,24 +969,38 @@ class BaseSetupWizard:
 
     # ----- Inference model catalog (interactive guided entry) -------------
 
-    def _prompt_int(self, message: str, default: int | None = None) -> int:
+    def _prompt_int(
+        self, message: str, default: int | None = None, min_value: int | None = None
+    ) -> int:
         while True:
             raw = self._prompt(message, "" if default is None else str(default)).strip()
             try:
-                return int(raw)
+                value = int(raw)
             except ValueError:
                 console.print("  [red]Enter a whole number.[/]")
+                continue
+            if min_value is not None and value < min_value:
+                console.print(f"  [red]Enter a whole number >= {min_value}.[/]")
+                continue
+            return value
 
-    def _prompt_optional_int(self, message: str) -> int | None:
+    def _prompt_optional_int(self, message: str, min_value: int | None = None) -> int | None:
         """Prompt for an integer that may be skipped (Enter -> None)."""
         while True:
             raw = self._prompt(message, "").strip()
             if not raw:
                 return None
             try:
-                return int(raw)
+                value = int(raw)
             except ValueError:
                 console.print("  [red]Enter a whole number, or press Enter to skip.[/]")
+                continue
+            if min_value is not None and value < min_value:
+                console.print(
+                    f"  [red]Enter a whole number >= {min_value}, or press Enter to skip.[/]"
+                )
+                continue
+            return value
 
     def _prompt_required(self, message: str) -> str:
         """Prompt for a value the proxy schema requires to be a non-empty string."""
@@ -1172,7 +1216,7 @@ class BaseSetupWizard:
         if self._prompt_bool("  vision (model accepts image inputs)?", default=False):
             fields["vision"] = True
         fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2
+            "  max_retries (retries on a failed upstream call)", 2, min_value=0
         )
         # base_url: needed to reach a non-OpenAI endpoint; optional otherwise
         # (openai without it hits OpenAI's default host, litellm uses its registry).
@@ -1196,12 +1240,12 @@ class BaseSetupWizard:
         # context_window / max_output_tokens are optional token budgets (the proxy
         # falls back to the LiteLLM registry / provider defaults when omitted).
         context_window = self._prompt_optional_int(
-            "  context_window (model's total input token budget; Enter to skip)"
+            "  context_window (model's total input token budget; Enter to skip)", min_value=1
         )
         if context_window is not None:
             fields["context_window"] = context_window
         max_output_tokens = self._prompt_optional_int(
-            "  max_output_tokens (max tokens generated per response; Enter to skip)"
+            "  max_output_tokens (max tokens generated per response; Enter to skip)", min_value=1
         )
         if max_output_tokens is not None:
             fields["max_output_tokens"] = max_output_tokens
@@ -1228,7 +1272,9 @@ class BaseSetupWizard:
         # dimension is required: the model's output vector width, read by the API
         # to provision an index of the matching size (nexus#1234). It's fixed by
         # the model (e.g. multilingual-e5-large is 1024).
-        fields["dimension"] = self._prompt_int("  dimension (output vector width, e.g. 1024)")
+        fields["dimension"] = self._prompt_int(
+            "  dimension (output vector width, e.g. 1024)", min_value=1
+        )
         if api_style == "litellm":
             # api_key_ref is forbidden for pinecone (caller-supplied per request);
             # required in practice for litellm.
@@ -1241,13 +1287,13 @@ class BaseSetupWizard:
             if base_url:
                 fields["base_url"] = base_url
         fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2
+            "  max_retries (retries on a failed upstream call)", 2, min_value=0
         )
         fields["max_input_chars"] = self._prompt_int(
-            "  max_input_chars (max characters per input item)", 1000
+            "  max_input_chars (max characters per input item)", 1000, min_value=1
         )
         fields["max_batch_size"] = self._prompt_int(
-            "  max_batch_size (max items per embed call)", 96
+            "  max_batch_size (max items per embed call)", 96, min_value=1
         )
         # api_version: valid for both styles, different meaning. litellm =>
         # forwarded as the `api_version` kwarg (some providers require it);
@@ -1288,16 +1334,16 @@ class BaseSetupWizard:
             if base_url:
                 fields["base_url"] = base_url
         fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2
+            "  max_retries (retries on a failed upstream call)", 2, min_value=0
         )
         fields["max_query_chars"] = self._prompt_int(
-            "  max_query_chars (max characters in the query)", 1000
+            "  max_query_chars (max characters in the query)", 1000, min_value=1
         )
         fields["max_doc_chars"] = self._prompt_int(
-            "  max_doc_chars (max characters per document)", 800
+            "  max_doc_chars (max characters per document)", 800, min_value=1
         )
         fields["max_docs_per_request"] = self._prompt_int(
-            "  max_docs_per_request (max documents per rerank call)", 100
+            "  max_docs_per_request (max documents per rerank call)", 100, min_value=1
         )
         # api_version: pinecone-only -- sets the X-Pinecone-API-Version request
         # header. The proxy rejects it on litellm rerank models (litellm.arerank
