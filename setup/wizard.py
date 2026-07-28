@@ -231,6 +231,53 @@ _INFERENCE_MODELS_HEADER = """\
 
 LLM_MODEL_TIERS = ("lite", "standard", "pro")
 
+# Shipped defaults, one catalog + tier map per surface. Each surface (chat /
+# embedding / rerank) is INDEPENDENTLY optional: an operator may customize any
+# subset and leave the rest default. build_inference_models_toml() fills any
+# surface it isn't given from these, so the emitted TOML is always a complete
+# routing layer (BYOC has no `managed` profile to inherit from). Keep these in
+# lockstep with NEXUS_INFERENCE_MODELS_TEMPLATE -- both describe the same
+# shipped default deployment.
+
+# Chat / LLM default catalog + tier map (Gemini, keyed by `gemini-api-key`).
+_DEFAULT_LLM_MODELS = {
+    "gemini-3.1-flash-lite": {
+        "api_style": "litellm",
+        "model": "gemini/gemini-3.1-flash-lite",
+        "api_key_ref": "gemini-api-key",
+        "label": "Gemini 3.1 Flash Lite",
+        "provider": "gemini",
+        "vision": True,
+        "max_retries": 2,
+        "context_window": 1_000_000,
+    },
+    "gemini-3.5-flash": {
+        "api_style": "litellm",
+        "model": "gemini/gemini-3.5-flash",
+        "api_key_ref": "gemini-api-key",
+        "label": "Gemini 3.5 Flash",
+        "provider": "gemini",
+        "vision": True,
+        "max_retries": 2,
+        "context_window": 1_000_000,
+    },
+    "gemini-3.1-pro-preview": {
+        "api_style": "litellm",
+        "model": "gemini/gemini-3.1-pro-preview",
+        "api_key_ref": "gemini-api-key",
+        "label": "Gemini 3.1 Pro",
+        "provider": "gemini",
+        "vision": True,
+        "max_retries": 5,
+        "context_window": 1_000_000,
+    },
+}
+_DEFAULT_LLM_TIERS = {
+    "lite": "gemini-3.1-flash-lite",
+    "standard": "gemini-3.5-flash",
+    "pro": "gemini-3.1-pro-preview",
+}
+
 # Default embedding model used when the operator doesn't customize embedding
 # (interactive wizard) or omits the embedding env vars (headless). It is no longer
 # platform-locked -- operators may define their own pinecone- or litellm-style
@@ -244,6 +291,19 @@ _DEFAULT_EMBEDDING_MODELS = {
         "max_retries": 2,
         "max_input_chars": 1000,
         "max_batch_size": 96,
+    }
+}
+
+# Default rerank model + tier (Pinecone-hosted; key supplied per request).
+DEFAULT_RERANK_MODEL_ID = "bge-reranker-v2-m3"
+_DEFAULT_RERANK_MODELS = {
+    DEFAULT_RERANK_MODEL_ID: {
+        "api_style": "pinecone",
+        "model": DEFAULT_RERANK_MODEL_ID,
+        "max_retries": 2,
+        "max_query_chars": 1000,
+        "max_doc_chars": 800,
+        "max_docs_per_request": 100,
     }
 }
 
@@ -269,32 +329,212 @@ def _emit_model_table(map_name: str, model_id: str, fields: dict) -> str:
     return "\n".join(lines)
 
 
+# Per-surface structural rules, mirroring what the interactive collectors enforce
+# by construction (_choose_from / _prompt_required / _prompt_int) so the headless
+# JSON path is validated identically. Keys are the surface names used throughout.
+_SURFACE_API_STYLES = {
+    "llm": ("litellm", "openai"),
+    "embedding": ("pinecone", "litellm"),
+    "rerank": ("pinecone", "litellm"),
+}
+# Non-empty string fields the proxy schema requires (interactive: _prompt_required).
+_SURFACE_REQUIRED_STRS = {
+    "llm": ("model", "label", "provider"),
+    "embedding": ("model",),
+    "rerank": ("model",),
+}
+# Fields that must be whole numbers when present (interactive: _prompt_int).
+# ``dimension`` is validated separately (it is required, not merely int-typed).
+_SURFACE_INT_FIELDS = {
+    "llm": ("max_retries", "context_window", "max_output_tokens"),
+    "embedding": ("max_retries", "max_input_chars", "max_batch_size"),
+    "rerank": ("max_retries", "max_query_chars", "max_doc_chars", "max_docs_per_request"),
+}
+# Int fields the proxy requires PRESENT on every operator-supplied model of the
+# surface (the shipped defaults set them too). They must also be > 0 -- omitting
+# them or passing 0 makes nexus-inference-proxy reject its config at startup.
+_SURFACE_REQUIRED_INT_FIELDS = {
+    "llm": (),
+    "embedding": ("max_input_chars", "max_batch_size"),
+    "rerank": ("max_query_chars", "max_doc_chars", "max_docs_per_request"),
+}
+# Int fields where 0 is a valid setting (>= 0). Every other int field must be
+# strictly positive. ``max_retries`` = 0 means "no retries".
+_NONNEG_INT_FIELDS = frozenset({"max_retries"})
+# String fields that, when present, must be strings (loose type guard).
+_SURFACE_OPTIONAL_STRS = ("api_key_ref", "base_url", "api_version", "provider", "label")
+
+
+def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
+    """Validate one surface's model definitions the way the interactive wizard
+    does, so a headless JSON catalog can't smuggle in a shape the guided path
+    makes impossible. Raises ValueError on the first problem.
+
+    Covers: ``api_style`` enumeration, required non-empty strings, integer-typed
+    numeric fields (embedding/rerank size limits must be present and > 0; llm
+    token budgets are optional but > 0 when set; ``max_retries`` >= 0), and the
+    two documented placement rules -- ``pinecone`` models take no ``api_key_ref``
+    (the caller supplies it per request) and ``litellm`` rerank models take no
+    ``api_version`` (litellm.arerank has no such param).
+
+    Runs only on operator-supplied catalogs (headless JSON / interactive), never
+    on the shipped ``_DEFAULT_*`` constants.
+    """
+    if not isinstance(models, dict):
+        raise ValueError(f"{surface} catalog must be a JSON object mapping model id -> definition")
+    for model_id, fields in models.items():
+        if not isinstance(fields, dict):
+            raise ValueError(f"{surface} model {model_id!r} must be a table of fields")
+
+        api_style = fields.get("api_style")
+        if api_style not in _SURFACE_API_STYLES[surface]:
+            raise ValueError(
+                f"{surface} model {model_id!r} has api_style {api_style!r}; must be one of "
+                f"{list(_SURFACE_API_STYLES[surface])}"
+            )
+
+        for req in _SURFACE_REQUIRED_STRS[surface]:
+            val = fields.get(req)
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(f"{surface} model {model_id!r} needs a non-empty string {req!r}")
+
+        for opt in _SURFACE_OPTIONAL_STRS:
+            if opt in fields and not isinstance(fields[opt], str):
+                raise ValueError(f"{surface} model {model_id!r} field {opt!r} must be a string")
+
+        for num in _SURFACE_INT_FIELDS[surface]:
+            if num not in fields:
+                # Required limits (embedding/rerank sizes) must be present -- the
+                # proxy has no fallback and refuses to boot without them.
+                if num in _SURFACE_REQUIRED_INT_FIELDS[surface]:
+                    raise ValueError(
+                        f"{surface} model {model_id!r} needs a positive whole number {num!r}"
+                    )
+                continue
+            val = fields[num]
+            # bool is an int subclass -- reject it explicitly so `true` isn't a count.
+            if isinstance(val, bool) or not isinstance(val, int):
+                raise ValueError(
+                    f"{surface} model {model_id!r} field {num!r} must be a whole number"
+                )
+            # max_retries may be 0 (no retries); every other limit must be > 0. A
+            # zero/negative limit is a valid int but makes the proxy reject its
+            # config at startup, so catch it here rather than at CrashLoop.
+            floor = 0 if num in _NONNEG_INT_FIELDS else 1
+            if val < floor:
+                unit = "non-negative" if floor == 0 else "positive"
+                raise ValueError(
+                    f"{surface} model {model_id!r} field {num!r} must be a {unit} whole number"
+                )
+
+        if surface == "llm" and "vision" in fields and not isinstance(fields["vision"], bool):
+            raise ValueError(f"llm model {model_id!r} field 'vision' must be true/false")
+
+        # pinecone embed/rerank models carry no api_key_ref (key is per-request).
+        if (
+            surface in ("embedding", "rerank")
+            and api_style == "pinecone"
+            and fields.get("api_key_ref")
+        ):
+            raise ValueError(
+                f"{surface} model {model_id!r} is api_style 'pinecone' and must NOT set "
+                "an api_key_ref (the caller supplies the key per request)"
+            )
+        # litellm rerank rejects api_version (litellm.arerank has no such kwarg).
+        if surface == "rerank" and api_style == "litellm" and fields.get("api_version"):
+            raise ValueError(
+                f"rerank model {model_id!r} is api_style 'litellm' and must NOT set an "
+                "api_version (litellm rerank has no api_version parameter)"
+            )
+
+
 def build_inference_models_toml(
-    llm_models: dict[str, dict],
-    rerank_models: dict[str, dict],
-    tiers: dict[str, str],
+    llm_models: dict[str, dict] | None = None,
+    rerank_models: dict[str, dict] | None = None,
+    tiers: dict[str, str] | None = None,
     embedding_models: dict[str, dict] | None = None,
 ) -> str:
     """Render a complete inference-routing TOML from operator-chosen catalogs.
 
-    Chat, embedding, and rerank are all operator-configurable. ``tiers`` keys:
-    ``lite`` / ``standard`` / ``pro`` (llm ids), ``embedding`` (an embedding id),
-    and ``rerank`` (a rerank id). ``embedding_models`` / ``tiers['embedding']``
-    default to the shipped pinecone model when omitted, so callers that don't
-    customize embedding still get a complete catalog. Each embedding model must
-    carry a ``dimension`` (its output vector width -- required by the proxy since
-    nexus#1234). ``supported_<surface>_models`` is auto-set to every defined id.
-    BYOC omits the chart's ``managed`` profile (nexus#864), so this TOML is the
-    proxy's only routing layer.
-    """
-    if not llm_models or not rerank_models:
-        raise ValueError("llm and rerank must each have at least one model")
+    Chat, embedding, and rerank are all operator-configurable AND each is
+    INDEPENDENTLY optional: pass a catalog (plus its tier ids) to customize a
+    surface, or leave it ``None`` to keep the shipped default. Every surface the
+    caller omits is filled from the ``_DEFAULT_*`` catalogs and its tier(s)
+    default too, so the emitted TOML is always a complete routing layer even when
+    only one surface is customized. BYOC omits the chart's ``managed`` profile
+    (nexus#864), so this TOML is the proxy's only routing layer.
 
-    # Fall back to the shipped default embedding model when the operator didn't
-    # customize embedding (keeps the catalog complete without a locked injection).
-    if not embedding_models:
+    Only ``None`` selects a surface's default; an explicitly empty catalog
+    (``{}``) raises rather than silently defaulting -- see the check below.
+
+    ``tiers`` keys: ``lite`` / ``standard`` / ``pro`` (llm ids), ``embedding``
+    (an embedding id), and ``rerank`` (a rerank id). A tier for a defaulted
+    surface may be omitted -- it falls back to that surface's default tier.
+    Each embedding model must carry a ``dimension`` (its output vector width --
+    required by the proxy since nexus#1234). ``supported_<surface>_models`` is
+    auto-set to every defined id.
+    """
+    # Fill any surface the caller left default from the shipped catalogs, and
+    # default that surface's tier(s) too (setdefault -- never clobber a tier the
+    # caller supplied for a surface they DID customize). This is what makes each
+    # surface independently optional.
+    #
+    # Only an UNSET surface (None) selects the shipped default. An explicitly
+    # empty catalog ({}) is an operator mistake -- defaulting it would silently
+    # deploy models they never defined while their tier ids point at shipped ids,
+    # defeating the all-or-nothing contract -- so reject it rather than fall back.
+    tiers = dict(tiers or {})
+    for _surface, _models in (
+        ("llm", llm_models),
+        ("rerank", rerank_models),
+        ("embedding", embedding_models),
+    ):
+        if _models is not None and not _models:
+            raise ValueError(
+                f"{_surface} catalog is empty; omit it entirely to keep the shipped default"
+            )
+    if llm_models is None:
+        llm_models = dict(_DEFAULT_LLM_MODELS)
+        for _tier, _ref in _DEFAULT_LLM_TIERS.items():
+            tiers.setdefault(_tier, _ref)
+    if rerank_models is None:
+        rerank_models = dict(_DEFAULT_RERANK_MODELS)
+        tiers.setdefault("rerank", DEFAULT_RERANK_MODEL_ID)
+    if embedding_models is None:
         embedding_models = dict(_DEFAULT_EMBEDDING_MODELS)
-    embedding_ref = tiers.get("embedding") or DEFAULT_EMBEDDING_MODEL_ID
+        tiers.setdefault("embedding", DEFAULT_EMBEDDING_MODEL_ID)
+
+    # NOTE: model-definition structure is validated by _validate_surface_catalog
+    # at the point operator-supplied catalogs enter (headless JSON parse and the
+    # interactive collectors), NOT here -- the shipped _DEFAULT_* catalogs are
+    # trusted constants, so validating the post-default merge would only re-check
+    # them. This function stays a pure renderer.
+
+    # A customized surface must supply its tier id(s); a defaulted one just got
+    # them above. Fail loudly rather than KeyError deep in the emit below.
+    missing_tiers = [t for t in (*LLM_MODEL_TIERS, "rerank", "embedding") if t not in tiers]
+    if missing_tiers:
+        raise ValueError(
+            f"missing tier assignment(s) {missing_tiers}; each customized surface must "
+            "map its tier(s) to a defined model"
+        )
+
+    # Every tier must reference a model actually defined in its surface's catalog.
+    # The interactive wizard constrains this via _choose_from, but headless (env
+    # tier ids) and direct callers can point a tier at an undefined model, which
+    # the proxy would only reject at boot -- catch it here for all three surfaces.
+    for tier in LLM_MODEL_TIERS:
+        if tiers[tier] not in llm_models:
+            raise ValueError(
+                f"chat tier {tier!r} model_ref {tiers[tier]!r} is not one of the defined "
+                f"llm models {sorted(llm_models)}"
+            )
+    if tiers["rerank"] not in rerank_models:
+        raise ValueError(
+            f"rerank tier model_ref {tiers['rerank']!r} is not one of the defined "
+            f"rerank models {sorted(rerank_models)}"
+        )
+    embedding_ref = tiers["embedding"]
     if embedding_ref not in embedding_models:
         raise ValueError(
             f"embedding tier model_ref {embedding_ref!r} is not one of the defined "
@@ -304,7 +544,8 @@ def build_inference_models_toml(
     # source of truth for output width that the API reads to provision indexes.
     for model_id, fields in embedding_models.items():
         dim = fields.get("dimension")
-        if not isinstance(dim, int) or dim <= 0:
+        # bool is an int subclass -- reject it so `dimension = true` isn't read as 1.
+        if isinstance(dim, bool) or not isinstance(dim, int) or dim <= 0:
             raise ValueError(
                 f"embedding model {model_id!r} needs a positive integer 'dimension' "
                 "(the model's output vector width)"
@@ -745,24 +986,38 @@ class BaseSetupWizard:
 
     # ----- Inference model catalog (interactive guided entry) -------------
 
-    def _prompt_int(self, message: str, default: int | None = None) -> int:
+    def _prompt_int(
+        self, message: str, default: int | None = None, min_value: int | None = None
+    ) -> int:
         while True:
             raw = self._prompt(message, "" if default is None else str(default)).strip()
             try:
-                return int(raw)
+                value = int(raw)
             except ValueError:
                 console.print("  [red]Enter a whole number.[/]")
+                continue
+            if min_value is not None and value < min_value:
+                console.print(f"  [red]Enter a whole number >= {min_value}.[/]")
+                continue
+            return value
 
-    def _prompt_optional_int(self, message: str) -> int | None:
+    def _prompt_optional_int(self, message: str, min_value: int | None = None) -> int | None:
         """Prompt for an integer that may be skipped (Enter -> None)."""
         while True:
             raw = self._prompt(message, "").strip()
             if not raw:
                 return None
             try:
-                return int(raw)
+                value = int(raw)
             except ValueError:
                 console.print("  [red]Enter a whole number, or press Enter to skip.[/]")
+                continue
+            if min_value is not None and value < min_value:
+                console.print(
+                    f"  [red]Enter a whole number >= {min_value}, or press Enter to skip.[/]"
+                )
+                continue
+            return value
 
     def _prompt_required(self, message: str) -> str:
         """Prompt for a value the proxy schema requires to be a non-empty string."""
@@ -793,20 +1048,23 @@ class BaseSetupWizard:
         console.print("  [dim]  chat  standard -> gemini-3.5-flash[/]")
         console.print("  [dim]  chat  pro      -> gemini-3.1-pro-preview[/]")
         console.print(f"  [dim]  embedding      -> {DEFAULT_EMBEDDING_MODEL_ID} (pinecone)[/]")
-        console.print("  [dim]  rerank         -> bge-reranker-v2-m3 (pinecone)[/]")
+        console.print(f"  [dim]  rerank         -> {DEFAULT_RERANK_MODEL_ID} (pinecone)[/]")
         console.print("  [dim]  provider keys  -> gemini-api-key[/]")
 
     def _collect_inference_models(self) -> str | None:
         """Guided catalog entry + tier selection -> routing TOML.
 
-        Returns None to fall back to the default (Gemini + Pinecone) template.
-        This TOML is BYOC's only routing layer (the managed profile is omitted),
-        so the operator defines the whole catalog -- chat, embedding, and rerank.
+        Each surface (chat / embedding / rerank) is customized INDEPENDENTLY: the
+        operator can define their own catalog for any subset and keep the shipped
+        default for the rest. Returns None when no surface is customized (the
+        default template is written verbatim). This TOML is BYOC's only routing
+        layer (the managed profile is omitted), so any surface left default is
+        filled from the shipped catalogs by build_inference_models_toml.
         """
         console.print()
         console.print(
-            "  [dim]Define the chat, embedding, and rerank models this deployment"
-            " serves, or accept the default Gemini + Pinecone set below.[/]"
+            "  [dim]Customize any of the chat, embedding, and rerank surfaces"
+            " independently -- keep the default Gemini + Pinecone set for the rest.[/]"
         )
         self._show_default_models()
         if self._prompt("Customize inference models? (y/N)", "N").strip().lower() not in (
@@ -815,48 +1073,90 @@ class BaseSetupWizard:
         ):
             return None
 
-        # llm needs >= len(tiers) distinct models (lite/standard/pro map to
-        # distinct ids); rerank needs >= 1. Embedding is optional (minimum 0):
-        # add none to keep the shipped default. Minimums are enforced inside the
-        # collection loop so partially-entered catalogs are never discarded.
-        llm = self._collect_surface_models("llm", minimum=len(LLM_MODEL_TIERS))
-        embedding = self._collect_surface_models(
-            "embedding", minimum=0, keep_default=DEFAULT_EMBEDDING_MODEL_ID
+        # Every surface is optional now -- keep the shipped default for any the
+        # operator skips. A customized surface must reach its minimum before the
+        # loop lets them stop (chat needs >= len(tiers) distinct ids to fill the
+        # tiers; embedding / rerank need >= 1), so a partially-entered catalog is
+        # never discarded. Minimums are enforced inside _collect_surface_models.
+        llm = self._collect_surface_models(
+            "llm",
+            optional=True,
+            min_if_customized=len(LLM_MODEL_TIERS),
+            keep_default="the default Gemini chat tiers",
         )
-        rerank = self._collect_surface_models("rerank")
+        embedding = self._collect_surface_models(
+            "embedding", optional=True, keep_default=DEFAULT_EMBEDDING_MODEL_ID
+        )
+        rerank = self._collect_surface_models(
+            "rerank", optional=True, keep_default=DEFAULT_RERANK_MODEL_ID
+        )
 
+        # Nothing customized -> None so the pristine (fully commented) template is
+        # written instead of a regenerated all-defaults TOML.
+        if not (llm or embedding or rerank):
+            console.print()
+            console.print("  [dim]No surface customized; using the default catalog.[/]")
+            return None
+
+        # Map tiers ONLY for the surfaces the operator customized; every other
+        # surface's tier defaults inside build_inference_models_toml.
+        tiers: dict[str, str] = {}
         console.print()
-        console.print("  [dim]Now map the tiers to models you defined.[/]")
-        while True:
-            tiers = {t: self._choose_from(f"Chat '{t}' model", list(llm)) for t in LLM_MODEL_TIERS}
-            if len(set(tiers.values())) == len(LLM_MODEL_TIERS):
-                break
-            console.print(
-                f"  [red]{'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model."
-                " Please pick again.[/]"
-            )
-        # Map the embedding tier only when the operator defined embedding models;
-        # otherwise build_inference_models_toml fills in the default model + tier.
+        console.print(f"  [{BLUE}]Model selection[/]")
+        if llm:
+            console.print()
+            console.print("  [dim]Now map the chat tiers to the models you defined.[/]")
+            while True:
+                chat_tiers = {
+                    t: self._choose_from(f"Chat '{t}' model", list(llm)) for t in LLM_MODEL_TIERS
+                }
+                if len(set(chat_tiers.values())) == len(LLM_MODEL_TIERS):
+                    break
+                console.print(
+                    f"  [red]{'/'.join(LLM_MODEL_TIERS)} must each map to a distinct model."
+                    " Please pick again.[/]"
+                )
+            tiers.update(chat_tiers)
         if embedding:
+            console.print()
+            console.print("  [dim]Pick the model to use for embeddings.[/]")
             tiers["embedding"] = self._choose_from("Embedding model", list(embedding))
-        tiers["rerank"] = self._choose_from("Rerank model", list(rerank))
-        return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding or None)
+        if rerank:
+            console.print()
+            console.print("  [dim]Pick the model to use for reranking.[/]")
+            tiers["rerank"] = self._choose_from("Rerank model", list(rerank))
+        # Validate the customized surfaces. The collectors already produce valid
+        # models by construction, so this is a backstop (it can't fire today) that
+        # keeps every operator-supplied catalog going through the same check as
+        # the headless path -- guarding against future collector drift.
+        for surface, models in (("llm", llm), ("embedding", embedding), ("rerank", rerank)):
+            if models:
+                _validate_surface_catalog(surface, models)
+        return build_inference_models_toml(
+            llm or None, rerank or None, tiers, embedding_models=embedding or None
+        )
 
     def _collect_surface_models(
-        self, surface: str, minimum: int = 1, keep_default: str | None = None
+        self,
+        surface: str,
+        min_if_customized: int = 1,
+        optional: bool = False,
+        keep_default: str | None = None,
     ) -> dict[str, dict]:
-        """Loop collecting >= ``minimum`` distinct models for one surface.
+        """Loop collecting distinct models for one surface.
 
-        Accumulated models are kept for the whole loop: the operator can only
-        stop once ``minimum`` have been added, so a partially-entered catalog is
-        never discarded (and the step counter is untouched -- this is a sub-prompt
-        of the Nexus step, not a top-level step). ``minimum=0`` makes the surface
-        optional -- the first prompt defaults to "no" and ``keep_default`` names
-        the shipped model used when the operator adds none.
+        ``optional=True`` lets the operator skip the surface entirely (press Enter
+        at the first prompt) to keep the shipped default -- ``keep_default`` names
+        it for the hint. Once they add ANY model, the surface counts as customized
+        and they cannot stop until ``min_if_customized`` are added (chat needs
+        len(tiers) distinct ids; embedding / rerank need 1), so a partially-entered
+        catalog is never silently discarded back to the default. Returns ``{}`` for
+        a skipped optional surface. The step counter is untouched -- this is a
+        sub-prompt of the Nexus step, not a top-level step.
         """
         console.print()
         console.print(f"  [{BLUE}]{surface.title()} models[/]")
-        if minimum == 0:
+        if optional:
             console.print(
                 f"  [dim]Optional — answer n to keep the shipped default"
                 f"{f' ({keep_default})' if keep_default else ''}.[/]"
@@ -871,15 +1171,20 @@ class BaseSetupWizard:
             verb = "another" if models else "a"
             # Optional surface with nothing added yet defaults to "no", so pressing
             # Enter keeps the default instead of forcing a model entry.
-            prompt_default = "N" if (minimum == 0 and not models) else "Y"
+            prompt_default = "N" if (optional and not models) else "Y"
             ask = self._prompt(f"Add {verb} {surface} model? (Y/n)", prompt_default).strip().lower()
             if ask not in ("y", "yes"):
-                if len(models) >= minimum:
+                # Nothing added on an optional surface -> keep the default.
+                if optional and not models:
+                    return {}
+                # Otherwise the operator has committed to customizing this surface
+                # (or it's required) and must reach its minimum before stopping.
+                if len(models) >= min_if_customized:
                     return models
-                remaining = minimum - len(models)
+                remaining = min_if_customized - len(models)
                 console.print(
-                    f"  [red]At least {minimum} {surface} model"
-                    f"{'s' if minimum != 1 else ''} required"
+                    f"  [red]A customized {surface} surface needs at least"
+                    f" {min_if_customized} model{'s' if min_if_customized != 1 else ''}"
                     f" -- add {remaining} more.[/]"
                 )
                 continue
@@ -928,7 +1233,7 @@ class BaseSetupWizard:
         if self._prompt_bool("  vision (model accepts image inputs)?", default=False):
             fields["vision"] = True
         fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2
+            "  max_retries (retries on a failed upstream call)", 2, min_value=0
         )
         # base_url: needed to reach a non-OpenAI endpoint; optional otherwise
         # (openai without it hits OpenAI's default host, litellm uses its registry).
@@ -952,12 +1257,12 @@ class BaseSetupWizard:
         # context_window / max_output_tokens are optional token budgets (the proxy
         # falls back to the LiteLLM registry / provider defaults when omitted).
         context_window = self._prompt_optional_int(
-            "  context_window (model's total input token budget; Enter to skip)"
+            "  context_window (model's total input token budget; Enter to skip)", min_value=1
         )
         if context_window is not None:
             fields["context_window"] = context_window
         max_output_tokens = self._prompt_optional_int(
-            "  max_output_tokens (max tokens generated per response; Enter to skip)"
+            "  max_output_tokens (max tokens generated per response; Enter to skip)", min_value=1
         )
         if max_output_tokens is not None:
             fields["max_output_tokens"] = max_output_tokens
@@ -984,7 +1289,9 @@ class BaseSetupWizard:
         # dimension is required: the model's output vector width, read by the API
         # to provision an index of the matching size (nexus#1234). It's fixed by
         # the model (e.g. multilingual-e5-large is 1024).
-        fields["dimension"] = self._prompt_int("  dimension (output vector width, e.g. 1024)")
+        fields["dimension"] = self._prompt_int(
+            "  dimension (output vector width, e.g. 1024)", min_value=1
+        )
         if api_style == "litellm":
             # api_key_ref is forbidden for pinecone (caller-supplied per request);
             # required in practice for litellm.
@@ -997,13 +1304,13 @@ class BaseSetupWizard:
             if base_url:
                 fields["base_url"] = base_url
         fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2
+            "  max_retries (retries on a failed upstream call)", 2, min_value=0
         )
         fields["max_input_chars"] = self._prompt_int(
-            "  max_input_chars (max characters per input item)", 1000
+            "  max_input_chars (max characters per input item)", 1000, min_value=1
         )
         fields["max_batch_size"] = self._prompt_int(
-            "  max_batch_size (max items per embed call)", 96
+            "  max_batch_size (max items per embed call)", 96, min_value=1
         )
         # api_version: valid for both styles, different meaning. litellm =>
         # forwarded as the `api_version` kwarg (some providers require it);
@@ -1044,16 +1351,16 @@ class BaseSetupWizard:
             if base_url:
                 fields["base_url"] = base_url
         fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2
+            "  max_retries (retries on a failed upstream call)", 2, min_value=0
         )
         fields["max_query_chars"] = self._prompt_int(
-            "  max_query_chars (max characters in the query)", 1000
+            "  max_query_chars (max characters in the query)", 1000, min_value=1
         )
         fields["max_doc_chars"] = self._prompt_int(
-            "  max_doc_chars (max characters per document)", 800
+            "  max_doc_chars (max characters per document)", 800, min_value=1
         )
         fields["max_docs_per_request"] = self._prompt_int(
-            "  max_docs_per_request (max documents per rerank call)", 100
+            "  max_docs_per_request (max documents per rerank call)", 100, min_value=1
         )
         # api_version: pinecone-only -- sets the X-Pinecone-API-Version request
         # header. The proxy rejects it on litellm rerank models (litellm.arerank
@@ -1066,76 +1373,84 @@ class BaseSetupWizard:
                 fields["api_version"] = api_version
         return fields
 
+    @staticmethod
+    def _headless_surface(catalog_env: str, tier_envs: dict[str, str]):
+        """Parse one surface's env vars (headless mode) -> (models, tiers).
+
+        A surface is customized all-or-nothing: set its catalog JSON
+        (``catalog_env``) AND every tier-id env in ``tier_envs`` (mapping a tier
+        key -> its env var), or set none of them to keep the shipped default.
+        Any partial combination raises so a headless deploy never silently ships
+        a half-configured surface (or silently falls back to the default when the
+        operator clearly meant to customize). Returns ``(None, {})`` for a
+        surface left entirely at its default; otherwise ``(parsed_models,
+        {tier_key: value})``.
+        """
+        catalog_raw = os.environ.get(catalog_env)
+        tier_vals = {key: os.environ.get(env) for key, env in tier_envs.items()}
+        set_tiers = [env for key, env in tier_envs.items() if tier_vals[key]]
+
+        if not catalog_raw and not set_tiers:
+            return None, {}  # surface left at its default
+        if not catalog_raw or len(set_tiers) != len(tier_envs):
+            all_envs = ", ".join([catalog_env, *tier_envs.values()])
+            raise ValueError(
+                f"{catalog_env} customization is all-or-nothing: set the catalog JSON "
+                f"and its tier id(s) together, or none of them. Expected all of: {all_envs}."
+            )
+        try:
+            models = json.loads(catalog_raw)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"invalid JSON in {catalog_env}: {exc}") from exc
+        return models, dict(tier_vals)
+
     def _headless_inference_models_toml(self) -> str | None:
         """Build the routing TOML from env vars (headless mode), or None to use
-        the default template when none are set.
+        the default template when no surface is customized.
 
-        Chat + rerank are required to customize; embedding is optional and falls
-        back to the shipped default when its env vars are absent. Env contract
-        (JSON object is id -> model-definition, fields exactly as in
+        Each surface (chat / embedding / rerank) is customized INDEPENDENTLY and
+        all-or-nothing: set its catalog JSON AND its tier id(s), or none of them
+        to keep the shipped default. Any surface left default is filled from the
+        shipped catalog inside build_inference_models_toml. Env contract (JSON
+        object is id -> model-definition, fields exactly as in
         nexus-inference-proxy's [<surface>_models.<id>] tables):
-          PINECONE_NEXUS_LLM_MODELS / _RERANK_MODELS         (JSON, required)
-          PINECONE_NEXUS_LLM_LITE / _STANDARD / _PRO          (model id, required)
-          PINECONE_NEXUS_RERANK_MODEL                         (model id, required)
-          PINECONE_NEXUS_EMBEDDING_MODELS                     (JSON, optional)
-          PINECONE_NEXUS_EMBEDDING_MODEL                      (model id, optional)
-
-        Embedding is all-or-nothing: set BOTH the catalog JSON and the tier id to
-        customize it, or NEITHER to keep the shipped default. Setting only one
-        raises (rather than silently deploying the default).
+          PINECONE_NEXUS_LLM_MODELS        (JSON) + PINECONE_NEXUS_LLM_LITE / _STANDARD / _PRO
+          PINECONE_NEXUS_RERANK_MODELS     (JSON) + PINECONE_NEXUS_RERANK_MODEL
+          PINECONE_NEXUS_EMBEDDING_MODELS  (JSON) + PINECONE_NEXUS_EMBEDDING_MODEL
 
         Each embedding model definition must include a ``dimension`` (its output
         vector width) -- required by the proxy since nexus#1234.
         """
-        if not os.environ.get("PINECONE_NEXUS_LLM_MODELS"):
+        llm, llm_tiers = self._headless_surface(
+            "PINECONE_NEXUS_LLM_MODELS",
+            {t: f"PINECONE_NEXUS_LLM_{t.upper()}" for t in LLM_MODEL_TIERS},
+        )
+        rerank, rerank_tiers = self._headless_surface(
+            "PINECONE_NEXUS_RERANK_MODELS", {"rerank": "PINECONE_NEXUS_RERANK_MODEL"}
+        )
+        embedding, embedding_tiers = self._headless_surface(
+            "PINECONE_NEXUS_EMBEDDING_MODELS", {"embedding": "PINECONE_NEXUS_EMBEDDING_MODEL"}
+        )
+
+        if llm is None and rerank is None and embedding is None:
             console.print(
                 "  [dim]Inference models: using the default Gemini + Pinecone catalog."
-                " To customize, set PINECONE_NEXUS_LLM_MODELS / _RERANK_MODELS"
-                " (JSON id->definition) plus the tier ids PINECONE_NEXUS_LLM_LITE /"
-                " _STANDARD / _PRO and PINECONE_NEXUS_RERANK_MODEL. Embedding is"
-                " optional (PINECONE_NEXUS_EMBEDDING_MODELS / _EMBEDDING_MODEL);"
-                f" it defaults to {DEFAULT_EMBEDDING_MODEL_ID}.[/]"
+                " Each surface is customizable independently -- set its catalog JSON plus"
+                " its tier id(s): PINECONE_NEXUS_LLM_MODELS + _LLM_LITE/_STANDARD/_PRO,"
+                " PINECONE_NEXUS_RERANK_MODELS + _RERANK_MODEL, and/or"
+                " PINECONE_NEXUS_EMBEDDING_MODELS + _EMBEDDING_MODEL. Any surface you omit"
+                " keeps its shipped default.[/]"
             )
             return None
-        try:
-            llm = json.loads(os.environ["PINECONE_NEXUS_LLM_MODELS"])
-            rerank = json.loads(os.environ["PINECONE_NEXUS_RERANK_MODELS"])
-            tiers = {t: os.environ[f"PINECONE_NEXUS_LLM_{t.upper()}"] for t in LLM_MODEL_TIERS}
-            tiers["rerank"] = os.environ["PINECONE_NEXUS_RERANK_MODEL"]
-        except KeyError as exc:
-            raise ValueError(
-                f"PINECONE_NEXUS_LLM_MODELS is set but {exc} is missing -- set "
-                "PINECONE_NEXUS_RERANK_MODELS and the tier ids "
-                "PINECONE_NEXUS_LLM_{LITE,STANDARD,PRO} / PINECONE_NEXUS_RERANK_MODEL."
-            ) from exc
-        except json.JSONDecodeError as exc:
-            raise ValueError(f"invalid JSON in PINECONE_NEXUS_*_MODELS: {exc}") from exc
 
-        # Embedding is optional: set BOTH the catalog JSON and the tier id, or
-        # NEITHER (falls back to the shipped default inside build_...). Setting only
-        # one is a misconfiguration -- fail loudly rather than silently deploying
-        # the default. (The reverse asymmetry -- catalog set, tier id missing -- is
-        # caught by the KeyError below.)
-        embedding = None
-        emb_catalog = os.environ.get("PINECONE_NEXUS_EMBEDDING_MODELS")
-        emb_tier = os.environ.get("PINECONE_NEXUS_EMBEDDING_MODEL")
-        if emb_tier and not emb_catalog:
-            raise ValueError(
-                "PINECONE_NEXUS_EMBEDDING_MODEL is set but PINECONE_NEXUS_EMBEDDING_MODELS "
-                "(the catalog JSON) is not -- set both to customize embedding, or neither to "
-                "keep the default."
-            )
-        if emb_catalog:
-            try:
-                embedding = json.loads(emb_catalog)
-                tiers["embedding"] = os.environ["PINECONE_NEXUS_EMBEDDING_MODEL"]
-            except KeyError as exc:
-                raise ValueError(
-                    "PINECONE_NEXUS_EMBEDDING_MODELS is set but "
-                    "PINECONE_NEXUS_EMBEDDING_MODEL (the tier id) is missing."
-                ) from exc
-            except json.JSONDecodeError as exc:
-                raise ValueError(f"invalid JSON in PINECONE_NEXUS_EMBEDDING_MODELS: {exc}") from exc
+        # Validate only the surfaces the operator actually supplied (untrusted
+        # JSON). Surfaces left default are filled from the trusted _DEFAULT_*
+        # catalogs inside build_inference_models_toml and need no checking.
+        for surface, models in (("llm", llm), ("rerank", rerank), ("embedding", embedding)):
+            if models is not None:
+                _validate_surface_catalog(surface, models)
+
+        tiers = {**llm_tiers, **rerank_tiers, **embedding_tiers}
         return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding)
 
     def _get_nexus_config(self) -> NexusWizardConfig:
@@ -1212,7 +1527,11 @@ class BaseSetupWizard:
         # contribute nothing here. A skipped key prints the exact command to set
         # it before `pulumi up` so nothing is missed -- no separate recap needed.
         provider_keys: dict[str, str] = {}
-        for ref in sorted(_api_key_refs_from_toml(inference_models_toml)):
+        refs = sorted(_api_key_refs_from_toml(inference_models_toml))
+        if refs:
+            console.print()
+            console.print(f"  [{BLUE}]Provider keys[/]")
+        for ref in refs:
             console.print()
             console.print(f"  [dim]Provider key for the '{ref}' api_key_ref.[/]")
             key = self._prompt(f"Enter the {ref} provider key", password=True).strip()
