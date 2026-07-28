@@ -172,7 +172,9 @@ def test_bad_api_style_rejected():
 def test_chat_missing_required_field_rejected():
     # Drop 'provider' from a chat model -- the proxy schema requires it.
     broken = {k: v for k, v in _LLM["gemini-3.5-flash"].items() if k != "provider"}
-    _expect_value_error("expected ValueError for chat model missing 'provider'", "llm", {"m": broken})
+    _expect_value_error(
+        "expected ValueError for chat model missing 'provider'", "llm", {"m": broken}
+    )
 
 
 def test_non_int_numeric_field_rejected():
@@ -229,7 +231,9 @@ def test_all_surfaces_default_when_nothing_passed():
 
 
 def test_customize_embedding_only_keeps_default_chat_and_rerank():
-    embedding = {"my-embed": {"api_style": "litellm", "model": "voyage/voyage-3", "dimension": 1024}}
+    embedding = {
+        "my-embed": {"api_style": "litellm", "model": "voyage/voyage-3", "dimension": 1024}
+    }
     parsed = tomllib.loads(
         build_inference_models_toml(embedding_models=embedding, tiers={"embedding": "my-embed"})
     )

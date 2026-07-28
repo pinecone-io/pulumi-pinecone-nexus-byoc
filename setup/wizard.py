@@ -368,9 +368,7 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
     on the shipped ``_DEFAULT_*`` constants.
     """
     if not isinstance(models, dict):
-        raise ValueError(
-            f"{surface} catalog must be a JSON object mapping model id -> definition"
-        )
+        raise ValueError(f"{surface} catalog must be a JSON object mapping model id -> definition")
     for model_id, fields in models.items():
         if not isinstance(fields, dict):
             raise ValueError(f"{surface} model {model_id!r} must be a table of fields")
@@ -385,9 +383,7 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
         for req in _SURFACE_REQUIRED_STRS[surface]:
             val = fields.get(req)
             if not isinstance(val, str) or not val.strip():
-                raise ValueError(
-                    f"{surface} model {model_id!r} needs a non-empty string {req!r}"
-                )
+                raise ValueError(f"{surface} model {model_id!r} needs a non-empty string {req!r}")
 
         for opt in _SURFACE_OPTIONAL_STRS:
             if opt in fields and not isinstance(fields[opt], str):
@@ -395,7 +391,9 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
 
         for num in _SURFACE_INT_FIELDS[surface]:
             # bool is an int subclass -- reject it explicitly so `true` isn't a count.
-            if num in fields and (isinstance(fields[num], bool) or not isinstance(fields[num], int)):
+            if num in fields and (
+                isinstance(fields[num], bool) or not isinstance(fields[num], int)
+            ):
                 raise ValueError(
                     f"{surface} model {model_id!r} field {num!r} must be a whole number"
                 )
@@ -404,8 +402,10 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
             raise ValueError(f"llm model {model_id!r} field 'vision' must be true/false")
 
         # pinecone embed/rerank models carry no api_key_ref (key is per-request).
-        if surface in ("embedding", "rerank") and api_style == "pinecone" and fields.get(
-            "api_key_ref"
+        if (
+            surface in ("embedding", "rerank")
+            and api_style == "pinecone"
+            and fields.get("api_key_ref")
         ):
             raise ValueError(
                 f"{surface} model {model_id!r} is api_style 'pinecone' and must NOT set "
@@ -1018,7 +1018,9 @@ class BaseSetupWizard:
         # tiers; embedding / rerank need >= 1), so a partially-entered catalog is
         # never discarded. Minimums are enforced inside _collect_surface_models.
         llm = self._collect_surface_models(
-            "llm", optional=True, min_if_customized=len(LLM_MODEL_TIERS),
+            "llm",
+            optional=True,
+            min_if_customized=len(LLM_MODEL_TIERS),
             keep_default="the default Gemini chat tiers",
         )
         embedding = self._collect_surface_models(
