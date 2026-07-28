@@ -171,6 +171,29 @@ def test_embedding_bool_dimension_rejected():
     raise AssertionError("expected ValueError for a boolean dimension")
 
 
+def test_empty_catalog_rejected_not_defaulted():
+    # An explicitly empty {} must raise -- only None selects the shipped default.
+    # Defaulting {} would deploy models the operator never defined (the tiers here
+    # name shipped ids), defeating the all-or-nothing contract.
+    try:
+        build_inference_models_toml(llm_models={}, rerank_models=_RERANK, tiers=_TIERS)
+    except ValueError:
+        return
+    raise AssertionError("expected ValueError for an explicitly empty llm catalog")
+
+
+def test_none_catalog_still_defaults():
+    # The None path must keep working: omitting llm fills it from the defaults.
+    parsed = tomllib.loads(
+        build_inference_models_toml(llm_models=None, rerank_models=_RERANK, tiers=_TIERS)
+    )
+    assert set(parsed["llm_models"]) == {
+        "gemini-3.1-flash-lite",
+        "gemini-3.5-flash",
+        "gemini-3.1-pro-preview",
+    }
+
+
 def test_embedding_tier_must_be_defined():
     try:
         build_inference_models_toml(_LLM, _RERANK, {**_TIERS, "embedding": "ghost"})

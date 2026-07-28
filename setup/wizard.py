@@ -464,6 +464,9 @@ def build_inference_models_toml(
     only one surface is customized. BYOC omits the chart's ``managed`` profile
     (nexus#864), so this TOML is the proxy's only routing layer.
 
+    Only ``None`` selects a surface's default; an explicitly empty catalog
+    (``{}``) raises rather than silently defaulting -- see the check below.
+
     ``tiers`` keys: ``lite`` / ``standard`` / ``pro`` (llm ids), ``embedding``
     (an embedding id), and ``rerank`` (a rerank id). A tier for a defaulted
     surface may be omitted -- it falls back to that surface's default tier.
@@ -475,15 +478,29 @@ def build_inference_models_toml(
     # default that surface's tier(s) too (setdefault -- never clobber a tier the
     # caller supplied for a surface they DID customize). This is what makes each
     # surface independently optional.
+    #
+    # Only an UNSET surface (None) selects the shipped default. An explicitly
+    # empty catalog ({}) is an operator mistake -- defaulting it would silently
+    # deploy models they never defined while their tier ids point at shipped ids,
+    # defeating the all-or-nothing contract -- so reject it rather than fall back.
     tiers = dict(tiers or {})
-    if not llm_models:
+    for _surface, _models in (
+        ("llm", llm_models),
+        ("rerank", rerank_models),
+        ("embedding", embedding_models),
+    ):
+        if _models is not None and not _models:
+            raise ValueError(
+                f"{_surface} catalog is empty; omit it entirely to keep the shipped default"
+            )
+    if llm_models is None:
         llm_models = dict(_DEFAULT_LLM_MODELS)
         for _tier, _ref in _DEFAULT_LLM_TIERS.items():
             tiers.setdefault(_tier, _ref)
-    if not rerank_models:
+    if rerank_models is None:
         rerank_models = dict(_DEFAULT_RERANK_MODELS)
         tiers.setdefault("rerank", DEFAULT_RERANK_MODEL_ID)
-    if not embedding_models:
+    if embedding_models is None:
         embedding_models = dict(_DEFAULT_EMBEDDING_MODELS)
         tiers.setdefault("embedding", DEFAULT_EMBEDDING_MODEL_ID)
 

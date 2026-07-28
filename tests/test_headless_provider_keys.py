@@ -216,6 +216,24 @@ def test_headless_config_custom_catalog_multiple_providers():
     assert cfg["provider_keys"] == {"openai-api-key": "o", "cohere-api-key": "c"}
 
 
+def test_headless_empty_catalog_rejected():
+    """An explicitly empty catalog ({}) with tiers naming shipped ids must raise
+    rather than silently deploy the default catalog (all-or-nothing contract)."""
+    with _env(
+        PINECONE_NEXUS_ENABLED="true",
+        PINECONE_BYOC_PROJECT_ID=_UUID,
+        PINECONE_NEXUS_LLM_MODELS="{}",
+        PINECONE_NEXUS_LLM_LITE="gemini-3.1-flash-lite",
+        PINECONE_NEXUS_LLM_STANDARD="gemini-3.5-flash",
+        PINECONE_NEXUS_LLM_PRO="gemini-3.1-pro-preview",
+    ):
+        try:
+            _wizard()._headless_inference_models_toml()
+        except ValueError:
+            return
+    raise AssertionError("expected ValueError for an explicitly empty PINECONE_NEXUS_LLM_MODELS")
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):
