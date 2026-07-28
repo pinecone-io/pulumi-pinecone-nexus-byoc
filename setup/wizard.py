@@ -1038,6 +1038,8 @@ class BaseSetupWizard:
         # Map tiers ONLY for the surfaces the operator customized; every other
         # surface's tier defaults inside build_inference_models_toml.
         tiers: dict[str, str] = {}
+        console.print()
+        console.print(f"  [{BLUE}]Model selection[/]")
         if llm:
             console.print()
             console.print("  [dim]Now map the chat tiers to the models you defined.[/]")
@@ -1053,8 +1055,12 @@ class BaseSetupWizard:
                 )
             tiers.update(chat_tiers)
         if embedding:
+            console.print()
+            console.print("  [dim]Pick the model to use for embeddings.[/]")
             tiers["embedding"] = self._choose_from("Embedding model", list(embedding))
         if rerank:
+            console.print()
+            console.print("  [dim]Pick the model to use for reranking.[/]")
             tiers["rerank"] = self._choose_from("Rerank model", list(rerank))
         # Validate the customized surfaces. The collectors already produce valid
         # models by construction, so this is a backstop (it can't fire today) that
@@ -1456,7 +1462,11 @@ class BaseSetupWizard:
         # contribute nothing here. A skipped key prints the exact command to set
         # it before `pulumi up` so nothing is missed -- no separate recap needed.
         provider_keys: dict[str, str] = {}
-        for ref in sorted(_api_key_refs_from_toml(inference_models_toml)):
+        refs = sorted(_api_key_refs_from_toml(inference_models_toml))
+        if refs:
+            console.print()
+            console.print(f"  [{BLUE}]Provider keys[/]")
+        for ref in refs:
             console.print()
             console.print(f"  [dim]Provider key for the '{ref}' api_key_ref.[/]")
             key = self._prompt(f"Enter the {ref} provider key", password=True).strip()
