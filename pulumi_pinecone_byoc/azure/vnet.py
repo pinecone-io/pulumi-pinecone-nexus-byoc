@@ -61,7 +61,7 @@ class VNet(pulumi.ComponentResource):
             opts=child_opts,
         )
 
-        # derive db subnet from vpc_cidr: next adjacent /16 block
+        # derive db subnet from vpc_cidr: next adjacent block of the same prefix
         aks_net = ipaddress.IPv4Network(config.vpc_cidr)
         db_net = ipaddress.IPv4Network(
             f"{aks_net.network_address + aks_net.num_addresses}/{aks_net.prefixlen}"

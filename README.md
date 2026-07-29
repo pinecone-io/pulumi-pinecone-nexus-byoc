@@ -347,7 +347,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | `nexus-version` | Nexus release version | — |
 | `region` | AWS region | `us-east-1` |
 | `availability_zones` | AZs for high availability (3 recommended — FDB zone fault domains) | first 3 available AZs, e.g. `["us-east-1a", "us-east-1b", "us-east-1c"]` |
-| `vpc_cidr` | VPC IP range | `10.0.0.0/16` |
+| `vpc_cidr` | VPC IP range (/16–/20, RFC 1918) | `10.0.0.0/20` |
 | `deletion_protection` | Protect S3 from accidental deletion | `true` |
 | `public_access_enabled` | Enable public endpoint (false = PrivateLink only) | `true` |
 | `tags` | Custom tags to apply to all resources | `{}` |
@@ -375,7 +375,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 | `subscription-id` | Azure subscription ID (required) | — |
 | `region` | Azure region | `eastus` |
 | `availability_zones` | Zones for high availability (3 recommended — FDB zone fault domains) | first 3 available zones, e.g. `["1", "2", "3"]` |
-| `vpc_cidr` | VNet IP range | `10.0.0.0/16` |
+| `vpc_cidr` | VNet IP range (/20 or larger, RFC 1918) | `10.0.0.0/20` |
 | `deletion_protection` | Protect databases/storage from accidental deletion | `true` |
 | `public_access_enabled` | Enable public endpoint (false = Private Link only) | `true` |
 | `tags` | Custom tags to apply to all resources | `{}` |
@@ -401,7 +401,7 @@ cluster = PineconeAWSCluster(
         pinecone_version=config.require("pinecone_version"),
         region=config.require("region"),
         availability_zones=config.require_object("availability_zones"),
-        vpc_cidr=config.get("vpc_cidr") or "10.0.0.0/16",
+        vpc_cidr=config.get("vpc_cidr") or "10.0.0.0/20",
         deletion_protection=config.get_bool("deletion_protection") if config.get_bool("deletion_protection") is not None else True,
         public_access_enabled=config.get_bool("public_access_enabled") if config.get_bool("public_access_enabled") is not None else True,
         tags=config.get_object("tags") or {},
