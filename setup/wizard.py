@@ -2105,7 +2105,7 @@ class AWSPreflightChecker:
             )
             return
 
-        # must be between /16 and /20 for subnet calculation (see aws/vpc.py)
+        # mirror the deploy-time prefix guard in aws/vpc.py
         if not 16 <= target_net.prefixlen <= 20:
             self._add_result(
                 "VPC CIDR",

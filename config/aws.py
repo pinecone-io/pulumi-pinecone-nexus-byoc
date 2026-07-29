@@ -55,10 +55,8 @@ class AWSConfig(BaseConfig):
 
     cloud: str = "aws"
 
-    # Networking. When unset, subnet masks are derived from the VPC prefix:
-    # public = vpc_prefix + 4, private = vpc_prefix + 2 (so a /20 VPC yields
-    # /24 public and /22 private subnets, matching the historical /16 -> /20//18
-    # layout). Set explicitly only to override the derived sizes.
+    # Subnet sizes derive from the VPC prefix (see aws/vpc.py); set these only to
+    # override that.
     public_subnet_mask: int | None = None
     private_subnet_mask: int | None = None
 

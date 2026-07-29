@@ -17,10 +17,8 @@ RFC1918_RANGES = [
     ipaddress.IPv4Network("192.168.0.0/16"),
 ]
 
-# Supported VPC prefix range. The subnet layout carves the VPC into four
-# quarters (one for public subnets, three private), so it needs at least a /20.
-# Smaller than /20 leaves too few IPs for the EKS VPC CNI, which assigns a
-# routable VPC address to every pod; larger than /16 is unnecessary.
+# Below /20 there are too few pod IPs for the VPC CNI (one routable address per
+# pod); above /16 is needlessly large.
 MIN_VPC_PREFIX = 16
 MAX_VPC_PREFIX = 20
 
@@ -154,11 +152,9 @@ class VPC(pulumi.ComponentResource):
             )
 
     def _calculate_cidr(self, index: int, is_public: bool) -> str:
-        # Carve the VPC into four equal quarters. Quarter 0 holds the (smaller)
-        # public subnets; quarters 1-3 are one private subnet each. Masks default
-        # to vpc_prefix+4 (public) and vpc_prefix+2 (private), which reproduces
-        # the historical /16 layout (public /20, private /18) and scales to any
-        # supported prefix (e.g. /20 -> public /24, private /22).
+        # Keep the historical /16 subnet shape (so existing stacks don't churn)
+        # while scaling down to smaller VPCs: public subnets share the first
+        # quarter, each later quarter is one private subnet.
         vpc_net = ipaddress.ip_network(self.config.vpc_cidr)
         quarters = list(vpc_net.subnets(prefixlen_diff=2))
 
