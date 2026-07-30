@@ -108,8 +108,17 @@ def test_diff_never_reports_changes():
     assert diff.changes is False
 
 
-def test_delete_is_noop():
-    providers.DefaultWorkspaceProvider().delete("default", dict(_PROPS))
+def test_delete_warns_and_does_not_raise():
+    # delete() can't remove the workspace (no gCPS force path) but must not raise;
+    # it warns loudly, naming the workspace + environment, to flag the manual cleanup.
+    props = {**_PROPS, "host": _HOST}
+    with patch.object(providers.pulumi.log, "warn") as warn:
+        providers.DefaultWorkspaceProvider().delete("default", props)
+    warn.assert_called_once()
+    msg = warn.call_args.args[0]
+    assert "default" in msg
+    assert props["environment"] in msg
+    assert _HOST in msg
 
 
 if __name__ == "__main__":
