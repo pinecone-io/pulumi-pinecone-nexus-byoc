@@ -35,7 +35,7 @@ class BaseConfig(BaseModel):
     cloud: str = "aws"
 
     availability_zones: list[str]
-    vpc_cidr: str = "10.0.0.0/16"
+    vpc_cidr: str = "10.0.0.0/20"
     kubernetes_version: str = "1.33"
     node_pools: list[NodePoolConfig] = Field(default_factory=list)
     parent_zone_name: str = "pinecone.io"

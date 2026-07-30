@@ -55,9 +55,10 @@ class AWSConfig(BaseConfig):
 
     cloud: str = "aws"
 
-    # Networking
-    public_subnet_mask: int = 20
-    private_subnet_mask: int = 18
+    # Subnet sizes derive from the VPC prefix (see aws/vpc.py); set these only to
+    # override that.
+    public_subnet_mask: int | None = None
+    private_subnet_mask: int | None = None
 
     # Database
     database: DatabaseConfig = Field(default_factory=DatabaseConfig)

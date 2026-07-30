@@ -844,7 +844,7 @@ class BaseSetupWizard:
     CLOUD_NAME: str = ""
     HEADER_TITLE: str = "Pinecone BYOC Setup Wizard"
     HEADER_SUBTITLE: str = "This wizard will set up everything you need to deploy Pinecone BYOC."
-    DEFAULT_CIDR: str = "10.0.0.0/16"
+    DEFAULT_CIDR: str = "10.0.0.0/20"
     CIDR_DESC: str = "The IP range for your VPC (must not conflict with existing VPCs)"
     DELETION_PROTECTION_DESC: str = ""
     PRIVATE_ACCESS_DESC: str = ""
@@ -2105,13 +2105,14 @@ class AWSPreflightChecker:
             )
             return
 
-        # must be /16 for subnet calculation
-        if target_net.prefixlen != 16:
+        # mirror the deploy-time prefix guard in aws/vpc.py
+        if not 16 <= target_net.prefixlen <= 20:
             self._add_result(
                 "VPC CIDR",
                 False,
-                f"CIDR must be a /16 (got /{target_net.prefixlen})",
-                "Subnet calculation requires a /16 network (e.g., 10.0.0.0/16)",
+                f"CIDR must be between /16 and /20 (got /{target_net.prefixlen})",
+                "Subnet calculation requires a /16-/20 network (e.g., 10.0.0.0/20). "
+                "Smaller than /20 leaves too few pod IPs for the EKS VPC CNI.",
             )
             return
 
@@ -2126,7 +2127,7 @@ class AWSPreflightChecker:
                 "VPC CIDR",
                 False,
                 f"{self.cidr} is not in an RFC 1918 private range",
-                "Use a /16 block like 10.0.0.0/16, 172.16.0.0/16, or 192.168.0.0/16. "
+                "Use a block like 10.0.0.0/20, 172.16.0.0/20, or 192.168.0.0/20. "
                 "See https://docs.aws.amazon.com/vpc/latest/userguide/vpc-cidr-blocks.html",
             )
             return
@@ -2163,8 +2164,8 @@ class AWSSetupWizard(BaseSetupWizard):
     TOTAL_STEPS = 16
     HEADER_TITLE = "Pinecone BYOC Setup Wizard"
     HEADER_SUBTITLE = "This wizard will set up everything you need to deploy Pinecone BYOC."
-    DEFAULT_CIDR = "10.0.0.0/16"
-    CIDR_DESC = "The IP range for your VPC (/16 from an RFC 1918 private range, must not conflict with existing VPCs)"
+    DEFAULT_CIDR = "10.0.0.0/20"
+    CIDR_DESC = "The IP range for your VPC (/16-/20 from an RFC 1918 private range, must not conflict with existing VPCs)"
     DELETION_PROTECTION_DESC = "Protect RDS databases and S3 buckets from accidental deletion"
     PRIVATE_ACCESS_DESC = "Private access requires AWS PrivateLink (more secure)"
     METADATA_NAME = "tags"
@@ -3856,7 +3857,7 @@ class AzurePreflightChecker:
                 "VNet CIDR",
                 False,
                 f"CIDR /{aks_net.prefixlen} is too small (minimum is /20)",
-                "Use a /20 or larger CIDR block (e.g., 10.0.0.0/16) to ensure enough IP addresses for node scaling.",
+                "Use a /20 or larger CIDR block (e.g., 10.0.0.0/20) to ensure enough IP addresses for node scaling.",
             )
             return
 
@@ -3942,7 +3943,7 @@ class AzureSetupWizard(BaseSetupWizard):
     HEADER_SUBTITLE = (
         "This wizard will set up everything you need to deploy Pinecone BYOC on Azure."
     )
-    DEFAULT_CIDR = "10.0.0.0/16"
+    DEFAULT_CIDR = "10.0.0.0/20"
     DELETION_PROTECTION_DESC = (
         "Protect PostgreSQL databases and storage accounts from accidental deletion"
     )
@@ -4263,7 +4264,7 @@ cluster = PineconeAzureCluster(
         subscription_id=config.require("subscription-id"),
         region=config.require("region"),
         availability_zones=config.require_object("availability-zones"),
-        vpc_cidr=config.get("vpc-cidr") or "10.0.0.0/16",
+        vpc_cidr=config.get("vpc-cidr") or "10.0.0.0/20",
         deletion_protection=config.get_bool("deletion-protection") if config.get_bool("deletion-protection") is not None else True,
         public_access_enabled=config.get_bool("public-access-enabled") if config.get_bool("public-access-enabled") is not None else True,
         tags=config.get_object("tags"),

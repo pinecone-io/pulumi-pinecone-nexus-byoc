@@ -17,6 +17,11 @@ RFC1918_RANGES = [
     ipaddress.IPv4Network("192.168.0.0/16"),
 ]
 
+# Below /20 there are too few pod IPs for the VPC CNI (one routable address per
+# pod); above /16 is needlessly large.
+MIN_VPC_PREFIX = 16
+MAX_VPC_PREFIX = 20
+
 
 class VPC(pulumi.ComponentResource):
     """
@@ -40,7 +45,8 @@ class VPC(pulumi.ComponentResource):
         if len(config.availability_zones) > 3:
             raise ValueError(
                 f"Maximum 3 AZs supported (got {len(config.availability_zones)}). "
-                "Subnet layout does not fit more than 3 AZs in a /16 VPC."
+                "Subnet layout allocates one private subnet per VPC quarter, "
+                "which does not fit more than 3 AZs."
             )
         child_opts = pulumi.ResourceOptions(parent=self)
 
@@ -130,31 +136,34 @@ class VPC(pulumi.ComponentResource):
         except (ValueError, ipaddress.AddressValueError) as e:
             raise ValueError(f"Invalid VPC CIDR '{cidr}': {e}") from e
 
-        if network.prefixlen != 16:
+        if not MIN_VPC_PREFIX <= network.prefixlen <= MAX_VPC_PREFIX:
             raise ValueError(
-                f"VPC CIDR must be a /16 (got /{network.prefixlen}). "
-                "Subnet calculation requires a /16 network."
+                f"VPC CIDR must be between /{MIN_VPC_PREFIX} and /{MAX_VPC_PREFIX} "
+                f"(got /{network.prefixlen}). Smaller than /{MAX_VPC_PREFIX} leaves "
+                "too few pod IPs for the EKS VPC CNI; larger than "
+                f"/{MIN_VPC_PREFIX} is unnecessary."
             )
 
         if not any(network.subnet_of(rfc1918) for rfc1918 in RFC1918_RANGES):
             raise ValueError(
                 f"VPC CIDR '{cidr}' is not in an RFC 1918 private range. "
-                "Use a /16 block like 10.0.0.0/16, 172.16.0.0/16, or 192.168.0.0/16. "
+                "Use a block like 10.0.0.0/20, 172.16.0.0/20, or 192.168.0.0/20. "
                 "See https://docs.aws.amazon.com/vpc/latest/userguide/vpc-cidr-blocks.html"
             )
 
     def _calculate_cidr(self, index: int, is_public: bool) -> str:
-        base = self.config.vpc_cidr.split("/")[0]
-        octets = [int(x) for x in base.split(".")]
+        # Keep the historical /16 subnet shape (so existing stacks don't churn)
+        # while scaling down to smaller VPCs: public subnets share the first
+        # quarter, each later quarter is one private subnet.
+        vpc_net = ipaddress.ip_network(self.config.vpc_cidr)
+        quarters = list(vpc_net.subnets(prefixlen_diff=2))
 
         if is_public:
-            # public subnets: /20 blocks starting at 10.0.0.0, 10.0.16.0, 10.0.32.0
-            third_octet = index * 16
-            return f"{octets[0]}.{octets[1]}.{third_octet}.0/{self.config.public_subnet_mask}"
-        else:
-            # private subnets: /18 blocks starting at 10.0.64.0, 10.0.128.0, 10.0.192.0
-            third_octet = 64 + (index * 64)
-            return f"{octets[0]}.{octets[1]}.{third_octet}.0/{self.config.private_subnet_mask}"
+            public_mask = self.config.public_subnet_mask or (vpc_net.prefixlen + 4)
+            return str(list(quarters[0].subnets(new_prefix=public_mask))[index])
+
+        private_mask = self.config.private_subnet_mask or (vpc_net.prefixlen + 2)
+        return str(next(quarters[index + 1].subnets(new_prefix=private_mask)))
 
     def _create_route_tables(self, name: str, opts: pulumi.ResourceOptions):
         public_rt = aws.ec2.RouteTable(
