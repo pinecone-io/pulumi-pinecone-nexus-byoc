@@ -73,5 +73,6 @@ class GCPConfig(BaseConfig):
     def labels(self, **extra: str) -> dict[str, str]:
         base_labels = {
             "pinecone-managed-by": "pulumi",
+            "app": "pinecone-nexus",
         }
         return {**base_labels, **self.custom_tags, **extra}

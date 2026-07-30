@@ -847,7 +847,6 @@ class BaseSetupWizard:
     DEFAULT_CIDR: str = "10.0.0.0/20"
     CIDR_DESC: str = "The IP range for your VPC (must not conflict with existing VPCs)"
     DELETION_PROTECTION_DESC: str = ""
-    PRIVATE_ACCESS_DESC: str = ""
     METADATA_NAME: str = "tags"
 
     def __init__(
@@ -949,14 +948,22 @@ class BaseSetupWizard:
         response = self._prompt("Enable deletion protection? (Y/n)", "Y")
         return response.lower() in ("y", "yes", "")
 
-    def _get_public_access(self) -> bool:
+    def _confirm_public_access(self) -> bool:
+        """Confirm the public endpoint. Nexus is only supported over a public,
+        authenticated endpoint, so this is a confirmation rather than a
+        public/private choice: a negative response aborts the installer.
+        Returns True to continue, False to abort.
+        """
         console.print()
         console.print(f"  {self._step('Network Access')}")
-        console.print("  [dim]Public access allows connections from the internet[/]")
-        console.print(f"  [dim]{self.PRIVATE_ACCESS_DESC}[/]")
+        console.print("  [dim]Nexus is served over a public, authenticated endpoint in your own[/]")
+        console.print("  [dim]cloud account; private-only access is not supported.[/]")
         console.print()
-        response = self._prompt("Enable public access? (Y/n)", "Y")
-        return response.lower() in ("y", "yes", "")
+        response = self._prompt("Public access is required for Nexus. Continue? (Y/n)", "Y")
+        if response.strip().lower() in ("n", "no"):
+            console.print("  [yellow]Aborted:[/] Nexus BYOC requires a public endpoint.")
+            return False
+        return True
 
     def _get_custom_metadata(self) -> dict[str, str]:
         name = self.METADATA_NAME
@@ -1454,11 +1461,12 @@ class BaseSetupWizard:
         return build_inference_models_toml(llm, rerank, tiers, embedding_models=embedding)
 
     def _get_nexus_config(self) -> NexusWizardConfig:
-        """Prompt for Nexus enablement and inference config. Default is a
-        DB-only install (nexus_enabled=False) so the generated project is
-        byte-for-byte unchanged unless Nexus is requested.
+        """Collect Nexus inference config. The interactive wizard always installs
+        Nexus -- this is the Nexus BYOC installer -- so it no longer asks whether
+        to enable it. (The headless path still honors PINECONE_NEXUS_ENABLED for
+        DB-only automation.)
 
-        For a "Nexus BYOC" install the wizard collects the gCPS project UUID and
+        The wizard collects the gCPS project UUID and
         the Nexus image tag (nexus-version).
         The BYOC env is not prompted -- Nexus always targets the env this deploy
         creates. The image registry is not prompted either -- it uses the package
@@ -1468,11 +1476,9 @@ class BaseSetupWizard:
         console.print()
         console.print(f"  {self._step('Nexus')}")
         console.print()
-        console.print("  [dim]Deploy Nexus alongside the Pinecone DB stack in the same cluster.[/]")
-
-        response = self._prompt("Enable Nexus? (Y/n)", "Y")
-        if response.strip().lower() in ("n", "no"):
-            return {"enabled": False}
+        console.print(
+            "  [dim]Nexus is deployed alongside the Pinecone DB stack in the same cluster.[/]"
+        )
 
         console.print()
         console.print("  [dim]The Pinecone gCPS project UUID that the BYOC vault belongs to[/]")
@@ -1480,6 +1486,10 @@ class BaseSetupWizard:
             f"  [dim]This is NOT the {self.CLOUD_NAME} project/account -- it is the gCPS"
             " project id (matched against projects.id),"
             " e.g. 123e4567-e89b-12d3-a456-426614174000.[/]"
+        )
+        console.print(
+            "  [dim]Find it in the Pinecone console: open the project picker, select"
+            " 'View all', then click the project to copy its UUID.[/]"
         )
         while True:
             byoc_project_id = self._prompt("Enter Pinecone gCPS project UUID").strip()
@@ -2167,7 +2177,6 @@ class AWSSetupWizard(BaseSetupWizard):
     DEFAULT_CIDR = "10.0.0.0/20"
     CIDR_DESC = "The IP range for your VPC (/16-/20 from an RFC 1918 private range, must not conflict with existing VPCs)"
     DELETION_PROTECTION_DESC = "Protect RDS databases and S3 buckets from accidental deletion"
-    PRIVATE_ACCESS_DESC = "Private access requires AWS PrivateLink (more secure)"
     METADATA_NAME = "tags"
     CLOUD_NAME = "AWS"
 
@@ -2193,7 +2202,9 @@ class AWSSetupWizard(BaseSetupWizard):
         kms_key_arn = self._get_kms_key_arn()
         cidr = self._get_cidr()
         deletion_protection = self._get_deletion_protection()
-        public_access = self._get_public_access()
+        if not self._confirm_public_access():
+            return False
+        public_access = True
         tags = self._get_custom_metadata()
         nexus = self._get_nexus_config()
 
@@ -2972,7 +2983,6 @@ class GCPSetupWizard(BaseSetupWizard):
     TOTAL_STEPS = 14
     DEFAULT_CIDR = "10.112.0.0/12"
     DELETION_PROTECTION_DESC = "Protect AlloyDB databases and GCS buckets from accidental deletion"
-    PRIVATE_ACCESS_DESC = "Private access requires Private Service Connect (more secure)"
     METADATA_NAME = "labels"
     CLOUD_NAME = "GCP"
 
@@ -3004,7 +3014,9 @@ class GCPSetupWizard(BaseSetupWizard):
         zones = self._get_zones(project_id, region)
         cidr = self._get_cidr()
         deletion_protection = self._get_deletion_protection()
-        public_access = self._get_public_access()
+        if not self._confirm_public_access():
+            return False
+        public_access = True
         labels = self._get_custom_metadata()
         nexus = self._get_nexus_config()
 
@@ -3947,7 +3959,6 @@ class AzureSetupWizard(BaseSetupWizard):
     DELETION_PROTECTION_DESC = (
         "Protect PostgreSQL databases and storage accounts from accidental deletion"
     )
-    PRIVATE_ACCESS_DESC = "Private access requires Azure Private Link (more secure)"
     METADATA_NAME = "tags"
     CLOUD_NAME = "Azure"
 
@@ -3973,7 +3984,9 @@ class AzureSetupWizard(BaseSetupWizard):
         zones = self._get_zones(subscription_id, region)
         cidr = self._get_cidr()
         deletion_protection = self._get_deletion_protection()
-        public_access = self._get_public_access()
+        if not self._confirm_public_access():
+            return False
+        public_access = True
         tags = self._get_custom_metadata()
 
         if not self._run_preflight_checks(subscription_id, region, zones, cidr):
