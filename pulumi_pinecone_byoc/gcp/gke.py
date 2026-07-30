@@ -119,15 +119,11 @@ class GKE(pulumi.ComponentResource):
             subnetwork=subnet_id,
             networking_mode="VPC_NATIVE",
             datapath_provider="ADVANCED_DATAPATH",
-            # Pin the control plane via min_master_version (see config/base.py /
-            # gcp/cluster.py kubernetes_version) under the UNSPECIFIED release
-            # channel, which is the standard way to pin a version. This now carries
-            # a bare minor ("1.34"); GKE resolves the newest valid patch at plan
-            # time, so the deploy self-heals when a pinned patch is retired.
-            # KNOWN TRADEOFF: a full build was previously pinned here to dodge the
-            # Cilium endpoint-deletion race in affected 1.33/1.34/1.35 builds. If the
-            # race resurfaces on an auto-selected patch, resolve and pin the newest
-            # valid regional 1.34 build here and on the node pools below.
+            # Pin the control plane to the configured version under the UNSPECIFIED
+            # channel (a bare minor, so GKE resolves the patch and a retired build
+            # can't break cluster-create). A full build was previously pinned to dodge
+            # a Cilium endpoint-deletion race -- re-pin here and on the node pools if
+            # it recurs.
             min_master_version=config.kubernetes_version,
             initial_node_count=1,
             remove_default_node_pool=True,
@@ -457,11 +453,8 @@ users:
         node_pool = gcp.container.NodePool(
             node_pool_name,
             cluster=cluster_id,
-            # Pin nodes to the same version as the control plane. With
-            # auto_upgrade=False (below) nodes won't drift on their own, so we set
-            # `version` explicitly to keep control-plane and node versions consistent.
-            # GKE resolves the bare minor to a patch here just as it does for the
-            # control plane (see the min_master_version note above).
+            # Match the control-plane version; auto_upgrade is off (below) so nodes
+            # can't drift on their own.
             version=config.kubernetes_version,
             autoscaling=autoscaling,
             node_config=gcp.container.NodePoolNodeConfigArgs(

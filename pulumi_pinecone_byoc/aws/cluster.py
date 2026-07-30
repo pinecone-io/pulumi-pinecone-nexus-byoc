@@ -543,9 +543,8 @@ class PineconeAWSCluster(pulumi.ComponentResource):
         self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
-            # Workspace names are unique per BYOC project, not per cell, so the
-            # default is suffixed with the 4-hex cell id: a leftover workspace from
-            # a torn-down cell can't block a future deploy. Explicit config wins.
+            # Per-cell default name so a torn-down cell's leftover workspace can't
+            # block a re-deploy; explicit config wins.
             self._default_workspace_name = default_workspace_name(
                 nx.default_workspace_name, self._resource_suffix
             )

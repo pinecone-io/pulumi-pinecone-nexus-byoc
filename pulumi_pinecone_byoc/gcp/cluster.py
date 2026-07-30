@@ -78,15 +78,10 @@ class PineconeGCPClusterArgs:
     vpc_cidr: str = "10.112.0.0/12"
 
     # kubernetes
-    # Bare minor: GKE resolves the newest valid patch for this minor at plan time
-    # for both the control plane (min_master_version) and node pools, so the deploy
-    # self-heals when a pinned patch is retired.
-    # KNOWN TRADEOFF: a full build (1.33.12-gke.1208000) was previously pinned here
-    # to dodge the Cilium endpoint-deletion race present in affected 1.33/1.34/1.35
-    # builds (fix floor 1.33.11-gke.1137000). A bare minor gives up that guarantee.
-    # FOLLOW-UP: resolve the newest valid regional 1.34 build at plan time and pin
-    # it (control plane + node pools in gke.py, which run auto_upgrade=False) if the
-    # race resurfaces on an auto-selected patch.
+    # Track the minor and let GKE resolve the patch, so a retired build can't break
+    # cluster-create. A full build was previously pinned to dodge a Cilium
+    # endpoint-deletion race (affected 1.33/1.34/1.35) -- re-pin here and on the
+    # gke.py node pools if that recurs.
     kubernetes_version: str = "1.34"
     node_pools: list[NodePool] | None = None
 
@@ -423,9 +418,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
-            # Workspace names are unique per BYOC project, not per cell, so the
-            # default is suffixed with the 4-hex cell id: a leftover workspace from
-            # a torn-down cell can't block a future deploy. Explicit config wins.
+            # Per-cell default name so a torn-down cell's leftover workspace can't
+            # block a re-deploy; explicit config wins.
             self._default_workspace_name = default_workspace_name(
                 nx.default_workspace_name, self._resource_suffix
             )
