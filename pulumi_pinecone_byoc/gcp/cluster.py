@@ -9,6 +9,7 @@ from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
+from ..common.naming import default_workspace_name
 from ..common.nexus import (
     Nexus,
     NexusBlobStorage,
@@ -425,12 +426,9 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             # Workspace names are unique per BYOC project, not per cell, so the
             # default is suffixed with the 4-hex cell id: a leftover workspace from
             # a torn-down cell can't block a future deploy. Explicit config wins.
-            if nx.default_workspace_name:
-                self._default_workspace_name = pulumi.Output.from_input(nx.default_workspace_name)
-            else:
-                self._default_workspace_name = self._resource_suffix.apply(
-                    lambda s: f"{DEFAULT_WORKSPACE_NAME}-{s}"
-                )
+            self._default_workspace_name = default_workspace_name(
+                nx.default_workspace_name, self._resource_suffix
+            )
             # Nexus versions independently of the DB stack (separate repo, separate
             # image tags), so there is no meaningful fallback to pinecone_version --
             # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
