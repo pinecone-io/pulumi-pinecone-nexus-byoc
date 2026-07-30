@@ -50,5 +50,6 @@ class AzureConfig(BaseConfig):
     def tags(self, **extra: str) -> dict[str, str]:
         base_tags = {
             "pinecone-managed-by": "pulumi",
+            "app": "pinecone-nexus",
         }
         return {**base_tags, **self.custom_tags, **extra}

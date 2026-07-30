@@ -79,6 +79,7 @@ class AWSConfig(BaseConfig):
         )
         base_tags = {
             "pinecone:managed-by": "pulumi",
+            "app": "pinecone-nexus",
             apn_key: apn_value,
         }
         return {**base_tags, **self.custom_tags, **extra}
