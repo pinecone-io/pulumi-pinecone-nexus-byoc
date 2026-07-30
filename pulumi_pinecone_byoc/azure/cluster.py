@@ -78,7 +78,7 @@ class PineconeAzureClusterArgs:
     vpc_cidr: str = "10.0.0.0/16"
 
     # kubernetes
-    kubernetes_version: str = "1.33"
+    kubernetes_version: str = "1.34"
     node_pools: list[NodePool] | None = None
 
     # dns
@@ -506,9 +506,15 @@ class PineconeAzureCluster(pulumi.ComponentResource):
         self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
-            # Workspace names are unique per BYOC project, not per cell: a second
-            # cell sharing the project must deviate from "default" or create fails.
-            self._default_workspace_name = nx.default_workspace_name or DEFAULT_WORKSPACE_NAME
+            # Workspace names are unique per BYOC project, not per cell, so the
+            # default is suffixed with the 4-hex cell id: a leftover workspace from
+            # a torn-down cell can't block a future deploy. Explicit config wins.
+            if nx.default_workspace_name:
+                self._default_workspace_name = pulumi.Output.from_input(nx.default_workspace_name)
+            else:
+                self._default_workspace_name = self._resource_suffix.apply(
+                    lambda s: f"{DEFAULT_WORKSPACE_NAME}-{s}"
+                )
             # Nexus versions independently of the DB stack (separate repo, separate
             # image tags), so there is no meaningful fallback to pinecone_version --
             # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
@@ -790,7 +796,8 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                     self.args.pinecone_api_key,
                     self.args.api_url,
                     workspace.host,
-                ).apply(lambda a: api.workspace_exists(a[0], a[1], self._default_workspace_name))
+                    self._default_workspace_name,
+                ).apply(lambda a: api.workspace_exists(a[0], a[1], a[3]))
             )
         return self.__default_workspace_exists
 

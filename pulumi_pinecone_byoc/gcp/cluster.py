@@ -77,13 +77,16 @@ class PineconeGCPClusterArgs:
     vpc_cidr: str = "10.112.0.0/12"
 
     # kubernetes
-    # Pinned to a specific patched GKE build (not a channel-tracked minor) to avoid
-    # the Cilium endpoint-deletion race present in affected 1.33/1.34/1.35 builds.
-    # Fix floor is 1.33.11-gke.1137000; this build is >= the floor and verified
-    # available in us-central1. Pin both the control plane (min_master_version) and
-    # node pools (NodePool.version) in gke.py so nodes match and don't drift
-    # (node pools run with auto_upgrade=False).
-    kubernetes_version: str = "1.33.12-gke.1208000"
+    # Bare minor: GKE resolves the newest valid patch for this minor at plan time
+    # for both the control plane (min_master_version) and node pools, so the deploy
+    # self-heals when a pinned patch is retired.
+    # KNOWN TRADEOFF: a full build (1.33.12-gke.1208000) was previously pinned here
+    # to dodge the Cilium endpoint-deletion race present in affected 1.33/1.34/1.35
+    # builds (fix floor 1.33.11-gke.1137000). A bare minor gives up that guarantee.
+    # FOLLOW-UP: resolve the newest valid regional 1.34 build at plan time and pin
+    # it (control plane + node pools in gke.py, which run auto_upgrade=False) if the
+    # race resurfaces on an auto-selected patch.
+    kubernetes_version: str = "1.34"
     node_pools: list[NodePool] | None = None
 
     # dns
@@ -419,9 +422,15 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
-            # Workspace names are unique per BYOC project, not per cell: a second
-            # cell sharing the project must deviate from "default" or create fails.
-            self._default_workspace_name = nx.default_workspace_name or DEFAULT_WORKSPACE_NAME
+            # Workspace names are unique per BYOC project, not per cell, so the
+            # default is suffixed with the 4-hex cell id: a leftover workspace from
+            # a torn-down cell can't block a future deploy. Explicit config wins.
+            if nx.default_workspace_name:
+                self._default_workspace_name = pulumi.Output.from_input(nx.default_workspace_name)
+            else:
+                self._default_workspace_name = self._resource_suffix.apply(
+                    lambda s: f"{DEFAULT_WORKSPACE_NAME}-{s}"
+                )
             # Nexus versions independently of the DB stack (separate repo, separate
             # image tags), so there is no meaningful fallback to pinecone_version --
             # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
@@ -730,7 +739,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                     self.args.pinecone_api_key,
                     self.args.api_url,
                     workspace.host,
-                ).apply(lambda a: api.workspace_exists(a[0], a[1], self._default_workspace_name))
+                    self._default_workspace_name,
+                ).apply(lambda a: api.workspace_exists(a[0], a[1], a[3]))
             )
         return self.__default_workspace_exists
 
