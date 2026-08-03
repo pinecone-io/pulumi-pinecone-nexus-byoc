@@ -1007,13 +1007,13 @@ class DefaultWorkspaceProvider(ResourceProvider):
         # First-run-only semantics: never replace, never update.
         return DiffResult(changes=False, replaces=[], stables=["host", "url"])
 
-    def delete(self, _id: str, props: dict[str, Any]) -> None:
+    def delete(self, _id: str, _props: dict[str, Any]) -> None:
         # Can't delete the workspace here (no gCPS cell-absence force path yet) and
         # must not raise (that would abort the whole destroy), so warn loudly instead:
         # a silent no-op strands the record and later wedges re-deploys with no signal.
-        name = props.get("name", "<unknown>")
-        environment = props.get("environment", "<unknown>")
-        host = props.get("host")
+        name = _props.get("name", "<unknown>")
+        environment = _props.get("environment", "<unknown>")
+        host = _props.get("host")
         host_note = f" (host {host})" if host else ""
         pulumi.log.warn(
             f"default workspace '{name}'{host_note} is NOT deleted by destroy — "
