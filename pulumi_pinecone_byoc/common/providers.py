@@ -939,8 +939,11 @@ class DefaultWorkspaceProvider(ResourceProvider):
     """First-run bootstrap: create the workspace, wait for Ready, then never touch it.
 
     Not a lifecycle-managed resource: diff() never reports changes (later ups skip
-    it even if inputs drift) and delete() is a no-op (destroy leaves the workspace;
-    it must be deleted via gCPS before destroy, per the clean-teardown procedure).
+    it even if inputs drift) and delete() only warns — it cannot actually delete the
+    workspace, since removing one after its cell is gone needs a gCPS cell-absence
+    force path that doesn't exist yet, and raising here would abort the whole
+    `pulumi destroy` and wedge teardown. So destroy strands the workspace record and
+    delete() emits a loud, actionable warning to prompt the manual gCPS cleanup.
     A failed create (gate 403, InitializationFailed, Ready timeout) means the
     resource never enters state, so the next `pulumi up` retries from scratch.
     """
@@ -1005,8 +1008,19 @@ class DefaultWorkspaceProvider(ResourceProvider):
         return DiffResult(changes=False, replaces=[], stables=["host", "url"])
 
     def delete(self, _id: str, _props: dict[str, Any]) -> None:
-        # Intentionally a no-op — see class docstring.
-        return
+        # Can't delete the workspace here (no gCPS cell-absence force path yet) and
+        # must not raise (that would abort the whole destroy), so warn loudly instead:
+        # a silent no-op strands the record and later wedges re-deploys with no signal.
+        name = _props.get("name", "<unknown>")
+        environment = _props.get("environment", "<unknown>")
+        host = _props.get("host")
+        host_note = f" (host {host})" if host else ""
+        pulumi.log.warn(
+            f"default workspace '{name}'{host_note} is NOT deleted by destroy — "
+            f"it remains registered in gCPS and will wedge a later re-deploy into "
+            f"this environment. Delete it manually in gCPS, filtered by environment "
+            f"'{environment}', or it strands."
+        )
 
 
 class DefaultWorkspace(Resource):

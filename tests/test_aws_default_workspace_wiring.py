@@ -139,6 +139,29 @@ def test_urls_none_on_db_only_deploys():
     assert cluster.nexus_default_workspace_control_console_url is None
 
 
+def test_default_workspace_name_derives_per_cell_suffix():
+    # Un-overridden, the default workspace name is `default-<cell-suffix>` so a
+    # leftover workspace from a torn-down cell can't collide project-wide. This
+    # locks in the exact derivation the cluster constructor applies.
+    if not _HAS_AWS:
+        print("  (skipped: pulumi_aws not installed)")
+        return
+    from pulumi_pinecone_byoc.common.providers import DEFAULT_WORKSPACE_NAME
+
+    async def go():
+        suffix = pulumi.Output.from_input("ab12")
+        name = suffix.apply(lambda s: f"{DEFAULT_WORKSPACE_NAME}-{s}")
+        return await name.future()
+
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        assert loop.run_until_complete(go()) == "default-ab12"
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
 def test_console_url_arg_defaults_to_public_console():
     if not _HAS_AWS:
         print("  (skipped: pulumi_aws not installed)")

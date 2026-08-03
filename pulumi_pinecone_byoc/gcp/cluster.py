@@ -9,6 +9,7 @@ from ..common.cred_refresher import RegistryCredentialRefresher
 from ..common.k8s_configmaps import K8sConfigMaps
 from ..common.k8s_secrets import K8sSecrets, NexusSecretConfig
 from ..common.naming import cell_name as _cell_name
+from ..common.naming import default_workspace_name
 from ..common.nexus import (
     Nexus,
     NexusBlobStorage,
@@ -77,13 +78,11 @@ class PineconeGCPClusterArgs:
     vpc_cidr: str = "10.112.0.0/12"
 
     # kubernetes
-    # Pinned to a specific patched GKE build (not a channel-tracked minor) to avoid
-    # the Cilium endpoint-deletion race present in affected 1.33/1.34/1.35 builds.
-    # Fix floor is 1.33.11-gke.1137000; this build is >= the floor and verified
-    # available in us-central1. Pin both the control plane (min_master_version) and
-    # node pools (NodePool.version) in gke.py so nodes match and don't drift
-    # (node pools run with auto_upgrade=False).
-    kubernetes_version: str = "1.33.12-gke.1208000"
+    # Track the minor and let GKE resolve the patch, so a retired build can't break
+    # cluster-create. A full build was previously pinned to dodge a Cilium
+    # endpoint-deletion race (affected 1.33/1.34/1.35) -- re-pin here and on the
+    # gke.py node pools if that recurs.
+    kubernetes_version: str = "1.34"
     node_pools: list[NodePool] | None = None
 
     # dns
@@ -419,9 +418,11 @@ class PineconeGCPCluster(pulumi.ComponentResource):
         self.__default_workspace_exists = None
         if args.nexus is not None:
             nx = args.nexus
-            # Workspace names are unique per BYOC project, not per cell: a second
-            # cell sharing the project must deviate from "default" or create fails.
-            self._default_workspace_name = nx.default_workspace_name or DEFAULT_WORKSPACE_NAME
+            # Per-cell default name so a torn-down cell's leftover workspace can't
+            # block a re-deploy; explicit config wins.
+            self._default_workspace_name = default_workspace_name(
+                nx.default_workspace_name, self._resource_suffix
+            )
             # Nexus versions independently of the DB stack (separate repo, separate
             # image tags), so there is no meaningful fallback to pinecone_version --
             # a DB tag never names a nexus_deploy/nexus_* image. Require it explicitly
@@ -730,7 +731,8 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                     self.args.pinecone_api_key,
                     self.args.api_url,
                     workspace.host,
-                ).apply(lambda a: api.workspace_exists(a[0], a[1], self._default_workspace_name))
+                    self._default_workspace_name,
+                ).apply(lambda a: api.workspace_exists(a[0], a[1], a[3]))
             )
         return self.__default_workspace_exists
 
