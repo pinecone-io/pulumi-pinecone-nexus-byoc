@@ -2071,7 +2071,7 @@ class AWSPreflightChecker:
 
     def _check_instance_types(self):
         # check all instance types needed for the cluster
-        instance_types = ["m6idn.large", "i7ie.large", "m6idn.xlarge", "r6in.large"]
+        instance_types = ["m6idn.large", "i7ie.large", "m6idn.xlarge", "r6in.large", "r8a.large"]
         all_available = True
         unavailable = []
 
@@ -3721,6 +3721,7 @@ class AzurePreflightChecker:
     def _check_vm_skus(self):
         vm_skus = [
             "Standard_D4s_v7",
+            "Standard_E2s_v5",
             "Standard_L2aos_v4",
             "Standard_L2s_v4",
             "Standard_L4s_v4",
@@ -3801,6 +3802,7 @@ class AzurePreflightChecker:
             data = json.loads(result.stdout)
             required_skus = [
                 "Standard_D4s_v7",
+                "Standard_E2s_v5",
                 "Standard_L2aos_v4",
                 "Standard_L2s_v4",
                 "Standard_L4s_v4",
@@ -4152,6 +4154,7 @@ class AzureSetupWizard(BaseSetupWizard):
                 data = _json.loads(result.stdout)
                 required_skus = [
                     "Standard_D4s_v7",
+                    "Standard_E2s_v5",
                     "Standard_L2aos_v4",
                     "Standard_L2s_v4",
                     "Standard_L4s_v4",
