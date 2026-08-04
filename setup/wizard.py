@@ -2071,7 +2071,7 @@ class AWSPreflightChecker:
 
     def _check_instance_types(self):
         # check all instance types needed for the cluster
-        instance_types = ["m6idn.large", "i7ie.large", "m6idn.xlarge", "r6in.large", "r8a.large"]
+        instance_types = ["m6idn.large", "i7ie.large", "m6idn.xlarge", "r6in.large", "r6i.large"]
         all_available = True
         unavailable = []
 
