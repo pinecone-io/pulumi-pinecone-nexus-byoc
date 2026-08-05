@@ -24,10 +24,9 @@ AWS_REGISTRY = ContainerRegistry(
 
 # Nexus images on AWS live under the `unstable/pinecone/nexus` repo prefix,
 # co-located on the ECR host so the BYOC pull secret (`regcred`, keyed by host)
-# covers both. The prefix is nexus CI's mirror-ecr contract (nexus
-# .github/workflows/images.yml ECR_REPO_PREFIX), which already publishes there
-# on every push; remaining mirror gaps are tracked in nexus#1363. DB/pinetools
-# images stay under `unstable/pinecone/v4`.
+# covers both. The prefix matches the Nexus CI image-mirror contract
+# (ECR_REPO_PREFIX), which publishes there on every push; some image variants
+# may not yet be mirrored. DB/pinetools images stay under `unstable/pinecone/v4`.
 NEXUS_AWS_REGISTRY = ContainerRegistry(
     base_url="843333058014.dkr.ecr.us-east-1.amazonaws.com/unstable/pinecone/nexus",
     type="ecr",
