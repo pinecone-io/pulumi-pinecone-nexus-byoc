@@ -78,6 +78,10 @@ _FDB_IMAGE_REPOSITORY = "foundationdb/foundationdb"
 # name / namespace / port there, and that they don't differ by cloud.
 _DEFAULT_DOCS_API_URL = "http://docs-api.pc-docs-api.svc.cluster.local:3001"
 
+_NEXUS_AUTH0_DOMAIN = "login.pinecone.io"
+_NEXUS_AUTH0_AUDIENCE = "https://us-central1-production-console.cloudfunctions.net/api/v1"
+_NEXUS_AUTH0_CLIENT_ID = "tWb4ZIXqJWsWhI0oG5HAhDiCjAjYgVEB"
+
 # Inference-proxy routing overlay. The customer's model config is layered onto
 # the `byoc` config profile (BYOC's sole routing layer). These
 # names are the contract with the Nexus chart (deploy/helm/nexus/values.yaml,
@@ -365,6 +369,15 @@ class Nexus(pulumi.ComponentResource):
             # would expose it unauthenticated.
             app_values["config"]["workspacesEnabled"] = True
             app_values["gateway"]["workspaceAuth"] = True
+            # Workspace consoles finish their server-side Authorization Code + PKCE
+            # login against the prod tenant; empty domain/audience would leave the
+            # nexus-api validator off and `/auth/login/start` 400ing. Coupled to the
+            # workspace flow above (login is meaningless without it).
+            app_values["config"]["auth0"] = {
+                "domain": _NEXUS_AUTH0_DOMAIN,
+                "audience": _NEXUS_AUTH0_AUDIENCE,
+                "clientId": _NEXUS_AUTH0_CLIENT_ID,
+            }
 
         # BYOC inference-proxy routing table. Ship the customer's model config as
         # a ConfigMap mounted as the `byoc` config profile. BYOC omits the chart's
