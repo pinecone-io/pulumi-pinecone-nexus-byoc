@@ -98,7 +98,7 @@ NEXUS_VERSION = "main-8607b71"
 
 # Inference-proxy model-routing template written into the generated project when
 # Nexus is enabled. It IS the `byoc` config profile -- BYOC omits the chart's
-# `managed` profile (nexus#864), so this file is the proxy's only routing layer
+# `managed` profile, so this file is the proxy's only routing layer
 # and inherits nothing. The customer edits it, then `pulumi up` ships it as a
 # ConfigMap. Gemini + Pinecone only (the keys a BYOC deploy reliably has) and a
 # complete `default` profile -- project/phase overrides are intentionally out of
@@ -461,8 +461,8 @@ def build_inference_models_toml(
     surface, or leave it ``None`` to keep the shipped default. Every surface the
     caller omits is filled from the ``_DEFAULT_*`` catalogs and its tier(s)
     default too, so the emitted TOML is always a complete routing layer even when
-    only one surface is customized. BYOC omits the chart's ``managed`` profile
-    (nexus#864), so this TOML is the proxy's only routing layer.
+    only one surface is customized. BYOC omits the chart's ``managed`` profile,
+    so this TOML is the proxy's only routing layer.
 
     Only ``None`` selects a surface's default; an explicitly empty catalog
     (``{}``) raises rather than silently defaulting -- see the check below.
@@ -471,7 +471,7 @@ def build_inference_models_toml(
     (an embedding id), and ``rerank`` (a rerank id). A tier for a defaulted
     surface may be omitted -- it falls back to that surface's default tier.
     Each embedding model must carry a ``dimension`` (its output vector width --
-    required by the proxy since nexus#1234). ``supported_<surface>_models`` is
+    required by the proxy). ``supported_<surface>_models`` is
     auto-set to every defined id.
     """
     # Fill any surface the caller left default from the shipped catalogs, and
@@ -540,7 +540,7 @@ def build_inference_models_toml(
             f"embedding tier model_ref {embedding_ref!r} is not one of the defined "
             f"embedding models {sorted(embedding_models)}"
         )
-    # dimension is required on every embedding model (nexus#1234): it's the single
+    # dimension is required on every embedding model: it's the single
     # source of truth for output width that the API reads to provision indexes.
     for model_id, fields in embedding_models.items():
         dim = fields.get("dimension")
@@ -551,7 +551,7 @@ def build_inference_models_toml(
                 "(the model's output vector width)"
             )
 
-    # The proxy refuses to boot (assert_deploy_complete, nexus#1083) when any two
+    # The proxy refuses to boot (assert_deploy_complete) when any two
     # chat tiers resolve to the same model_ref -- the tier-as-alias contract
     # requires them distinct. Catch it here rather than at CrashLoop.
     base_tiers = {t: tiers[t] for t in LLM_MODEL_TIERS}
@@ -1294,7 +1294,7 @@ class BaseSetupWizard:
             console.print("  [dim]model is a Pinecone-hosted embedding model id.[/]")
         fields: dict = {"api_style": api_style, "model": self._prompt_required("  model")}
         # dimension is required: the model's output vector width, read by the API
-        # to provision an index of the matching size (nexus#1234). It's fixed by
+        # to provision an index of the matching size. It's fixed by
         # the model (e.g. multilingual-e5-large is 1024).
         fields["dimension"] = self._prompt_int(
             "  dimension (output vector width, e.g. 1024)", min_value=1
@@ -1426,7 +1426,7 @@ class BaseSetupWizard:
           PINECONE_NEXUS_EMBEDDING_MODELS  (JSON) + PINECONE_NEXUS_EMBEDDING_MODEL
 
         Each embedding model definition must include a ``dimension`` (its output
-        vector width) -- required by the proxy since nexus#1234.
+        vector width) -- required by the proxy.
         """
         llm, llm_tiers = self._headless_surface(
             "PINECONE_NEXUS_LLM_MODELS",

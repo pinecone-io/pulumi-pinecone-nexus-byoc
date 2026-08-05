@@ -1,6 +1,6 @@
 """GCP fdb data-plane zone handling: the ≥3-zone guard and 3-zone defaults.
 
-GCP port of the AWS guard from the nexus#1378 wiring: with fewer than 3 zones
+GCP port of the AWS shared-FDB wiring guard: with fewer than 3 zones
 the FoundationDB CR silently degrades from zone to hostname fault domains, and
 nothing downstream validates it. The shared-FDB wiring itself (backend arg,
 AlloyDB skip, fdb_mode passthrough) landed in #10 and is covered by

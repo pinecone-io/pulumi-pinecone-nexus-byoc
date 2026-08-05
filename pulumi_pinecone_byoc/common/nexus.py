@@ -79,14 +79,14 @@ _FDB_IMAGE_REPOSITORY = "foundationdb/foundationdb"
 _DEFAULT_DOCS_API_URL = "http://docs-api.pc-docs-api.svc.cluster.local:3001"
 
 # Inference-proxy routing overlay. The customer's model config is layered onto
-# the `byoc` config profile (BYOC's sole routing layer; see nexus#864). These
+# the `byoc` config profile (BYOC's sole routing layer). These
 # names are the contract with the Nexus chart (deploy/helm/nexus/values.yaml,
 # templates/services/inference-proxy.yaml): the ConfigMap holds a `byoc.toml`
 # key, and configProfiles is set to `byoc` (managed profile deliberately omitted).
 _INFERENCE_BYOC_CONFIGMAP = "nexus-inference-proxy-byoc-config"
 _INFERENCE_BYOC_PROFILE = "byoc"
 # Base configProfiles for a BYOC deployment. Empty so the byoc profile stands
-# alone: as of nexus#864 the managed model catalog lives in a `managed` profile
+# alone: the managed model catalog lives in a `managed` profile
 # that BYOC deliberately omits, so byoc.toml is the only routing layer and there
 # is nothing to reset -- the proxy inherits none of the managed claude/nebius
 # tiers a gemini-only deploy has no keys for.
@@ -155,7 +155,7 @@ class NexusConfig:
     default_workspace_name: str | None = None
     # Inference-proxy model routing. When set, the proxy loads this TOML as the
     # `byoc` config profile -- the deployment's ONLY routing layer. BYOC omits the
-    # chart's `managed` profile (see nexus#864), so nothing is inherited: this TOML
+    # chart's `managed` profile, so nothing is inherited: this TOML
     # supplies the whole catalog + tiers rather than overlaying a baked default.
     # ``provider_keys`` maps each ``api_key_ref`` in the TOML to its secret value
     # (e.g. {"gemini-api-key": <secret>}); the wizard collects it via
@@ -368,7 +368,7 @@ class Nexus(pulumi.ComponentResource):
 
         # BYOC inference-proxy routing table. Ship the customer's model config as
         # a ConfigMap mounted as the `byoc` config profile. BYOC omits the chart's
-        # `managed` profile (nexus#864), so this is the proxy's ONLY routing layer:
+        # `managed` profile, so this is the proxy's ONLY routing layer:
         # it supplies the whole catalog + tiers, inheriting nothing from the image.
         # The configChecksum (a hash of the TOML) rolls the proxy pod when the
         # config changes -- the subPath mount doesn't live-update. providerKeyRefs

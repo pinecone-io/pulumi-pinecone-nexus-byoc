@@ -105,7 +105,7 @@ def test_embedding_defaults_when_omitted():
     assert (
         parsed["default"]["embedding"]["tiers"]["default"]["model_ref"] == "multilingual-e5-large"
     )
-    # dimension is a required model-level field (nexus#1234).
+    # dimension is a required model-level field.
     assert parsed["embedding_models"]["multilingual-e5-large"]["dimension"] == 1024
 
 

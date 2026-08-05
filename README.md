@@ -1,11 +1,5 @@
 # Pinecone Nexus BYOC
 
-| :warning: WARNING           |
-|:----------------------------|
-| This repository is under active development and may introduce breaking changes.  |
-
-
-
 Deploy Pinecone in your own cloud account with full control over your infrastructure.
 
 > **Supported clouds:** **GCP**, **AWS**, and **Azure** are fully supported

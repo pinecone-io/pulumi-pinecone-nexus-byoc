@@ -3,7 +3,7 @@
 GKE passes ``gce-internal`` and keeps its Ingress (an in-VPC ops door onto the
 gateway). EKS/AKS pass ``ingress_class=None`` and get NO Ingress: no controller
 serves a class-less Ingress on those clusters, so it would sit inert — the
-gateway is reached in-cluster via the netstack *.wksp route (nexus#1362).
+gateway is reached in-cluster via the netstack *.wksp route.
 
 Run standalone (`python tests/test_nexus_gateway_ingress.py`) or under pytest.
 """

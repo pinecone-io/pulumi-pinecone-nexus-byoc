@@ -1,8 +1,11 @@
 name: E2E
 
+# On demand only -- provisions real cloud infra with deploy secrets, so it never
+# runs automatically. Label a PR `run-e2e`, or trigger manually.
 on:
   pull_request:
     branches: [main]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch: {}
 
 concurrency:
@@ -48,19 +51,25 @@ jobs:
 
   aws:
     needs: changes
-    if: needs.changes.outputs.aws == 'true' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'run-e2e') && needs.changes.outputs.aws == 'true')
     uses: ./.github/workflows/aws.yaml
     secrets: inherit
 
   gcp:
     needs: changes
-    if: needs.changes.outputs.gcp == 'true' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'run-e2e') && needs.changes.outputs.gcp == 'true')
     uses: ./.github/workflows/gcp.yaml
     secrets: inherit
 
   azure:
     needs: changes
-    if: needs.changes.outputs.azure == 'true' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (contains(github.event.pull_request.labels.*.name, 'run-e2e') && needs.changes.outputs.azure == 'true')
     uses: ./.github/workflows/azure.yaml
     secrets: inherit
 

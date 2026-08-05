@@ -607,8 +607,8 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 storage_class="gp3",
                 # No gateway Ingress: nothing on EKS consumes one. The gateway is
                 # reached through the netstack *.wksp route via the Gloo edge
-                # (nexus#1362) -- the in-cluster nexus-gateway Service, not an
-                # Ingress, is the routing target.
+                # -- the in-cluster nexus-gateway Service, not an Ingress, is
+                # the routing target.
                 ingress_class=None,
                 blob_storage=blob_storage,
                 service_account_annotations=nexus_sa_annotations,

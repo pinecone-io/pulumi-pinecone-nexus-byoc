@@ -1,4 +1,4 @@
-"""AWS shared-FDB wiring: the fdb data-plane backend on EKS (nexus#1378).
+"""AWS shared-FDB wiring: the fdb data-plane backend on EKS.
 
 Covers the PineconeAWSCluster layer added when the #32 external-FDB guard was
 replaced with the real wiring:

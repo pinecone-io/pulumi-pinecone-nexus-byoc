@@ -39,12 +39,13 @@ dev = [
     "ty>=0.0.1a7",
     "rich>=14.0.0",
     "pyyaml>=6.0.0",
+    "pytest>=8.0.0",
 ]
 
 [project.urls]
 Homepage = "https://www.pinecone.io"
 Documentation = "https://docs.pinecone.io/guides/production/bring-your-own-cloud"
-Repository = "https://github.com/pinecone-io/pulumi-pinecone-byoc"
+Repository = "https://github.com/pinecone-io/pulumi-pinecone-nexus-byoc"
 
 [build-system]
 requires = ["hatchling", "hatch-vcs"]
@@ -72,6 +73,9 @@ exclude = [
     "**/__pycache__",
     "**/*.pyc",
 ]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.ty.environment]
 extra-paths = ["typings", "setup"]

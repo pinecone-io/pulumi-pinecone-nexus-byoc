@@ -1,5 +1,26 @@
+# Python
 __pycache__/
+*.pyc
 pulumi_pinecone_byoc/_version.py
+
+# Generated project (bootstrap output)
 pinecone-byoc/
+
+# Editors
 .idea/
 .vscode/
+
+# Virtualenvs / tool caches
+.venv/
+.pytest_cache/
+.ruff_cache/
+.superpowers/
+
+# Secrets and local env — never commit
+.env
+*.local.env
+.byoc*.env
+
+# Pulumi stack state / secrets — never commit
+Pulumi.*.yaml
+!Pulumi.yaml
