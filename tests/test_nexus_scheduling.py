@@ -59,15 +59,6 @@ def test_app_values_pin_services_and_jobs_pools():
     return _deploy_values("single").apply(check)
 
 
-@pulumi.runtime.test
-def test_fdb_values_pin_services_pool():
-    def check(data):
-        fdb_values = json.loads(data["fdb-values.yaml"])
-        assert fdb_values["scheduling"]["services"]["nodeSelector"] == {"nexus-role": "services"}
-
-    return _deploy_values("single").apply(check)
-
-
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

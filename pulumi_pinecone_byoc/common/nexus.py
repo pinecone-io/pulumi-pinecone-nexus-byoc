@@ -289,9 +289,6 @@ class Nexus(pulumi.ComponentResource):
             "persistence": {
                 "storageClass": storage_class,
             },
-            "scheduling": {
-                "services": {"nodeSelector": {_NEXUS_ROLE_LABEL: "services"}},
-            },
         }
 
         if fdb_mode == "external":
