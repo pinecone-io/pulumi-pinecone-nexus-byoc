@@ -52,10 +52,10 @@ _NEXUS_NAMESPACE = "nexus"
 _NEXUS_TASKS_NAMESPACE = "nexus-tasks"
 _REGCRED = "regcred"
 
-# Node-pool label the cluster stamps on the dedicated Nexus pools (see
-# nexus_node_pools in the per-cloud cluster modules). Used as the chart's
-# scheduling.*.nodeSelector so pods land on those pools; the same string is the
-# label/taint key on the pool side.
+# Label on the dedicated nexus-services / nexus-jobs pools (nexus_node_pools).
+# The nexus chart's base scheduling nodeSelector is empty, so the deploy values
+# must pin pods to those pools with this key, or a pod keeps only the chart-base
+# tolerations and can land on the untainted default pool.
 _NEXUS_ROLE_LABEL = "nexus-role"
 
 # (namespace, KSA name) for the chart's KSAs that touch blob storage; cloud
@@ -289,10 +289,6 @@ class Nexus(pulumi.ComponentResource):
             "persistence": {
                 "storageClass": storage_class,
             },
-            # Pin FDB to the services pool by matching the label the cluster sets
-            # on it (see nexus_node_pools in {gcp/gke,aws/eks,azure/aks}.py). The
-            # chart's base nodeSelector is empty, so without this FDB can land on
-            # the untainted default/DB pool. Tolerations come from the chart base.
             "scheduling": {
                 "services": {"nodeSelector": {_NEXUS_ROLE_LABEL: "services"}},
             },
@@ -348,10 +344,6 @@ class Nexus(pulumi.ComponentResource):
                     "port": 80,
                 },
             },
-            # Pin services and task pods to their labeled pools (see
-            # nexus_node_pools in {gcp/gke,aws/eks,azure/aks}.py). The chart's
-            # base nodeSelectors are empty, so without this Nexus pods can land
-            # on the untainted default/DB pool. Tolerations come from the chart base.
             "scheduling": {
                 "services": {"nodeSelector": {_NEXUS_ROLE_LABEL: "services"}},
                 "jobs": {"nodeSelector": {_NEXUS_ROLE_LABEL: "jobs"}},
