@@ -52,6 +52,12 @@ _NEXUS_NAMESPACE = "nexus"
 _NEXUS_TASKS_NAMESPACE = "nexus-tasks"
 _REGCRED = "regcred"
 
+# Label on the dedicated nexus-services / nexus-jobs pools (nexus_node_pools).
+# The nexus chart's base scheduling nodeSelector is empty, so the deploy values
+# must pin pods to those pools with this key, or a pod keeps only the chart-base
+# tolerations and can land on the untainted default pool.
+_NEXUS_ROLE_LABEL = "nexus-role"
+
 # (namespace, KSA name) for the chart's KSAs that touch blob storage; cloud
 # Workload-Identity wiring binds/annotates exactly these. nexus-api backs both
 # api and file-proxy; nexus-task does the actual object reads/writes.
@@ -334,6 +340,10 @@ class Nexus(pulumi.ComponentResource):
                     "type": "ClusterIP",
                     "port": 80,
                 },
+            },
+            "scheduling": {
+                "services": {"nodeSelector": {_NEXUS_ROLE_LABEL: "services"}},
+                "jobs": {"nodeSelector": {_NEXUS_ROLE_LABEL: "jobs"}},
             },
         }
 
