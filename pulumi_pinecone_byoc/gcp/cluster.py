@@ -15,6 +15,7 @@ from ..common.nexus import (
     NexusBlobStorage,
     NexusConfig,
     derive_api_key_refs,
+    require_byoc_project_id,
     require_external_fdb_for_nexus,
 )
 from ..common.nexus_uninstaller import NexusUninstaller
@@ -463,7 +464,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             nexus_sa_annotations = self._nexus_gcs.gcs_sa_email.apply(
                 lambda email: {"iam.gke.io/gcp-service-account": email}
             )
-            self._nexus_project_id = nx.byoc_project_id or self._api_key.project_id
+            self._nexus_project_id = require_byoc_project_id(nx)
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._gke.k8s_provider,

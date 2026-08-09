@@ -145,9 +145,7 @@ class NexusConfig:
     version: str | None = None  # REQUIRED: the Nexus image tag; no DB-version fallback
     byoc_env: pulumi.Input[str] | None = None  # falls back to minted env name
     image_registry: str | None = None  # falls back to cloud-specific default
-    # BYOC single-tenant project id. None => the project the deploy mints for the
-    # cell (the __SLI__ ApiKey's project_id, also exported as sli_checkers_project_id);
-    # set only to pin Nexus to a different, pre-existing project.
+    # REQUIRED: BYOC single-tenant project id (see require_byoc_project_id).
     byoc_project_id: pulumi.Input[str] | None = None
     # Short DNS-safe vault id; forms the index host's leftmost label
     # `nexus-{context_id}-{vault}`, which must stay <= 63 chars. None => a derived
@@ -193,6 +191,22 @@ def require_external_fdb_for_nexus(nexus: "NexusConfig | None", data_plane_backe
             f"(the shared FDB data plane), got data_plane_backend={data_plane_backend!r} "
             f"and nexus.fdb_mode={nexus.fdb_mode!r}."
         )
+
+
+def require_byoc_project_id(nexus: "NexusConfig") -> pulumi.Input[str]:
+    """Resolve ``NexusConfig.byoc_project_id``; there is no usable fallback, since the
+    cell's minted key belongs to a different project than the operator key that drives
+    the workspace API, so any default yields a workspace the cell rejects."""
+    if nexus.byoc_project_id is None:
+        raise ValueError(
+            "nexus-byoc-project-id must be set when Nexus is enabled: it is the "
+            "Pinecone project the workspace API is called with. Without it the "
+            "default workspace is created against a different project than the "
+            "cell serves, the cell rejects it (project mismatch), and the workspace "
+            "ends in InitializationFailed. Set it with "
+            "`pulumi config set nexus-byoc-project-id <project-uuid>`."
+        )
+    return nexus.byoc_project_id
 
 
 class Nexus(pulumi.ComponentResource):
