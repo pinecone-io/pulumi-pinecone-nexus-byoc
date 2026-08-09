@@ -81,7 +81,10 @@ class InternalLoadBalancer(pulumi.ComponentResource):
                     "unhealthyThreshold": 3,
                     "port": 8443,
                     "type": "HTTP2",
-                    "requestPath": "/",
+                    # Matches the gateway-proxy Gloo healthCheck.path for BYOC in pinecone-db
+                    # netstack (configs/template/gloo.yaml.gotmpl): the proxy answers this path
+                    # locally, which frees `/` to route through to the nexus console.
+                    "requestPath": "/envoy-health-check",
                 },
                 "connectionDraining": {
                     "drainingTimeoutSec": 60,
