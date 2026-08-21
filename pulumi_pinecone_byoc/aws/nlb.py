@@ -213,9 +213,6 @@ class NLB(pulumi.ComponentResource):
             ),
             spec=k8s.networking.v1.IngressSpecArgs(
                 rules=[
-                    # Serves the NLB's health check of this ALB, which cannot be given
-                    # a Host header and so matches no `*.pinecone.io` rule. Keep the
-                    # path equal to the target group's health_check below.
                     k8s.networking.v1.IngressRuleArgs(
                         http=k8s.networking.v1.HTTPIngressRuleValueArgs(
                             paths=[
