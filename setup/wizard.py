@@ -93,6 +93,10 @@ def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
     return set(_API_KEY_REF_RE.findall(toml_text))
 
 
+# Predates pinecone-db#17979, so on a Nexus cell it renders netstack that answers
+# `/` while the LBs probe gateway_health_check_path()'s workspace-routing value:
+# bump this to a build containing that commit in the same rollout, or every
+# gateway-proxy health check 404s.
 PINECONE_VERSION = "main-8903bce"
 NEXUS_VERSION = "main-8607b71"
 

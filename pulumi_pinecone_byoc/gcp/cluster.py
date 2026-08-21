@@ -267,6 +267,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             self._dns.subdomain,
             self._cell_name,
             args.public_access_enabled,
+            workspace_routing_enabled=args.nexus is not None,
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[self._vpc, self._dns, self._gke, self._k8s_addons],

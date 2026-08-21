@@ -12,6 +12,19 @@ ORG_NAME_MAX_LENGTH = 16
 DNS_CNAMES = ["*.svc", "*.wksp", "metrics", "prometheus"]
 
 
+def gateway_health_check_path(workspace_routing_enabled: bool) -> str:
+    """LB health check path for the gateway-proxy backends.
+
+    Mirrors the ternary netstack applies to the Gloo gateway's healthCheck.path
+    (pinecone-db configs/template/gloo.yaml.gotmpl): workspace-routing cells move it
+    off `/` so bare `/` reaches the Nexus console, DB-only cells keep `/`. Probing
+    the path netstack did not render 404s every backend, so both sides must read the
+    same flag, and workspace-routing cells need a pinecone-version containing
+    pinecone-db#17979.
+    """
+    return "/envoy-health-check" if workspace_routing_enabled else "/"
+
+
 def cell_name(environment: Environment) -> pulumi.Output[str]:
     """Derive cell name from environment: e.g. pinecone-byoc-ef7a"""
 
