@@ -14,6 +14,7 @@ import pulumi_kubernetes as k8s
 
 from config.aws import AWSConfig
 
+from ..common.naming import gateway_health_check_path
 from .dns import DNS
 from .vpc import VPC
 
@@ -48,11 +49,13 @@ class NLB(pulumi.ComponentResource):
         cluster_security_group_id: pulumi.Output[str],
         cell_name: pulumi.Input[str],
         public_access_enabled: bool = True,
+        workspace_routing_enabled: bool = False,
         opts: pulumi.ResourceOptions | None = None,
     ):
         super().__init__("pinecone:byoc:NLB", name, None, opts)
 
         self.config = config
+        self._health_check_path = gateway_health_check_path(workspace_routing_enabled)
         self._cell_name = pulumi.Output.from_input(cell_name)
         self._resource_suffix = self._cell_name.apply(lambda cn: cn[-4:])
         child_opts = pulumi.ResourceOptions(parent=self)
@@ -123,7 +126,7 @@ class NLB(pulumi.ComponentResource):
                 "alb.ingress.kubernetes.io/load-balancer-name": _alb_name(subdomain),
                 "alb.ingress.kubernetes.io/scheme": "internal",
                 "alb.ingress.kubernetes.io/target-type": "ip",
-                "alb.ingress.kubernetes.io/healthcheck-path": "/",
+                "alb.ingress.kubernetes.io/healthcheck-path": self._health_check_path,
                 "alb.ingress.kubernetes.io/healthcheck-protocol": "HTTPS",
                 "alb.ingress.kubernetes.io/backend-protocol": "HTTPS",
                 "alb.ingress.kubernetes.io/listen-ports": '[{"HTTPS": 443}]',
@@ -214,7 +217,7 @@ class NLB(pulumi.ComponentResource):
                         http=k8s.networking.v1.HTTPIngressRuleValueArgs(
                             paths=[
                                 k8s.networking.v1.HTTPIngressPathArgs(
-                                    path="/",
+                                    path=self._health_check_path,
                                     path_type="Exact",
                                     backend=k8s.networking.v1.IngressBackendArgs(
                                         service=k8s.networking.v1.IngressServiceBackendArgs(
@@ -275,6 +278,7 @@ class NLB(pulumi.ComponentResource):
                 enabled=True,
                 port="traffic-port",
                 protocol="HTTPS",
+                path=self._health_check_path,
             ),
             tags=self._cell_name.apply(lambda cn: config.tags(Name=f"{cn}-alb-tg")),
             opts=child_opts,
@@ -461,7 +465,7 @@ class NLB(pulumi.ComponentResource):
                     "alb.ingress.kubernetes.io/load-balancer-name": _public_alb_name(subdomain),
                     "alb.ingress.kubernetes.io/scheme": "internet-facing",
                     "alb.ingress.kubernetes.io/target-type": "ip",
-                    "alb.ingress.kubernetes.io/healthcheck-path": "/",
+                    "alb.ingress.kubernetes.io/healthcheck-path": self._health_check_path,
                     "alb.ingress.kubernetes.io/healthcheck-protocol": "HTTPS",
                     "alb.ingress.kubernetes.io/backend-protocol-version": "HTTP2",
                     "alb.ingress.kubernetes.io/backend-protocol": "HTTPS",
@@ -532,7 +536,7 @@ class NLB(pulumi.ComponentResource):
                     "alb.ingress.kubernetes.io/load-balancer-name": _public_alb_name(subdomain),
                     "alb.ingress.kubernetes.io/scheme": "internet-facing",
                     "alb.ingress.kubernetes.io/target-type": "ip",
-                    "alb.ingress.kubernetes.io/healthcheck-path": "/",
+                    "alb.ingress.kubernetes.io/healthcheck-path": self._health_check_path,
                     "alb.ingress.kubernetes.io/healthcheck-protocol": "HTTPS",
                     "alb.ingress.kubernetes.io/backend-protocol-version": "HTTP1",
                     "alb.ingress.kubernetes.io/backend-protocol": "HTTPS",

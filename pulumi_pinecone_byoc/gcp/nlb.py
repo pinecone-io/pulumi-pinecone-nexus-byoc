@@ -8,7 +8,7 @@ import pulumi_kubernetes as k8s
 
 from config.gcp import GCPConfig
 
-from ..common.naming import DNS_CNAMES
+from ..common.naming import DNS_CNAMES, gateway_health_check_path
 from .lb_selection import ingress_ip_from_status, select_forwarding_rule
 
 
@@ -23,6 +23,7 @@ class InternalLoadBalancer(pulumi.ComponentResource):
         subdomain: pulumi.Output[str],
         cell_name: pulumi.Input[str],
         public_access_enabled: bool = True,
+        workspace_routing_enabled: bool = False,
         opts: pulumi.ResourceOptions | None = None,
     ):
         super().__init__("pinecone:byoc:InternalLoadBalancer", name, None, opts)
@@ -81,7 +82,7 @@ class InternalLoadBalancer(pulumi.ComponentResource):
                     "unhealthyThreshold": 3,
                     "port": 8443,
                     "type": "HTTP2",
-                    "requestPath": "/",
+                    "requestPath": gateway_health_check_path(workspace_routing_enabled),
                 },
                 "connectionDraining": {
                     "drainingTimeoutSec": 60,

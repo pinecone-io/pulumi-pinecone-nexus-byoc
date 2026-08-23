@@ -359,6 +359,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             cluster_security_group_id=self._eks.cluster_security_group_id,
             cell_name=self._cell_name,
             public_access_enabled=args.public_access_enabled,
+            workspace_routing_enabled=args.nexus is not None,
             opts=pulumi.ResourceOptions(
                 parent=self,
                 depends_on=[self._vpc, self._dns, self._eks, self._k8s_addons],
