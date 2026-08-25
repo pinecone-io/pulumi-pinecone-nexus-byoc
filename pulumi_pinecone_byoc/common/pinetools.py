@@ -149,12 +149,18 @@ class Pinetools(pulumi.ComponentResource):
             init_containers: list[k8s.core.v1.ContainerArgs] | None = None,
         ) -> k8s.batch.v1.JobSpecArgs:
             return k8s.batch.v1.JobSpecArgs(
-                backoff_limit=1,
+                backoff_limit=2,
                 # 70 min = 40 min regcred wait (ESO can take ~31 min on a cold
                 # cluster) + ~30 min install/check budget.
                 active_deadline_seconds=4200,
-                ttl_seconds_after_finished=300,
+                # Long enough to read a failed install's pod logs before reaping.
+                ttl_seconds_after_finished=3600,
                 template=k8s.core.v1.PodTemplateSpecArgs(
+                    metadata=k8s.meta.v1.ObjectMetaArgs(
+                        annotations={
+                            "cluster-autoscaler.kubernetes.io/safe-to-evict": "false",
+                        },
+                    ),
                     spec=make_pod_spec(init_containers),
                 ),
             )

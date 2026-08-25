@@ -52,6 +52,13 @@ _NEXUS_NAMESPACE = "nexus"
 _NEXUS_TASKS_NAMESPACE = "nexus-tasks"
 _REGCRED = "regcred"
 
+_ROLLOUT_TIMEOUT = "600s"
+_ROLLOUT_DEADLINE_SECS = 900
+_ROLLOUT_WAIT_SCRIPT = (
+    f"kubectl rollout status deployment/nexus-api "
+    f"-n {_NEXUS_NAMESPACE} --timeout={_ROLLOUT_TIMEOUT}"
+)
+
 # Label on the dedicated nexus-services / nexus-jobs pools (nexus_node_pools).
 # The nexus chart's base scheduling nodeSelector is empty, so the deploy values
 # must pin pods to those pools with this key, or a pod keeps only the chart-base
@@ -145,9 +152,7 @@ class NexusConfig:
     version: str | None = None  # REQUIRED: the Nexus image tag; no DB-version fallback
     byoc_env: pulumi.Input[str] | None = None  # falls back to minted env name
     image_registry: str | None = None  # falls back to cloud-specific default
-    # BYOC single-tenant project id. None => the project the deploy mints for the
-    # cell (the __SLI__ ApiKey's project_id, also exported as sli_checkers_project_id);
-    # set only to pin Nexus to a different, pre-existing project.
+    # REQUIRED: BYOC single-tenant project id (see require_byoc_project_id).
     byoc_project_id: pulumi.Input[str] | None = None
     # Short DNS-safe vault id; forms the index host's leftmost label
     # `nexus-{context_id}-{vault}`, which must stay <= 63 chars. None => a derived
@@ -193,6 +198,22 @@ def require_external_fdb_for_nexus(nexus: "NexusConfig | None", data_plane_backe
             f"(the shared FDB data plane), got data_plane_backend={data_plane_backend!r} "
             f"and nexus.fdb_mode={nexus.fdb_mode!r}."
         )
+
+
+def require_byoc_project_id(nexus: "NexusConfig") -> pulumi.Input[str]:
+    """Resolve ``NexusConfig.byoc_project_id``; there is no usable fallback, since the
+    cell's minted key belongs to a different project than the operator key that drives
+    the workspace API, so any default yields a workspace the cell rejects."""
+    if nexus.byoc_project_id is None:
+        raise ValueError(
+            "nexus-byoc-project-id must be set when Nexus is enabled: it is the "
+            "Pinecone project the workspace API is called with. Without it the "
+            "default workspace is created against a different project than the "
+            "cell serves, the cell rejects it (project mismatch), and the workspace "
+            "ends in InitializationFailed. Set it with "
+            "`pulumi config set nexus-byoc-project-id <project-uuid>`."
+        )
+    return nexus.byoc_project_id
 
 
 class Nexus(pulumi.ComponentResource):
@@ -487,11 +508,10 @@ class Nexus(pulumi.ComponentResource):
         # new Job (helm re-applies); identical inputs keep the name, so re-running
         # `pulumi up` is a no-op. ttl reaps the finished pod. Mirrors the DB install
         # Job's version-keyed naming (common/pinetools.py).
-        job_name = pulumi.Output.all(
+        values_digest = pulumi.Output.all(
             pulumi.Output.from_input(nexus_version), fdb_values_json, app_values_json
-        ).apply(
-            lambda parts: f"nexus-deploy-{hashlib.sha256(''.join(parts).encode()).hexdigest()[:12]}"
-        )
+        ).apply(lambda parts: hashlib.sha256("".join(parts).encode()).hexdigest()[:12])
+        job_name = values_digest.apply(lambda d: f"nexus-deploy-{d}")
 
         wait_for_regcred = k8s.core.v1.ContainerArgs(
             name="wait-for-regcred",
@@ -551,6 +571,41 @@ class Nexus(pulumi.ComponentResource):
                 parent=self,
                 provider=k8s_provider,
                 depends_on=install_job_depends_on,
+            ),
+        )
+
+        # helm --wait leaves pods on the previous values still in the Service
+        # endpoints; `rollout status` also requires those to be gone, so a workspace
+        # call made after this Job cannot be served the old config.
+        self.rollout_job = k8s.batch.v1.Job(
+            f"{name}-rollout-job",
+            metadata=k8s.meta.v1.ObjectMetaArgs(
+                name=values_digest.apply(lambda d: f"nexus-rollout-{d}"),
+                namespace=_NEXUS_NAMESPACE,
+            ),
+            spec=k8s.batch.v1.JobSpecArgs(
+                backoff_limit=1,
+                active_deadline_seconds=_ROLLOUT_DEADLINE_SECS,
+                ttl_seconds_after_finished=3600,
+                template=k8s.core.v1.PodTemplateSpecArgs(
+                    spec=k8s.core.v1.PodSpecArgs(
+                        service_account_name=_DEPLOY_SA,
+                        restart_policy="OnFailure",
+                        containers=[
+                            k8s.core.v1.ContainerArgs(
+                                name="wait-for-rollout",
+                                image=_WAIT_IMAGE,
+                                command=["/bin/sh", "-c"],
+                                args=[_ROLLOUT_WAIT_SCRIPT],
+                            ),
+                        ],
+                    ),
+                ),
+            ),
+            opts=pulumi.ResourceOptions(
+                parent=self,
+                provider=k8s_provider,
+                depends_on=[self.install_job],
             ),
         )
 

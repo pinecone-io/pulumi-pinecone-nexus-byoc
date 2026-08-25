@@ -18,6 +18,7 @@ from ..common.nexus import (
     NexusBlobStorage,
     NexusConfig,
     derive_api_key_refs,
+    require_byoc_project_id,
     require_external_fdb_for_nexus,
 )
 from ..common.nexus_uninstaller import NexusUninstaller
@@ -540,7 +541,7 @@ class PineconeAzureCluster(pulumi.ComponentResource):
                 archive=self._nexus_containers.archive,
                 account_name=self._storage.account_name,
             )
-            self._nexus_project_id = nx.byoc_project_id or self._api_key.project_id
+            self._nexus_project_id = require_byoc_project_id(nx)
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
                 k8s_provider=self._aks.k8s_provider,
