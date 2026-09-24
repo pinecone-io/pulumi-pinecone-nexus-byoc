@@ -619,6 +619,11 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
                 fdb_mode=nx.fdb_mode,
+                rbac_mode=nx.rbac_mode,
+                bootstrap_admins=nx.bootstrap_admins,
+                oidc_issuer=nx.oidc_issuer,
+                oidc_audience=nx.oidc_audience,
+                workspaces_enabled=nx.workspaces_enabled,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
@@ -654,16 +659,21 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             # promotes the workspace to Ready — creating before it exists would
             # wait on nothing. First-run-only (no-op diff/delete): destroy
             # leaves the workspace; delete it via gCPS before teardown.
-            self._default_workspace = DefaultWorkspace(
-                f"{config.resource_prefix}-default-workspace",
-                DefaultWorkspaceArgs(
-                    name=self._default_workspace_name,
-                    environment=nx.byoc_env or self._environment.env_name,
-                    api_url=args.api_url,
-                    pinecone_api_key=args.pinecone_api_key,
-                ),
-                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
-            )
+            # Gated on workspaces: the poller that promotes a workspace to Ready
+            # only runs when the cell has them enabled, so creating one here
+            # otherwise burns the full Ready timeout and then strands a gCPS
+            # record that delete() cannot remove.
+            if nx.workspaces_enabled:
+                self._default_workspace = DefaultWorkspace(
+                    f"{config.resource_prefix}-default-workspace",
+                    DefaultWorkspaceArgs(
+                        name=self._default_workspace_name,
+                        environment=nx.byoc_env or self._environment.env_name,
+                        api_url=args.api_url,
+                        pinecone_api_key=args.pinecone_api_key,
+                    ),
+                    opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
+                )
 
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
