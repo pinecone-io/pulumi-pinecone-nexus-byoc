@@ -192,6 +192,29 @@ def test_config_rejects_partial_oidc():
     )
 
 
+def test_workspaces_off_skips_the_default_workspace_bootstrap():
+    """The DefaultWorkspace resource must not be created with workspaces off.
+
+    Its provider polls gCPS for Ready with a 15-minute deadline, and the thing
+    that promotes it is the in-cell operation poller that only runs when
+    workspaces are enabled. Creating it anyway fails the up after that wait and
+    strands a gCPS record `delete()` cannot remove.
+    """
+    try:
+        from pulumi_pinecone_byoc.gcp import PineconeGCPClusterArgs  # noqa: F401
+    except ModuleNotFoundError:
+        print("  (skipped: pulumi_gcp not installed)")
+        return
+    import inspect
+
+    from pulumi_pinecone_byoc.gcp import cluster as gcp_cluster
+
+    src = inspect.getsource(gcp_cluster)
+    marker = "if nx.workspaces_enabled:"
+    ws = src.index("self._default_workspace = DefaultWorkspace(")
+    assert marker in src[:ws], "DefaultWorkspace is not gated on nx.workspaces_enabled"
+
+
 def test_config_default_is_unchanged():
     cfg = NexusConfig()
     assert cfg.rbac_mode == ""
