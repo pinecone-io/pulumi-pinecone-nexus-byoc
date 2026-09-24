@@ -2452,6 +2452,15 @@ cluster = PineconeAWSCluster(
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
             fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
+            rbac_mode=config.get("nexus-rbac-mode") or "",
+            bootstrap_admins=config.get("nexus-bootstrap-admins"),
+            oidc_issuer=config.get("nexus-oidc-issuer"),
+            oidc_audience=config.get("nexus-oidc-audience"),
+            workspaces_enabled=(
+                config.get_bool("nexus-workspaces-enabled")
+                if config.get_bool("nexus-workspaces-enabled") is not None
+                else True
+            ),
         ) if _nexus_enabled else None,
     ),
 )
@@ -3333,6 +3342,15 @@ cluster = PineconeGCPCluster(
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
             fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
+            rbac_mode=config.get("nexus-rbac-mode") or "",
+            bootstrap_admins=config.get("nexus-bootstrap-admins"),
+            oidc_issuer=config.get("nexus-oidc-issuer"),
+            oidc_audience=config.get("nexus-oidc-audience"),
+            workspaces_enabled=(
+                config.get_bool("nexus-workspaces-enabled")
+                if config.get_bool("nexus-workspaces-enabled") is not None
+                else True
+            ),
         ) if _nexus_enabled else None,
     ),
 )
@@ -4295,6 +4313,15 @@ cluster = PineconeAzureCluster(
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
             fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
+            rbac_mode=config.get("nexus-rbac-mode") or "",
+            bootstrap_admins=config.get("nexus-bootstrap-admins"),
+            oidc_issuer=config.get("nexus-oidc-issuer"),
+            oidc_audience=config.get("nexus-oidc-audience"),
+            workspaces_enabled=(
+                config.get_bool("nexus-workspaces-enabled")
+                if config.get_bool("nexus-workspaces-enabled") is not None
+                else True
+            ),
         ) if _nexus_enabled else None,
     ),
 )

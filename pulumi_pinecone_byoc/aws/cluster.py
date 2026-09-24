@@ -619,6 +619,11 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
                 fdb_mode=nx.fdb_mode,
+                rbac_mode=nx.rbac_mode,
+                bootstrap_admins=nx.bootstrap_admins,
+                oidc_issuer=nx.oidc_issuer,
+                oidc_audience=nx.oidc_audience,
+                workspaces_enabled=nx.workspaces_enabled,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
