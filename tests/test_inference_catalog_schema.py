@@ -30,8 +30,8 @@ _SURFACE_TABLE = {
 
 
 def _template_models() -> dict[str, dict]:
-    """The model tables from the TOML template the wizard writes out."""
-    parsed = tomllib.loads(wizard.build_inference_models_toml())
+    """The model tables from the static TOML default installs write verbatim."""
+    parsed = tomllib.loads(wizard.NEXUS_INFERENCE_MODELS_TEMPLATE)
     return {s: parsed.get(table, {}) for s, table in _SURFACE_TABLE.items()}
 
 
