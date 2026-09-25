@@ -44,7 +44,6 @@ _VALID_EMBEDDING = {
     "my-embed": {
         "api_style": "litellm",
         "model": "voyage/voyage-3",
-        "max_retries": 2,
         "max_input_chars": 1000,
         "max_batch_size": 96,
     }
@@ -53,7 +52,6 @@ _VALID_RERANK = {
     "my-rr": {
         "api_style": "pinecone",
         "model": "bge-reranker-v2-m3",
-        "max_retries": 2,
         "max_query_chars": 1000,
         "max_doc_chars": 800,
         "max_docs_per_request": 100,
@@ -246,8 +244,8 @@ def test_chat_missing_required_field_rejected():
 
 
 def test_non_int_numeric_field_rejected():
-    llm = {"m": {**_LLM["gemini-3.5-flash"], "max_retries": "two"}}
-    _expect_value_error("expected ValueError for non-integer max_retries", "llm", llm)
+    llm = {"m": {**_LLM["gemini-3.5-flash"], "context_window": "many"}}
+    _expect_value_error("expected ValueError for non-integer context_window", "llm", llm)
 
 
 def test_pinecone_model_with_api_key_ref_rejected():
@@ -292,17 +290,9 @@ def test_missing_required_size_limit_rejected():
     )
 
 
-def test_zero_max_retries_accepted():
-    # 0 = no retries, a legitimate setting (must NOT raise).
-    _validate_surface_catalog(
-        "embedding", {"e": {**_VALID_EMBEDDING["my-embed"], "max_retries": 0}}
-    )
-    _validate_surface_catalog("rerank", {"r": {**_VALID_RERANK["my-rr"], "max_retries": 0}})
-
-
-def test_negative_max_retries_rejected():
-    rerank = {"my-rr": {**_VALID_RERANK["my-rr"], "max_retries": -1}}
-    _expect_value_error("expected ValueError for negative max_retries", "rerank", rerank)
+def test_negative_int_field_rejected():
+    rerank = {"my-rr": {**_VALID_RERANK["my-rr"], "max_doc_chars": -1}}
+    _expect_value_error("expected ValueError for negative max_doc_chars", "rerank", rerank)
 
 
 def test_llm_zero_token_budget_rejected():
