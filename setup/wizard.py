@@ -134,8 +134,6 @@ model          = "gemini/gemini-3.1-flash-lite"
 api_key_ref    = "gemini-api-key"
 label          = "Gemini 3.1 Flash Lite"
 provider       = "gemini"
-vision         = true
-max_retries    = 2
 context_window = 1_000_000
 
 [llm_models."gemini-3.5-flash"]
@@ -144,8 +142,6 @@ model          = "gemini/gemini-3.5-flash"
 api_key_ref    = "gemini-api-key"
 label          = "Gemini 3.5 Flash"
 provider       = "gemini"
-vision         = true
-max_retries    = 2
 context_window = 1_000_000
 
 [llm_models."gemini-3.1-pro-preview"]
@@ -154,8 +150,6 @@ model          = "gemini/gemini-3.1-pro-preview"
 api_key_ref    = "gemini-api-key"
 label          = "Gemini 3.1 Pro"
 provider       = "gemini"
-vision         = true
-max_retries    = 5
 context_window = 1_000_000
 
 # Default embedding model. You may change it or add more (pinecone- or
@@ -166,14 +160,12 @@ context_window = 1_000_000
 api_style       = "pinecone"
 model           = "multilingual-e5-large"
 dimension       = 1024
-max_retries     = 2
 max_input_chars = 1000
 max_batch_size  = 96
 
 [rerank_models.bge-reranker-v2-m3]
 api_style            = "pinecone"
 model                = "bge-reranker-v2-m3"
-max_retries          = 2
 max_query_chars      = 1000
 max_doc_chars        = 800
 max_docs_per_request = 100
@@ -247,8 +239,6 @@ _DEFAULT_LLM_MODELS = {
         "api_key_ref": "gemini-api-key",
         "label": "Gemini 3.1 Flash Lite",
         "provider": "gemini",
-        "vision": True,
-        "max_retries": 2,
         "context_window": 1_000_000,
     },
     "gemini-3.5-flash": {
@@ -257,8 +247,6 @@ _DEFAULT_LLM_MODELS = {
         "api_key_ref": "gemini-api-key",
         "label": "Gemini 3.5 Flash",
         "provider": "gemini",
-        "vision": True,
-        "max_retries": 2,
         "context_window": 1_000_000,
     },
     "gemini-3.1-pro-preview": {
@@ -267,8 +255,6 @@ _DEFAULT_LLM_MODELS = {
         "api_key_ref": "gemini-api-key",
         "label": "Gemini 3.1 Pro",
         "provider": "gemini",
-        "vision": True,
-        "max_retries": 5,
         "context_window": 1_000_000,
     },
 }
@@ -288,7 +274,6 @@ _DEFAULT_EMBEDDING_MODELS = {
         "api_style": "pinecone",
         "model": DEFAULT_EMBEDDING_MODEL_ID,
         "dimension": 1024,
-        "max_retries": 2,
         "max_input_chars": 1000,
         "max_batch_size": 96,
     }
@@ -300,7 +285,6 @@ _DEFAULT_RERANK_MODELS = {
     DEFAULT_RERANK_MODEL_ID: {
         "api_style": "pinecone",
         "model": DEFAULT_RERANK_MODEL_ID,
-        "max_retries": 2,
         "max_query_chars": 1000,
         "max_doc_chars": 800,
         "max_docs_per_request": 100,
@@ -346,9 +330,9 @@ _SURFACE_REQUIRED_STRS = {
 # Fields that must be whole numbers when present (interactive: _prompt_int).
 # ``dimension`` is validated separately (it is required, not merely int-typed).
 _SURFACE_INT_FIELDS = {
-    "llm": ("max_retries", "context_window", "max_output_tokens"),
-    "embedding": ("max_retries", "max_input_chars", "max_batch_size"),
-    "rerank": ("max_retries", "max_query_chars", "max_doc_chars", "max_docs_per_request"),
+    "llm": ("context_window", "max_output_tokens"),
+    "embedding": ("max_input_chars", "max_batch_size"),
+    "rerank": ("max_query_chars", "max_doc_chars", "max_docs_per_request"),
 }
 # Int fields the proxy requires PRESENT on every operator-supplied model of the
 # surface (the shipped defaults set them too). They must also be > 0 -- omitting
@@ -358,11 +342,66 @@ _SURFACE_REQUIRED_INT_FIELDS = {
     "embedding": ("max_input_chars", "max_batch_size"),
     "rerank": ("max_query_chars", "max_doc_chars", "max_docs_per_request"),
 }
-# Int fields where 0 is a valid setting (>= 0). Every other int field must be
-# strictly positive. ``max_retries`` = 0 means "no retries".
-_NONNEG_INT_FIELDS = frozenset({"max_retries"})
 # String fields that, when present, must be strings (loose type guard).
 _SURFACE_OPTIONAL_STRS = ("api_key_ref", "base_url", "api_version", "provider", "label")
+
+# Every field nexus-inference-proxy accepts on a model, per surface. The proxy
+# forbids extras, so anything outside these sets makes it reject its whole config
+# at startup -- a CrashLoopBackOff whose cause is one pydantic error in a pod log,
+# reached only after the cluster is built. Rejecting here turns that into a wizard
+# error. Mirrors `_SharedModelFields` plus the per-surface definition classes in
+# nexus `nexus-inference-proxy/nexus_inference_proxy/settings.py`; when that file
+# gains or loses a field, this is the one place to update.
+_SHARED_MODEL_FIELDS = frozenset(
+    {
+        "model",
+        "api_key_ref",
+        "api_key",
+        "credential_ref",
+        "credential",
+        "base_url",
+        "api_version",
+        "extra_headers",
+        "extra_header_refs",
+        "available",
+    }
+)
+_PROXY_MODEL_FIELDS = {
+    "llm": _SHARED_MODEL_FIELDS
+    | {
+        "api_style",
+        "label",
+        "provider",
+        "no_vision",
+        "model_family",
+        "context_window",
+        "max_output_tokens",
+        "input_price_per_mtok",
+        "output_price_per_mtok",
+        "cache_read_price_per_mtok",
+        "cache_write_price_per_mtok",
+    },
+    "embedding": _SHARED_MODEL_FIELDS
+    | {
+        "SDK",
+        "api_style",
+        "provider",
+        "dimension",
+        "max_input_chars",
+        "max_batch_size",
+        "request_dimensions",
+        "input_price_per_mtok",
+    },
+    "rerank": _SHARED_MODEL_FIELDS
+    | {
+        "api_style",
+        "provider",
+        "max_query_chars",
+        "max_doc_chars",
+        "max_docs_per_request",
+        "request_price_per_1k",
+    },
+}
 
 
 def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
@@ -372,7 +411,7 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
 
     Covers: ``api_style`` enumeration, required non-empty strings, integer-typed
     numeric fields (embedding/rerank size limits must be present and > 0; llm
-    token budgets are optional but > 0 when set; ``max_retries`` >= 0), and the
+    token budgets are optional but > 0 when set), and the
     two documented placement rules -- ``pinecone`` models take no ``api_key_ref``
     (the caller supplies it per request) and ``litellm`` rerank models take no
     ``api_version`` (litellm.arerank has no such param).
@@ -385,6 +424,14 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
     for model_id, fields in models.items():
         if not isinstance(fields, dict):
             raise ValueError(f"{surface} model {model_id!r} must be a table of fields")
+
+        unknown = sorted(set(fields) - _PROXY_MODEL_FIELDS[surface])
+        if unknown:
+            raise ValueError(
+                f"{surface} model {model_id!r} has field(s) nexus-inference-proxy does "
+                f"not accept: {unknown}. It forbids extras, so this would fail its "
+                f"startup validation rather than be ignored."
+            )
 
         api_style = fields.get("api_style")
         if api_style not in _SURFACE_API_STYLES[surface]:
@@ -417,18 +464,15 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
                 raise ValueError(
                     f"{surface} model {model_id!r} field {num!r} must be a whole number"
                 )
-            # max_retries may be 0 (no retries); every other limit must be > 0. A
-            # zero/negative limit is a valid int but makes the proxy reject its
-            # config at startup, so catch it here rather than at CrashLoop.
-            floor = 0 if num in _NONNEG_INT_FIELDS else 1
-            if val < floor:
-                unit = "non-negative" if floor == 0 else "positive"
+            # A zero or negative limit is a valid int but makes the proxy reject
+            # its config at startup, so catch it here rather than at CrashLoop.
+            if val < 1:
                 raise ValueError(
-                    f"{surface} model {model_id!r} field {num!r} must be a {unit} whole number"
+                    f"{surface} model {model_id!r} field {num!r} must be a positive whole number"
                 )
 
-        if surface == "llm" and "vision" in fields and not isinstance(fields["vision"], bool):
-            raise ValueError(f"llm model {model_id!r} field 'vision' must be true/false")
+        if surface == "llm" and "no_vision" in fields and not isinstance(fields["no_vision"], bool):
+            raise ValueError(f"llm model {model_id!r} field 'no_vision' must be true/false")
 
         # pinecone embed/rerank models carry no api_key_ref (key is per-request).
         if (
@@ -1236,12 +1280,10 @@ class BaseSetupWizard:
         ).strip()
         if api_key_ref:
             fields["api_key_ref"] = api_key_ref
-        # vision: operator-pinned capability flag (model accepts image blocks).
-        if self._prompt_bool("  vision (model accepts image inputs)?", default=False):
-            fields["vision"] = True
-        fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2, min_value=0
-        )
+        # Inverted upstream: a model is vision-capable unless it opts out, so the
+        # flag is only written when the operator says the model is text-only.
+        if self._prompt_bool("  no_vision (model does NOT accept image inputs)?", default=False):
+            fields["no_vision"] = True
         # base_url: needed to reach a non-OpenAI endpoint; optional otherwise
         # (openai without it hits OpenAI's default host, litellm uses its registry).
         base_url_hint = (
@@ -1310,9 +1352,6 @@ class BaseSetupWizard:
             ).strip()
             if base_url:
                 fields["base_url"] = base_url
-        fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2, min_value=0
-        )
         fields["max_input_chars"] = self._prompt_int(
             "  max_input_chars (max characters per input item)", 1000, min_value=1
         )
@@ -1357,9 +1396,6 @@ class BaseSetupWizard:
             ).strip()
             if base_url:
                 fields["base_url"] = base_url
-        fields["max_retries"] = self._prompt_int(
-            "  max_retries (retries on a failed upstream call)", 2, min_value=0
-        )
         fields["max_query_chars"] = self._prompt_int(
             "  max_query_chars (max characters in the query)", 1000, min_value=1
         )
