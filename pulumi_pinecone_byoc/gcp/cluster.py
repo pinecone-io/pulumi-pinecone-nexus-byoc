@@ -354,10 +354,10 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             "sli_checkers_project_id": self._api_key.project_id,
             "customer_tags": args.labels or {},
             "public_access_enabled": args.public_access_enabled,
-            # Enable the netstack *.wksp route only when Nexus is wired -- the same
-            # condition that turns on gateway.workspaceAuth (common/nexus.py), so
-            # routing and its auth edge go live in lockstep and never on a
-            # non-Nexus BYOC cell (which has no nexus-gateway to route to).
+            # Enable the netstack *.wksp route only when Nexus is wired. A
+            # workspaces-off cell still serves the API on nexus.wksp.*, so this
+            # tracks Nexus presence, not workspaces_enabled. Gateway auth_request
+            # is the chart default (workspaceAuth is not a toggle post-2032).
             "workspace_routing_enabled": args.nexus is not None,
             "pulumi_backend_url": self._pulumi_operator.backend_url,
             "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,
@@ -486,6 +486,11 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
                 fdb_mode=nx.fdb_mode,
+                rbac_mode=nx.rbac_mode,
+                bootstrap_admins=nx.bootstrap_admins,
+                oidc_issuer=nx.oidc_issuer,
+                oidc_audience=nx.oidc_audience,
+                workspaces_enabled=nx.workspaces_enabled,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
@@ -518,16 +523,21 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             # promotes the workspace to Ready — creating before it exists would
             # wait on nothing. First-run-only (no-op diff/delete): destroy
             # leaves the workspace; delete it via gCPS before teardown.
-            self._default_workspace = DefaultWorkspace(
-                f"{config.resource_prefix}-default-workspace",
-                DefaultWorkspaceArgs(
-                    name=self._default_workspace_name,
-                    environment=nx.byoc_env or self._environment.env_name,
-                    api_url=args.api_url,
-                    pinecone_api_key=args.pinecone_api_key,
-                ),
-                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
-            )
+            # Gated on workspaces: the poller that promotes a workspace to Ready
+            # only runs when the cell has them enabled, so creating one here
+            # otherwise burns the full Ready timeout and then strands a gCPS
+            # record that delete() cannot remove.
+            if nx.workspaces_enabled:
+                self._default_workspace = DefaultWorkspace(
+                    f"{config.resource_prefix}-default-workspace",
+                    DefaultWorkspaceArgs(
+                        name=self._default_workspace_name,
+                        environment=nx.byoc_env or self._environment.env_name,
+                        api_url=args.api_url,
+                        pinecone_api_key=args.pinecone_api_key,
+                    ),
+                    opts=pulumi.ResourceOptions(parent=self, depends_on=[self._nexus]),
+                )
 
         self._uninstaller = ClusterUninstaller(
             f"{config.resource_prefix}-uninstaller",
