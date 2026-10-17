@@ -291,12 +291,12 @@ class Nexus(pulumi.ComponentResource):
                 webhook injects IRSA web-identity credentials.
             cpgw_api_url: CPGW control-plane gateway base URL (``…/internal/cpgw``).
                 When set, Nexus uses the CPGW index client (synchronous CPS
-                ``db_index_id`` on create) instead of the managed public path, and
-                the workspace lifecycle is enabled (``config.workspacesEnabled`` +
-                ``gateway.workspaceAuth``) so wksp.* hosts authenticate customer
-                project keys. Must be paired with the ``cpgw-api-key`` entry in the
-                ``nexus-config`` secret — setting one without the other makes
-                Nexus panic at startup (partial CPGW config).
+                ``db_index_id`` on create) instead of the managed public path.
+                The workspace lifecycle (``config.workspacesEnabled`` + Auth0) is a
+                separate opt-out; CPGW stays wired either way. Must be paired with
+                the ``cpgw-api-key`` entry in the ``nexus-config`` secret — setting
+                one without the other makes Nexus panic at startup (partial CPGW
+                config).
             byoc_docs_api_url: In-cluster svc-docs-api base URL for the keyless BYOC
                 data path. Defaults to the co-located DB's docs-api. Only
                 applied when ``cpgw_api_url`` is set.
@@ -312,9 +312,12 @@ class Nexus(pulumi.ComponentResource):
             bootstrap_admins: ``config.access.bootstrapAdmins``.
             oidc_issuer: ``config.oidc.issuer`` -- an external identity provider.
             oidc_audience: ``config.oidc.audience``.
-            workspaces_enabled: ``False`` deploys a cell with no workspace lifecycle
-                and no ``wksp.*`` gateway edge. Required by ``oidc_issuer`` and
-                ``bootstrap_admins``; validated in ``NexusConfig.__post_init__``.
+            workspaces_enabled: ``False`` deploys a cell with no workspace
+                lifecycle and no Auth0 workspace-console login. The API still
+                lives on ``nexus.wksp.*``; netstack ``*.wksp`` routing is keyed
+                on Nexus presence, not this flag. Required by ``oidc_issuer``
+                and ``bootstrap_admins``; validated in
+                ``NexusConfig.__post_init__``.
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
 
@@ -416,20 +419,19 @@ class Nexus(pulumi.ComponentResource):
             app_values["config"]["cpgwApiUrl"] = cpgw_api_url
             app_values["config"]["byocDocsApiUrl"] = byoc_docs_api_url or _DEFAULT_DOCS_API_URL
             # workspacesEnabled binds contexts to a workspace and runs the
-            # workspace-operation poller; workspaceAuth runs the nexus-gateway
-            # auth_request -> nexus-auth edge guarding wksp.* hosts. Both are
-            # coupled to real CPGW, so they track cpgwApiUrl.
+            # workspace-operation poller. Opt-out for OIDC/access: Nexus refuses
+            # those alongside workspaces. CPGW itself stays wired — it accepts
+            # the full CPGW triple with workspaces off, so dropping it here
+            # would move index create back to the managed public API.
             #
-            # Ordering is security-critical: the netstack *.wksp route (pinecone-db
-            # workspace_routing_enabled) must go live in lockstep and never before
-            # workspaceAuth — routing to nexus-api before the gateway edge exists
-            # would expose it unauthenticated.
-            # Opt-out for the deployments that need it. CPGW itself stays wired:
-            # Nexus accepts the full CPGW triple with workspaces off, so dropping it
-            # here would move index create back to the managed public API.
+            # Do not write gateway.workspaceAuth. Post-2032 it is not a toggle:
+            # auth_request is unconditional, `false` fails helm render, and
+            # omitting the key keeps the chart default (`true`). Netstack
+            # `*.wksp` routing is a cluster-level flag keyed on Nexus
+            # presence (the API is still served on nexus.wksp.*), not on this
+            # workspaces opt-out.
             if workspaces_enabled:
                 app_values["config"]["workspacesEnabled"] = True
-                app_values["gateway"]["workspaceAuth"] = True
                 # Workspace consoles finish their server-side Authorization Code + PKCE
                 # login against the prod tenant; empty domain/audience would leave the
                 # nexus-api validator off and `/auth/login/start` 400ing. Coupled to the

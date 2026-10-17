@@ -354,10 +354,10 @@ class PineconeGCPCluster(pulumi.ComponentResource):
             "sli_checkers_project_id": self._api_key.project_id,
             "customer_tags": args.labels or {},
             "public_access_enabled": args.public_access_enabled,
-            # Enable the netstack *.wksp route only when Nexus is wired -- the same
-            # condition that turns on gateway.workspaceAuth (common/nexus.py), so
-            # routing and its auth edge go live in lockstep and never on a
-            # non-Nexus BYOC cell (which has no nexus-gateway to route to).
+            # Enable the netstack *.wksp route only when Nexus is wired. A
+            # workspaces-off cell still serves the API on nexus.wksp.*, so this
+            # tracks Nexus presence, not workspaces_enabled. Gateway auth_request
+            # is the chart default (workspaceAuth is not a toggle post-2032).
             "workspace_routing_enabled": args.nexus is not None,
             "pulumi_backend_url": self._pulumi_operator.backend_url,
             "pulumi_secrets_provider": self._pulumi_operator.secrets_provider,
