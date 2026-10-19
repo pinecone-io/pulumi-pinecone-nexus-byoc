@@ -487,7 +487,8 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             # Enable the netstack *.wksp route only when Nexus is wired. A
             # workspaces-off cell still serves the API on nexus.wksp.*, so this
             # tracks Nexus presence, not workspaces_enabled. Gateway auth_request
-            # is the chart default (workspaceAuth is not a toggle post-2032).
+            # relies on common/nexus.py writing gateway.workspaceAuth=true, which
+            # cells pinned to older charts still need.
             "workspace_routing_enabled": args.nexus is not None,
             "external_dns_role_arn": self._k8s_addons.external_dns_role.arn,
             "pulumi_backend_url": self._pulumi_operator.backend_url,
