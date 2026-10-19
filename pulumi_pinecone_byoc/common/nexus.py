@@ -424,12 +424,14 @@ class Nexus(pulumi.ComponentResource):
             # the full CPGW triple with workspaces off, so dropping it here
             # would move index create back to the managed public API.
             #
-            # Do not write gateway.workspaceAuth. Post-2032 it is not a toggle:
-            # auth_request is unconditional, `false` fails helm render, and
-            # omitting the key keeps the chart default (`true`). Netstack
-            # `*.wksp` routing is a cluster-level flag keyed on Nexus
-            # presence (the API is still served on nexus.wksp.*), not on this
-            # workspaces opt-out.
+            # Always write workspaceAuth true when the gateway is up. Older
+            # charts treated the key as a toggle whose default was off, so
+            # omitting it on a cell that keeps its pinned nexus-version would
+            # drop auth_request on the next up. Current charts accept true as
+            # a no-op (`false` fails render). Netstack `*.wksp` routing is
+            # keyed on Nexus presence (the API is still served on
+            # nexus.wksp.*), not on the workspaces opt-out.
+            app_values["gateway"]["workspaceAuth"] = True
             if workspaces_enabled:
                 app_values["config"]["workspacesEnabled"] = True
                 # Workspace consoles finish their server-side Authorization Code + PKCE

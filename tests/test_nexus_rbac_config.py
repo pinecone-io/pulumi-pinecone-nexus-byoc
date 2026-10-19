@@ -5,11 +5,11 @@ Covers:
   names none of them is byte-identical to one deployed before these fields
   existed;
 - `workspaces_enabled=False` drops `workspacesEnabled` and the Auth0 block
-  while leaving the CPGW index client wired. It never writes
-  `gateway.workspaceAuth`: post-2032 that key is not a toggle (`false` fails
-  helm render; omit keeps the chart default, so `*.wksp` still has
-  `auth_request`). Netstack `*.wksp` routing stays keyed on Nexus presence
-  because the API is still served on `nexus.wksp.*`;
+  while leaving the CPGW index client wired. `gateway.workspaceAuth` stays
+  `true` either way: older charts treated omit as off, and current charts
+  accept `true` as a no-op (`false` fails helm render). Netstack `*.wksp`
+  routing stays keyed on Nexus presence because the API is still served on
+  `nexus.wksp.*`;
 - `NexusConfig` refuses, at preview time, the combinations Nexus does not
   support, plus a partial `[oidc]` and an unknown mode.
 
@@ -96,9 +96,9 @@ def test_workspaces_on_keeps_workspace_wiring_and_auth0():
         values = json.loads(data["app-values.yaml"])
         assert values["config"]["workspacesEnabled"] is True
         assert values["config"]["auth0"]["domain"]
-        # Chart default, not an overlay toggle. Emitting false would fail helm
-        # render; emitting true is a no-op. We write neither.
-        assert "workspaceAuth" not in values["gateway"]
+        # Written true so a cell pinned to an older chart does not lose
+        # auth_request. Current charts treat true as a no-op.
+        assert values["gateway"]["workspaceAuth"] is True
 
     return _app_values().apply(check)
 
@@ -109,8 +109,7 @@ def test_workspaces_off_drops_workspace_wiring_but_keeps_cpgw():
         values = json.loads(data["app-values.yaml"])
         assert "workspacesEnabled" not in values["config"]
         assert "auth0" not in values["config"]
-        # Omit, never false: helm merge keeps chart default `workspaceAuth: true`.
-        assert "workspaceAuth" not in values["gateway"]
+        assert values["gateway"]["workspaceAuth"] is True
         # CPGW is the index client, not part of the workspace lifecycle: Nexus
         # accepts a fully-set CPGW triple with workspaces off, and dropping it
         # here would move index create back to the managed public API.
