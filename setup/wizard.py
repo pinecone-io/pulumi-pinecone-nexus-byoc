@@ -359,6 +359,7 @@ _SHARED_MODEL_FIELDS = frozenset(
         "api_key",
         "credential_ref",
         "credential",
+        "aws_region_name",
         "base_url",
         "api_version",
         "extra_headers",

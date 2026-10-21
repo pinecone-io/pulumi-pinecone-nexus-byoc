@@ -18,6 +18,7 @@ from ..common.nexus import (
     NexusConfig,
     derive_api_key_refs,
     require_external_fdb_for_nexus,
+    uses_aws_identity,
 )
 from ..common.nexus_uninstaller import NexusUninstaller
 from ..common.pinetools import Pinetools
@@ -44,7 +45,7 @@ from ..common.uninstaller import ClusterUninstaller
 from .dns import DNS
 from .eks import EKS
 from .k8s_addons import K8sAddons
-from .nexus_s3 import NexusS3Buckets
+from .nexus_s3 import NexusS3Buckets, nexus_bedrock_role
 from .nlb import NLB
 from .pulumi_operator import PulumiOperator
 from .rds import RDS, RDSInstance
@@ -589,6 +590,19 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             nexus_sa_annotations = self._nexus_s3.role_arn.apply(
                 lambda arn: {"eks.amazonaws.com/role-arn": arn}
             )
+            proxy_sa_annotations = None
+            if nx.inference_models_toml and uses_aws_identity(nx.inference_models_toml):
+                bedrock_role = nexus_bedrock_role(
+                    f"{config.resource_prefix}-nexus-bedrock",
+                    config,
+                    cell_name=self._cell_name,
+                    oidc_provider_arn=self._eks.oidc_provider_arn,
+                    oidc_provider_url=self._eks.oidc_provider_url,
+                    opts=pulumi.ResourceOptions(parent=self, depends_on=[self._eks]),
+                )
+                proxy_sa_annotations = bedrock_role.arn.apply(
+                    lambda arn: {"eks.amazonaws.com/role-arn": arn}
+                )
             self._nexus_project_id = nx.byoc_project_id or self._api_key.project_id
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
@@ -619,6 +633,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
                 fdb_mode=nx.fdb_mode,
+                inference_proxy_service_account_annotations=proxy_sa_annotations,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
