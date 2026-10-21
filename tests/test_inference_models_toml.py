@@ -385,6 +385,36 @@ def test_customized_chat_without_tiers_raises():
     raise AssertionError("expected ValueError when a customized chat surface has no tiers")
 
 
+def _bedrock_llm(**extra):
+    base = {k: v for k, v in _LLM["gemini-3.5-flash"].items() if k != "api_key_ref"}
+    return {"m": {**base, "model": "bedrock/x", "aws_region_name": "us-west-2", **extra}}
+
+
+def test_keyless_bedrock_model_accepted():
+    _validate_surface_catalog("llm", _bedrock_llm())
+
+
+def test_aws_region_name_beside_a_key_rejected():
+    _expect_value_error(
+        "expected ValueError for region + key", "llm", _bedrock_llm(api_key_ref="k")
+    )
+    _expect_value_error(
+        "expected ValueError for region + credential", "llm", _bedrock_llm(credential_ref="c")
+    )
+
+
+def test_aws_region_name_off_litellm_rejected():
+    _expect_value_error(
+        "expected ValueError for region on openai", "llm", _bedrock_llm(api_style="openai")
+    )
+
+
+def test_aws_region_name_must_be_a_string():
+    _expect_value_error(
+        "expected ValueError for numeric region", "llm", _bedrock_llm(aws_region_name=1)
+    )
+
+
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):
         if name.startswith("test_") and callable(fn):

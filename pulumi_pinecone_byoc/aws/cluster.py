@@ -44,7 +44,7 @@ from ..common.uninstaller import ClusterUninstaller
 from .dns import DNS
 from .eks import EKS
 from .k8s_addons import K8sAddons
-from .nexus_s3 import NexusS3Buckets
+from .nexus_s3 import NexusS3Buckets, nexus_bedrock_annotations
 from .nlb import NLB
 from .pulumi_operator import PulumiOperator
 from .rds import RDS, RDSInstance
@@ -589,6 +589,15 @@ class PineconeAWSCluster(pulumi.ComponentResource):
             nexus_sa_annotations = self._nexus_s3.role_arn.apply(
                 lambda arn: {"eks.amazonaws.com/role-arn": arn}
             )
+            proxy_sa_annotations = nexus_bedrock_annotations(
+                f"{config.resource_prefix}-nexus-bedrock",
+                config,
+                nx.inference_models_toml,
+                cell_name=self._cell_name,
+                oidc_provider_arn=self._eks.oidc_provider_arn,
+                oidc_provider_url=self._eks.oidc_provider_url,
+                opts=pulumi.ResourceOptions(parent=self, depends_on=[self._eks]),
+            )
             self._nexus_project_id = nx.byoc_project_id or self._api_key.project_id
             self._nexus = Nexus(
                 f"{config.resource_prefix}-nexus",
@@ -619,6 +628,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
                 fdb_mode=nx.fdb_mode,
+                inference_proxy_service_account_annotations=proxy_sa_annotations,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[

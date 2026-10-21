@@ -66,6 +66,7 @@ NEXUS_KSA_MEMBERS: tuple[tuple[str, str], ...] = (
     (_NEXUS_NAMESPACE, "nexus-orchestrator"),
     (_NEXUS_TASKS_NAMESPACE, "nexus-task"),
 )
+NEXUS_INFERENCE_PROXY_KSA = (_NEXUS_NAMESPACE, "nexus-inference-proxy")
 
 _DEFAULT_STORAGE_CLASS = "premium-rwo"
 # GKE uses gce-internal (an in-VPC ops door onto the gateway); EKS/AKS pass
@@ -124,6 +125,20 @@ def derive_api_key_refs(inference_models_toml: str) -> list[str]:
             if isinstance(ref, str) and ref:
                 refs.add(ref)
     return sorted(refs)
+
+
+def uses_aws_identity(inference_models_toml: str) -> bool:
+    """Whether any model in the overlay signs with the proxy pod's AWS identity.
+
+    A model sets ``aws_region_name`` instead of a key to call Bedrock via IRSA,
+    so its presence is what asks for the proxy's Bedrock role.
+    """
+    parsed = tomllib.loads(inference_models_toml)
+    return any(
+        isinstance(model, dict) and model.get("aws_region_name")
+        for surface in _PROVIDER_KEY_SURFACES
+        for model in parsed.get(surface, {}).values()
+    )
 
 
 @dataclass
@@ -216,6 +231,7 @@ class Nexus(pulumi.ComponentResource):
         byoc_docs_api_url: pulumi.Input[str] | None = None,
         inference_models_toml: str | None = None,
         fdb_mode: Literal["single", "external"] = "single",
+        inference_proxy_service_account_annotations: pulumi.Input[dict] | None = None,
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
@@ -399,6 +415,11 @@ class Nexus(pulumi.ComponentResource):
         # catalog's api_key_refs.
         install_job_depends_on: list[pulumi.Resource] = []
         if inference_models_toml is not None:
+            if cloud != "aws" and uses_aws_identity(inference_models_toml):
+                raise ValueError(
+                    "aws_region_name is only supported on AWS; on "
+                    f"{cloud} give these models an api_key_ref instead"
+                )
             byoc_toml = inference_models_toml
             self.inference_config = k8s.core.v1.ConfigMap(
                 f"{name}-inference-proxy-byoc-config",
@@ -426,6 +447,11 @@ class Nexus(pulumi.ComponentResource):
                 "configChecksum": f"sha256-{checksum[:16]}",
                 "providerKeyRefs": derive_api_key_refs(inference_models_toml),
             }
+
+        if inference_proxy_service_account_annotations is not None:
+            app_values.setdefault("inference-proxy", {})["serviceAccountAnnotations"] = (
+                inference_proxy_service_account_annotations
+            )
 
         # Materialize the computed values for the in-cluster installer. json_dumps
         # awaits the nested Outputs and emits JSON, which helm reads as a values
