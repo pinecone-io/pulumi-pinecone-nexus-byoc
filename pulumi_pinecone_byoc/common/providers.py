@@ -1016,8 +1016,8 @@ class DefaultWorkspaceProvider(ResourceProvider):
         host = _props.get("host")
         host_note = f" (host {host})" if host else ""
         pulumi.log.warn(
-            f"default workspace '{name}'{host_note} is NOT deleted by destroy — "
-            f"it remains registered in gCPS and will wedge a later re-deploy into "
+            f"default workspace '{name}'{host_note} is NOT deleted when removed from "
+            f"the stack (destroy, or workspaces turned off) — it remains registered in gCPS and will wedge a later re-deploy into "
             f"this environment. Delete it manually in gCPS, filtered by environment "
             f"'{environment}', or it strands."
         )
