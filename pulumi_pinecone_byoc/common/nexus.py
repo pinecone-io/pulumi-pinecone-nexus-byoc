@@ -173,6 +173,16 @@ class NexusConfig:
     inference_models_toml: str | None = None
     provider_keys: pulumi.Input[dict] | None = None
     fdb_mode: Literal["single", "external"] = "single"
+    # "" leaves the chart default. Edited more than once on a live cell, so it is
+    # a pin an operator moves rather than a deploy-time constant.
+    rbac_mode: Literal["", "off", "shadow", "enforce"] = ""
+    # Comma-separated or a list; the chart accepts either form.
+    bootstrap_admins: str | list[str] | None = None
+    oidc_issuer: str | None = None
+    oidc_audience: str | None = None
+    # Tracks CPGW when left True. Nexus does not support oidc_issuer or
+    # bootstrap_admins alongside workspaces, so those require False.
+    workspaces_enabled: bool = True
 
     def __post_init__(self):
         # Literal isn't runtime-enforced; a bad value would silently deploy single-node FDB.
@@ -180,6 +190,31 @@ class NexusConfig:
             raise ValueError(
                 f"NexusConfig.fdb_mode must be 'single' or 'external', got {self.fdb_mode!r}."
             )
+        # Mirrors Nexus's own startup validation. It refuses each of these at boot,
+        # which on a cluster surfaces as a restart loop; raising here fails the
+        # preview instead.
+        if self.rbac_mode not in ("", "off", "shadow", "enforce"):
+            raise ValueError(
+                "NexusConfig.rbac_mode must be '', 'off', 'shadow' or 'enforce', "
+                f"got {self.rbac_mode!r}."
+            )
+        if bool(self.oidc_issuer) != bool(self.oidc_audience):
+            raise ValueError(
+                "NexusConfig.oidc_issuer and oidc_audience must be set together or both left unset."
+            )
+        if self.oidc_issuer and self.workspaces_enabled:
+            raise ValueError(
+                "NexusConfig.oidc_issuer is not supported alongside workspaces. Set "
+                "workspaces_enabled=False, or clear oidc_issuer/oidc_audience."
+            )
+        if self.bootstrap_admins:
+            if self.workspaces_enabled:
+                raise ValueError(
+                    "NexusConfig.bootstrap_admins is not supported alongside workspaces. "
+                    "Set workspaces_enabled=False, or clear bootstrap_admins."
+                )
+            if not self.oidc_issuer:
+                raise ValueError("NexusConfig.bootstrap_admins requires oidc_issuer to be set.")
 
 
 def require_external_fdb_for_nexus(nexus: "NexusConfig | None", data_plane_backend: str) -> None:
@@ -216,6 +251,11 @@ class Nexus(pulumi.ComponentResource):
         byoc_docs_api_url: pulumi.Input[str] | None = None,
         inference_models_toml: str | None = None,
         fdb_mode: Literal["single", "external"] = "single",
+        rbac_mode: str = "",
+        bootstrap_admins: str | list[str] | None = None,
+        oidc_issuer: str | None = None,
+        oidc_audience: str | None = None,
+        workspaces_enabled: bool = True,
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
@@ -251,12 +291,12 @@ class Nexus(pulumi.ComponentResource):
                 webhook injects IRSA web-identity credentials.
             cpgw_api_url: CPGW control-plane gateway base URL (``…/internal/cpgw``).
                 When set, Nexus uses the CPGW index client (synchronous CPS
-                ``db_index_id`` on create) instead of the managed public path, and
-                the workspace lifecycle is enabled (``config.workspacesEnabled`` +
-                ``gateway.workspaceAuth``) so wksp.* hosts authenticate customer
-                project keys. Must be paired with the ``cpgw-api-key`` entry in the
-                ``nexus-config`` secret — setting one without the other makes
-                Nexus panic at startup (partial CPGW config).
+                ``db_index_id`` on create) instead of the managed public path.
+                The workspace lifecycle (``config.workspacesEnabled`` + Auth0) is a
+                separate opt-out; CPGW stays wired either way. Must be paired with
+                the ``cpgw-api-key`` entry in the ``nexus-config`` secret — setting
+                one without the other makes Nexus panic at startup (partial CPGW
+                config).
             byoc_docs_api_url: In-cluster svc-docs-api base URL for the keyless BYOC
                 data path. Defaults to the co-located DB's docs-api. Only
                 applied when ``cpgw_api_url`` is set.
@@ -268,6 +308,16 @@ class Nexus(pulumi.ComponentResource):
             fdb_mode: ``"single"`` (default) runs the baseline one-pod FDB;
                 ``"external"`` consumes the shared FDB data-plane cluster and runs no
                 FDB of its own (BYOC-FDB backend). See ``NexusConfig.fdb_mode``.
+            rbac_mode: ``config.rbac.mode`` (``""`` keeps the chart default).
+            bootstrap_admins: ``config.access.bootstrapAdmins``.
+            oidc_issuer: ``config.oidc.issuer`` -- an external identity provider.
+            oidc_audience: ``config.oidc.audience``.
+            workspaces_enabled: ``False`` deploys a cell with no workspace
+                lifecycle and no Auth0 workspace-console login. The API still
+                lives on ``nexus.wksp.*``; netstack ``*.wksp`` routing is keyed
+                on Nexus presence, not this flag. Required by ``oidc_issuer``
+                and ``bootstrap_admins``; validated in
+                ``NexusConfig.__post_init__``.
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
 
@@ -369,24 +419,39 @@ class Nexus(pulumi.ComponentResource):
             app_values["config"]["cpgwApiUrl"] = cpgw_api_url
             app_values["config"]["byocDocsApiUrl"] = byoc_docs_api_url or _DEFAULT_DOCS_API_URL
             # workspacesEnabled binds contexts to a workspace and runs the
-            # workspace-operation poller; workspaceAuth runs the nexus-gateway
-            # auth_request -> nexus-auth edge guarding wksp.* hosts. Both are
-            # coupled to real CPGW, so they track cpgwApiUrl.
+            # workspace-operation poller. Opt-out for OIDC/access: Nexus refuses
+            # those alongside workspaces. CPGW itself stays wired — it accepts
+            # the full CPGW triple with workspaces off, so dropping it here
+            # would move index create back to the managed public API.
             #
-            # Ordering is security-critical: the netstack *.wksp route (pinecone-db
-            # workspace_routing_enabled) must go live in lockstep and never before
-            # workspaceAuth — routing to nexus-api before the gateway edge exists
-            # would expose it unauthenticated.
-            app_values["config"]["workspacesEnabled"] = True
+            # Always write workspaceAuth true when the gateway is up. Older
+            # charts treated the key as a toggle whose default was off, so
+            # omitting it on a cell that keeps its pinned nexus-version would
+            # drop auth_request on the next up. Current charts accept true as
+            # a no-op (`false` fails render). Netstack `*.wksp` routing is
+            # keyed on Nexus presence (the API is still served on
+            # nexus.wksp.*), not on the workspaces opt-out.
             app_values["gateway"]["workspaceAuth"] = True
-            # Workspace consoles finish their server-side Authorization Code + PKCE
-            # login against the prod tenant; empty domain/audience would leave the
-            # nexus-api validator off and `/auth/login/start` 400ing. Coupled to the
-            # workspace flow above (login is meaningless without it).
-            app_values["config"]["auth0"] = {
-                "domain": _NEXUS_AUTH0_DOMAIN,
-                "audience": _NEXUS_AUTH0_AUDIENCE,
-                "clientId": _NEXUS_AUTH0_CLIENT_ID,
+            if workspaces_enabled:
+                app_values["config"]["workspacesEnabled"] = True
+                # Workspace consoles finish their server-side Authorization Code + PKCE
+                # login against the prod tenant; empty domain/audience would leave the
+                # nexus-api validator off and `/auth/login/start` 400ing. Coupled to the
+                # workspace flow above (login is meaningless without it).
+                app_values["config"]["auth0"] = {
+                    "domain": _NEXUS_AUTH0_DOMAIN,
+                    "audience": _NEXUS_AUTH0_AUDIENCE,
+                    "clientId": _NEXUS_AUTH0_CLIENT_ID,
+                }
+
+        if rbac_mode:
+            app_values["config"]["rbac"] = {"mode": rbac_mode}
+        if bootstrap_admins:
+            app_values["config"]["access"] = {"bootstrapAdmins": bootstrap_admins}
+        if oidc_issuer and oidc_audience:
+            app_values["config"]["oidc"] = {
+                "issuer": oidc_issuer,
+                "audience": oidc_audience,
             }
 
         # BYOC inference-proxy routing table. Ship the customer's model config as
