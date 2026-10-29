@@ -118,6 +118,7 @@ def test_bedrock_role_arn_lands_on_the_proxy_and_policy_is_scoped():
         assert invoke["Resource"] == [
             "arn:aws:bedrock:*::foundation-model/*",
             "arn:aws:bedrock:*:123:inference-profile/*",
+            "arn:aws:bedrock:*:123:application-inference-profile/*",
         ]
         assert rerank == {"Effect": "Allow", "Action": "bedrock:Rerank", "Resource": "*"}
 

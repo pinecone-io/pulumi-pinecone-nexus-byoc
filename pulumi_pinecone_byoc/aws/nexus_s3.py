@@ -86,6 +86,7 @@ def nexus_bedrock_annotations(
                             "Resource": [
                                 "arn:aws:bedrock:*::foundation-model/*",
                                 f"arn:aws:bedrock:*:{account}:inference-profile/*",
+                                f"arn:aws:bedrock:*:{account}:application-inference-profile/*",
                             ],
                         },
                         {"Effect": "Allow", "Action": "bedrock:Rerank", "Resource": "*"},
