@@ -9,9 +9,97 @@ import pulumi_aws as aws
 
 from config.aws import AWSConfig
 
-from ..common.nexus import NEXUS_KSA_MEMBERS
+from ..common.nexus import NEXUS_INFERENCE_PROXY_KSA, NEXUS_KSA_MEMBERS, uses_aws_identity
 
 _NEXUS_BUCKETS = ("source", "knowledge", "archive")
+
+
+def irsa_trust_policy(
+    oidc_provider_arn: pulumi.Input[str],
+    oidc_provider_url: pulumi.Input[str],
+    members: tuple[tuple[str, str], ...],
+) -> pulumi.Output[str]:
+    return pulumi.Output.all(oidc_provider_arn, oidc_provider_url).apply(
+        lambda args: json.dumps(
+            {
+                "Version": "2012-10-17",
+                "Statement": [
+                    {
+                        "Effect": "Allow",
+                        "Principal": {"Federated": args[0]},
+                        "Action": "sts:AssumeRoleWithWebIdentity",
+                        "Condition": {
+                            "StringEquals": {
+                                f"{args[1].replace('https://', '')}:aud": "sts.amazonaws.com",
+                                f"{args[1].replace('https://', '')}:sub": [
+                                    f"system:serviceaccount:{ns}:{ksa}" for ns, ksa in members
+                                ],
+                            }
+                        },
+                    }
+                ],
+            }
+        )
+    )
+
+
+def nexus_bedrock_annotations(
+    name: str,
+    config: AWSConfig,
+    inference_models_toml: str | None,
+    cell_name: pulumi.Input[str],
+    oidc_provider_arn: pulumi.Input[str],
+    oidc_provider_url: pulumi.Input[str],
+    opts: pulumi.ResourceOptions,
+) -> pulumi.Output[dict] | None:
+    """The proxy KSA's Bedrock role annotation, or None when no model in the
+    catalog signs with the pod's AWS identity. The role is trusted by the proxy's
+    KSA alone, so task pods never hold it."""
+    if not inference_models_toml or not uses_aws_identity(inference_models_toml):
+        return None
+    suffix = pulumi.Output.from_input(cell_name).apply(lambda cn: cn[-4:])
+    role = aws.iam.Role(
+        f"{name}-role",
+        name=suffix.apply(lambda s: f"{config.resource_prefix}-nexus-bedrock-{s}"),
+        assume_role_policy=irsa_trust_policy(
+            oidc_provider_arn, oidc_provider_url, (NEXUS_INFERENCE_PROXY_KSA,)
+        ),
+        tags=config.tags(),
+        opts=opts,
+    )
+    policy = aws.iam.RolePolicy(
+        f"{name}-policy",
+        role=role.id,
+        policy=aws.get_caller_identity_output().account_id.apply(
+            lambda account: json.dumps(
+                {
+                    "Version": "2012-10-17",
+                    "Statement": [
+                        {
+                            "Effect": "Allow",
+                            "Action": [
+                                "bedrock:InvokeModel",
+                                "bedrock:InvokeModelWithResponseStream",
+                            ],
+                            # Any region: a cross-region inference profile routes to
+                            # foundation models outside the cluster's region.
+                            "Resource": [
+                                "arn:aws:bedrock:*::foundation-model/*",
+                                f"arn:aws:bedrock:*:{account}:inference-profile/*",
+                                f"arn:aws:bedrock:*:{account}:application-inference-profile/*",
+                            ],
+                        },
+                        {"Effect": "Allow", "Action": "bedrock:Rerank", "Resource": "*"},
+                    ],
+                }
+            )
+        ),
+        opts=opts,
+    )
+    # Waits on the policy too, so the proxy never starts on a role that can't call Bedrock yet.
+    return pulumi.Output.all(role.arn, policy.id).apply(
+        lambda a: {"eks.amazonaws.com/role-arn": a[0]}
+    )
 
 
 class NexusS3Buckets(pulumi.ComponentResource):
@@ -132,30 +220,7 @@ class NexusS3Buckets(pulumi.ComponentResource):
         # rather than the node role's account-wide S3 access. Trusts exactly the
         # chart's KSAs (NEXUS_KSA_MEMBERS); the chart annotates those same KSAs
         # with eks.amazonaws.com/role-arn=<this role>.
-        trust_policy = pulumi.Output.all(oidc_provider_arn, oidc_provider_url).apply(
-            lambda args: json.dumps(
-                {
-                    "Version": "2012-10-17",
-                    "Statement": [
-                        {
-                            "Effect": "Allow",
-                            "Principal": {"Federated": args[0]},
-                            "Action": "sts:AssumeRoleWithWebIdentity",
-                            "Condition": {
-                                "StringEquals": {
-                                    f"{args[1].replace('https://', '')}:aud": "sts.amazonaws.com",
-                                    f"{args[1].replace('https://', '')}:sub": [
-                                        f"system:serviceaccount:{ns}:{ksa}"
-                                        for ns, ksa in NEXUS_KSA_MEMBERS
-                                    ],
-                                }
-                            },
-                        }
-                    ],
-                }
-            )
-        )
-
+        trust_policy = irsa_trust_policy(oidc_provider_arn, oidc_provider_url, NEXUS_KSA_MEMBERS)
         self._role = aws.iam.Role(
             f"{name}-role",
             name=resource_suffix.apply(lambda s: f"{config.resource_prefix}-nexus-s3-{s}"),

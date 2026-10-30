@@ -94,7 +94,7 @@ def _api_key_refs_from_toml(toml_text: str | None) -> set[str]:
 
 
 PINECONE_VERSION = "main-9061539"
-NEXUS_VERSION = "main-724df8a"
+NEXUS_VERSION = "main-575e0a3"
 
 # Inference-proxy model-routing template written into the generated project when
 # Nexus is enabled. It IS the `byoc` config profile -- BYOC omits the chart's
@@ -359,6 +359,7 @@ _SHARED_MODEL_FIELDS = frozenset(
         "api_key",
         "credential_ref",
         "credential",
+        "aws_region_name",
         "base_url",
         "api_version",
         "extra_headers",
@@ -483,6 +484,18 @@ def _validate_surface_catalog(surface: str, models: dict[str, dict]) -> None:
             raise ValueError(
                 f"{surface} model {model_id!r} is api_style 'pinecone' and must NOT set "
                 "an api_key_ref (the caller supplies the key per request)"
+            )
+        # Mirrors the proxy's startup rules for keyless (pod AWS identity) models.
+        region = fields.get("aws_region_name")
+        if "aws_region_name" in fields and (
+            not isinstance(region, str)
+            or not region.strip()
+            or api_style != "litellm"
+            or any(fields.get(k) for k in ("api_key_ref", "api_key", "credential_ref"))
+        ):
+            raise ValueError(
+                f"{surface} model {model_id!r}: aws_region_name must be a non-empty string "
+                "on an api_style 'litellm' model with no api_key_ref, api_key or credential_ref"
             )
         # litellm rerank rejects api_version (litellm.arerank has no such kwarg).
         if surface == "rerank" and api_style == "litellm" and fields.get("api_version"):
