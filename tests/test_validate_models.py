@@ -157,16 +157,19 @@ def _embed_cfg(**over):
     }
 
 
-def test_litellm_unknown_model_fails():
-    # Live probe could pass, but the proxy ValueErrors at startup on an
-    # unknown-to-registry model — so this must fail here.
+def test_litellm_unknown_model_warns_and_still_probes():
+    # A registry miss does not stop the proxy from booting. The live probe
+    # still runs, and a reachable model passes.
+    warnings = []
     cfg = _chat_cfg(model="vendor/made-up")
     with _patch(
         _resolve_provider_key=lambda *a, **k: "key",
         _litellm_model_info=lambda m: None,
         _probe_litellm_chat=lambda *a, **k: (200, ""),
+        warn=warnings.append,
     ):
-        assert _check(cfg) == "fail"
+        assert _check(cfg) == "pass"
+    assert any("doesn't recognize" in w for w in warnings)
 
 
 def test_litellm_mode_mismatch_fails():
@@ -254,6 +257,31 @@ def test_embedding_dimension_mismatch_fails():
         _probe_pinecone_embed=lambda *a, **k: (200, "", 1024, False),
     ):
         assert _check(cfg, surface="embedding") == "fail"
+
+
+def test_openai_embedding_uses_the_openai_probe():
+    seen = {}
+
+    def _probe(model, key, base_url, api_version):
+        seen["model"] = model
+        seen["base_url"] = base_url
+        return (200, "", 4096)
+
+    cfg = _embed_cfg(
+        api_style="openai",
+        model="accounts/fireworks/models/qwen3-embedding-8b",
+        base_url="https://api.fireworks.ai/inference/v1",
+        api_key_ref="fireworks-api-key",
+        dimension=4096,
+    )
+    with _patch(
+        _resolve_provider_key=lambda *a, **k: "key",
+        _probe_openai_embed=_probe,
+        _probe_pinecone_embed=lambda *a, **k: (_ for _ in ()).throw(AssertionError("pinecone")),
+    ):
+        assert _check(cfg, surface="embedding") == "pass"
+    assert seen["model"] == "accounts/fireworks/models/qwen3-embedding-8b"
+    assert seen["base_url"] == "https://api.fireworks.ai/inference/v1"
 
 
 def test_embedding_dimension_match_passes():

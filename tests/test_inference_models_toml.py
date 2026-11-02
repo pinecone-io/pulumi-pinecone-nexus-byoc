@@ -1,4 +1,7 @@
-"""Guards the curate-window contract: supported_curate_models ⊆ supported_llm_models.
+"""Guards the generated inference catalog.
+
+The proxy accepts ``supported_curate_models`` and ignores it, so the generator
+must not emit that list. Curation follows ``phase_defaults`` and the lite tier.
 
 Run standalone (`python tests/test_inference_models_toml.py`) or under pytest.
 """
@@ -65,16 +68,13 @@ _TIERS = {
 }
 
 
-def test_generator_curate_is_llm_minus_pro():
+def test_generator_does_not_emit_supported_curate_models():
     profile = tomllib.loads(build_inference_models_toml(_LLM, _RERANK, _TIERS))["default"]
-    llm = set(profile["supported_llm_models"])
-    curate = set(profile["supported_curate_models"])
-    assert curate <= llm, "curate window must be a subset of the LLM window"
-    assert _TIERS["pro"] not in curate, "pro tier must be excluded from curate"
-    assert curate == llm - {_TIERS["pro"]}
+    assert "supported_curate_models" not in profile
+    assert set(profile["supported_llm_models"]) == set(_LLM)
 
 
-def test_generator_keeps_extra_non_pro_models_in_curate():
+def test_generator_keeps_extra_models_in_the_llm_window_only():
     llm = {
         **_LLM,
         "gemini-3.5-flash-preview": {
@@ -85,15 +85,14 @@ def test_generator_keeps_extra_non_pro_models_in_curate():
         },
     }
     profile = tomllib.loads(build_inference_models_toml(llm, _RERANK, _TIERS))["default"]
-    assert "gemini-3.5-flash-preview" in set(profile["supported_curate_models"])
+    assert "gemini-3.5-flash-preview" in set(profile["supported_llm_models"])
+    assert "supported_curate_models" not in profile
 
 
-def test_static_template_curate_subset():
+def test_static_template_has_no_curate_list():
     profile = tomllib.loads(NEXUS_INFERENCE_MODELS_TEMPLATE)["default"]
-    llm = set(profile["supported_llm_models"])
-    curate = set(profile["supported_curate_models"])
-    assert curate and curate <= llm
-    assert "gemini-3.1-pro-preview" not in curate
+    assert "supported_curate_models" not in profile
+    assert "gemini-3.1-pro-preview" in set(profile["supported_llm_models"])
 
 
 def test_embedding_defaults_when_omitted():

@@ -15,14 +15,14 @@ real workloads (long contexts, tools, large batches) will behave correctly.
 It is shipped into your generated project so you can run it from there:
 
     cd <your-project-dir>
-    uv run --no-project --with 'litellm==1.87.0' --python 3.12 python validate_models.py
+    uv run --no-project --with 'litellm==1.96.2' --python 3.12 python validate_models.py
     # or point at another project:
-    uv run --no-project --with 'litellm==1.87.0' --python 3.12 python validate_models.py --stack-dir ../pinecone-nexus-byoc
+    uv run --no-project --with 'litellm==1.96.2' --python 3.12 python validate_models.py --stack-dir ../pinecone-nexus-byoc
 
 `--no-project` keeps this a quick ephemeral run (no rebuild of the project's
 pulumi package); `--python 3.12` pins an interpreter new enough for `tomllib`
 (`--no-project` ignores the project's requires-python). Pin litellm to the
-version the inference-proxy runs (1.87.0) so
+version the inference-proxy runs (1.96.2) so
 the local model registry and call behavior match the proxy; the script warns if a
 different litellm is installed. `litellm` is only needed for `litellm`-style
 models (Gemini, Azure, etc.); `openai`- and `pinecone`-style models validate with
@@ -57,7 +57,7 @@ _DEFAULT_PINECONE_API_VERSION = "2025-10"
 # (get_model_info: known-model, mode, token limits) and the SDK's per-provider
 # call behavior match what the proxy will actually run. Keep in sync with the
 # deployed Nexus version.
-_EXPECTED_LITELLM_VERSION = "1.87.0"
+_EXPECTED_LITELLM_VERSION = "1.96.2"
 
 # Minimum Python for the `uv run --no-project` invocation. `--no-project` ignores
 # the project's requires-python, and this script needs `tomllib` (3.11+), so the
@@ -234,11 +234,9 @@ def _import_litellm():
 
 def _litellm_model_info(model: str) -> dict | None:
     """The model's entry in LiteLLM's local registry, or None if litellm doesn't
-    recognize it. The proxy calls ``litellm.get_model_info`` at startup for every
-    litellm-style model (settings.py `_get_litellm_model_info`) and raises when it
-    isn't found, so an unknown model here means the proxy would fail to boot — the
-    live probe can still pass (litellm routes by provider prefix without registry
-    info), which is exactly the false-pass this replicates."""
+    recognize it. The proxy calls ``litellm.get_model_info`` for litellm-style
+    models and, on a miss, keeps the configured values and still boots. A hit is
+    checked below: a wrong mode or missing tools/response_format does fail startup."""
     litellm = _import_litellm()
 
     try:
@@ -316,6 +314,26 @@ def _probe_litellm_rerank(model, api_key, base_url) -> tuple[int | None, str]:
         return (200, "")
     except Exception as e:
         return (getattr(e, "status_code", None), str(e)[:200])
+
+
+def _probe_openai_embed(
+    model, api_key, base_url, api_version
+) -> tuple[int | None, str, int | None]:
+    """OpenAI-compatible embeddings. The proxy posts to ``{base_url}/embeddings``
+    with ``encoding_format=float`` and drops ``input_type``."""
+    url = base_url.rstrip("/") + "/embeddings"
+    if api_version:
+        url += ("&" if "?" in url else "?") + "api-version=" + api_version
+    status, detail, text = _http_post(
+        url,
+        {"Authorization": f"Bearer {api_key}"},
+        {"model": model, "input": ["ping"], "encoding_format": "float"},
+    )
+    dim = None
+    if status == 200:
+        with contextlib.suppress(Exception):
+            dim = len(json.loads(text)["data"][0]["embedding"])
+    return (status, detail, dim)
 
 
 def _probe_openai(
@@ -476,31 +494,36 @@ def _check_one_model(stack_dir, stack, model_id, surface, cfg, have_litellm) -> 
         fail(f"{label}: openai api_style requires base_url to send a request")
         return "fail"
 
-    # 2a) LOCAL registry checks the proxy hard-fails on at startup (settings.py) but
-    # a live ping doesn't exercise — replicate them so a "✓" here can't still
-    # crash-loop the proxy after `pulumi up`. All are free (litellm is loaded).
+    # 2a) LOCAL registry checks the proxy applies at startup (settings.py) but a
+    # live ping doesn't exercise. A missing registry entry is not fatal — the
+    # proxy keeps the configured values and still boots. A hit with the wrong
+    # mode, or a chat model missing tools/response_format, does fail startup.
+    # All are free (litellm is loaded).
     info = None
     if api_style == "litellm":
         info = _litellm_model_info(model)
         if info is None:
-            fail(
-                f"{label}: litellm's registry doesn't recognize {model!r} — the proxy "
-                "calls litellm.get_model_info() at startup and would fail to boot",
-                "use a model id litellm knows (check the LiteLLM model list), or fix `model`",
+            warn(
+                f"{label}: litellm's registry doesn't recognize {model!r}; "
+                "the proxy keeps the configured values and still boots"
             )
-            return "fail"
-        mode = info.get("mode")
-        if mode != surface:  # surface is "chat" | "embedding" | "rerank" — the litellm modes
-            fail(f"{label}: litellm reports mode={mode!r}, but this surface needs mode={surface!r}")
-            return "fail"
-        if surface == "chat":
-            missing = {"tools", "response_format"} - set(info.get("supported_openai_params") or [])
-            if missing:
+        else:
+            mode = info.get("mode")
+            if mode != surface:  # surface is "chat" | "embedding" | "rerank" — the litellm modes
                 fail(
-                    f"{label}: model lacks OpenAI params Nexus relies on: {sorted(missing)} "
-                    "(the proxy rejects this at startup)"
+                    f"{label}: litellm reports mode={mode!r}, but this surface needs mode={surface!r}"
                 )
                 return "fail"
+            if surface == "chat":
+                missing = {"tools", "response_format"} - set(
+                    info.get("supported_openai_params") or []
+                )
+                if missing:
+                    fail(
+                        f"{label}: model lacks OpenAI params Nexus relies on: {sorted(missing)} "
+                        "(the proxy rejects this at startup)"
+                    )
+                    return "fail"
     elif (
         surface == "chat"
         and api_style == "openai"
@@ -566,6 +589,8 @@ def _check_one_model(stack_dir, stack, model_id, surface, cfg, have_litellm) -> 
     elif surface == "embedding":
         if api_style == "litellm":
             status, detail, observed_dim = _probe_litellm_embed(model, key, base_url, api_version)
+        elif api_style == "openai":
+            status, detail, observed_dim = _probe_openai_embed(model, key, base_url, api_version)
         else:
             status, detail, observed_dim, pinecone_sparse = _probe_pinecone_embed(
                 model, key, base_url, api_version

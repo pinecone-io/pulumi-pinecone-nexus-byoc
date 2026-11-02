@@ -225,7 +225,7 @@ if [ -f "inference-proxy-models.toml" ]; then
     # truth: _EXPECTED_LITELLM_VERSION in validate_models.py) so a version bump is
     # one edit. Fall back to a literal only if the grep somehow misses.
     litellm_pin="$(grep -oE '_EXPECTED_LITELLM_VERSION = "[^"]+"' validate_models.py | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')"
-    litellm_pin="${litellm_pin:-1.87.0}"
+    litellm_pin="${litellm_pin:-1.96.2}"
     py_pin="$(grep -oE '_EXPECTED_PYTHON_VERSION = "[^"]+"' validate_models.py | grep -oE '[0-9]+\.[0-9]+')"
     py_pin="${py_pin:-3.12}"
     echo ""

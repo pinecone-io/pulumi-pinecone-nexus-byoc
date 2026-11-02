@@ -175,7 +175,6 @@ max_docs_per_request = 100
 supported_llm_models       = ["gemini-3.1-flash-lite", "gemini-3.5-flash", "gemini-3.1-pro-preview"]
 supported_embedding_models = ["multilingual-e5-large"]
 supported_rerank_models    = ["bge-reranker-v2-m3"]
-supported_curate_models    = ["gemini-3.1-flash-lite", "gemini-3.5-flash"]
 
 [default.llm.tiers.lite]
 model_ref = "gemini-3.1-flash-lite"
@@ -637,16 +636,12 @@ def build_inference_models_toml(
     supported_llm = "[" + ", ".join(_toml_scalar(i) for i in llm_models) + "]"
     supported_emb = "[" + ", ".join(_toml_scalar(i) for i in embedding_models) + "]"
     supported_rr = "[" + ", ".join(_toml_scalar(i) for i in rerank_models) + "]"
-    # LLM catalog minus the pro tier. Emitted so it stays a subset of supported_llm_models.
-    curate_ids = [i for i in llm_models if i != tiers["pro"]]
-    supported_curate = "[" + ", ".join(_toml_scalar(i) for i in curate_ids) + "]"
     parts.append(
         "# --- Default profile (supported_* = every model defined above) ---\n"
         "[default]\n"
         f"supported_llm_models = {supported_llm}\n"
         f"supported_embedding_models = {supported_emb}\n"
-        f"supported_rerank_models = {supported_rr}\n"
-        f"supported_curate_models = {supported_curate}\n\n"
+        f"supported_rerank_models = {supported_rr}\n\n"
         + "".join(
             f"[default.llm.tiers.{t}]\nmodel_ref = {_toml_scalar(tiers[t])}\n\n"
             for t in LLM_MODEL_TIERS
