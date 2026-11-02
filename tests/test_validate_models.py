@@ -161,7 +161,7 @@ def test_litellm_unknown_model_warns_and_still_probes():
     # A registry miss does not stop the proxy from booting. The live probe
     # still runs, and a reachable model passes.
     warnings = []
-    cfg = _chat_cfg(model="vendor/made-up")
+    cfg = _chat_cfg(model="vendor/made-up", context_window=8192, max_output_tokens=1024)
     with _patch(
         _resolve_provider_key=lambda *a, **k: "key",
         _litellm_model_info=lambda m: None,
@@ -170,6 +170,17 @@ def test_litellm_unknown_model_warns_and_still_probes():
     ):
         assert _check(cfg) == "pass"
     assert any("doesn't recognize" in w for w in warnings)
+
+
+def test_litellm_unknown_chat_model_without_budgets_fails():
+    for over in ({}, {"context_window": 8192}, {"max_output_tokens": 1024}):
+        cfg = _chat_cfg(model="vendor/made-up", **over)
+        with _patch(
+            _resolve_provider_key=lambda *a, **k: "key",
+            _litellm_model_info=lambda m: None,
+            _probe_litellm_chat=lambda *a, **k: (200, ""),
+        ):
+            assert _check(cfg) == "fail", over
 
 
 def test_litellm_mode_mismatch_fails():
@@ -262,9 +273,10 @@ def test_embedding_dimension_mismatch_fails():
 def test_openai_embedding_uses_the_openai_probe():
     seen = {}
 
-    def _probe(model, key, base_url, api_version):
+    def _probe(model, key, base_url, api_version, dimensions):
         seen["model"] = model
         seen["base_url"] = base_url
+        seen["dimensions"] = dimensions
         return (200, "", 4096)
 
     cfg = _embed_cfg(
@@ -282,6 +294,41 @@ def test_openai_embedding_uses_the_openai_probe():
         assert _check(cfg, surface="embedding") == "pass"
     assert seen["model"] == "accounts/fireworks/models/qwen3-embedding-8b"
     assert seen["base_url"] == "https://api.fireworks.ai/inference/v1"
+    assert seen["dimensions"] is None
+
+
+def test_openai_embedding_requests_dimensions_when_opted_in():
+    sent = {}
+
+    def _post(url, headers, body):
+        sent.update(body)
+        return (200, "", '{"data": [{"embedding": [0.0, 0.0]}]}')
+
+    with _patch(_http_post=_post):
+        status, _, dim = vm._probe_openai_embed("m", "key", "https://host/v1", None, 2)
+    assert status == 200 and dim == 2
+    assert sent["dimensions"] == 2
+
+    sent.clear()
+    with _patch(_http_post=_post):
+        vm._probe_openai_embed("m", "key", "https://host/v1", None, None)
+    assert "dimensions" not in sent
+
+    seen = {}
+    cfg = _embed_cfg(
+        api_style="openai",
+        model="accounts/fireworks/models/qwen3-embedding-8b",
+        base_url="https://api.fireworks.ai/inference/v1",
+        api_key_ref="fireworks-api-key",
+        dimension=1024,
+        request_dimensions=True,
+    )
+    with _patch(
+        _resolve_provider_key=lambda *a, **k: "key",
+        _probe_openai_embed=lambda *a: seen.update(dimensions=a[4]) or (200, "", 1024),
+    ):
+        assert _check(cfg, surface="embedding") == "pass"
+    assert seen["dimensions"] == 1024
 
 
 def test_embedding_dimension_match_passes():

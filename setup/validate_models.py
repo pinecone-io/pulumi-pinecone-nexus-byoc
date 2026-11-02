@@ -317,18 +317,17 @@ def _probe_litellm_rerank(model, api_key, base_url) -> tuple[int | None, str]:
 
 
 def _probe_openai_embed(
-    model, api_key, base_url, api_version
+    model, api_key, base_url, api_version, dimensions
 ) -> tuple[int | None, str, int | None]:
     """OpenAI-compatible embeddings. The proxy posts to ``{base_url}/embeddings``
     with ``encoding_format=float`` and drops ``input_type``."""
     url = base_url.rstrip("/") + "/embeddings"
     if api_version:
         url += ("&" if "?" in url else "?") + "api-version=" + api_version
-    status, detail, text = _http_post(
-        url,
-        {"Authorization": f"Bearer {api_key}"},
-        {"model": model, "input": ["ping"], "encoding_format": "float"},
-    )
+    body = {"model": model, "input": ["ping"], "encoding_format": "float"}
+    if dimensions:
+        body["dimensions"] = dimensions
+    status, detail, text = _http_post(url, {"Authorization": f"Bearer {api_key}"}, body)
     dim = None
     if status == 200:
         with contextlib.suppress(Exception):
@@ -503,6 +502,21 @@ def _check_one_model(stack_dir, stack, model_id, surface, cfg, have_litellm) -> 
     if api_style == "litellm":
         info = _litellm_model_info(model)
         if info is None:
+            missing = [
+                n
+                for n, v in (
+                    ("context_window", context_window),
+                    ("max_output_tokens", max_output_tokens),
+                )
+                if not v
+            ]
+            if surface == "chat" and missing:
+                fail(
+                    f"{label}: litellm's registry doesn't recognize {model!r}, so the proxy "
+                    f"can't default-fill {', '.join(missing)} and fails at startup",
+                    "set them on the model entry, or use a model id litellm knows",
+                )
+                return "fail"
             warn(
                 f"{label}: litellm's registry doesn't recognize {model!r}; "
                 "the proxy keeps the configured values and still boots"
@@ -590,7 +604,13 @@ def _check_one_model(stack_dir, stack, model_id, surface, cfg, have_litellm) -> 
         if api_style == "litellm":
             status, detail, observed_dim = _probe_litellm_embed(model, key, base_url, api_version)
         elif api_style == "openai":
-            status, detail, observed_dim = _probe_openai_embed(model, key, base_url, api_version)
+            status, detail, observed_dim = _probe_openai_embed(
+                model,
+                key,
+                base_url,
+                api_version,
+                dimension if cfg.get("request_dimensions") else None,
+            )
         else:
             status, detail, observed_dim, pinecone_sparse = _probe_pinecone_embed(
                 model, key, base_url, api_version
