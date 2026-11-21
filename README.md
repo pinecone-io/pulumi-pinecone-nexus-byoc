@@ -339,6 +339,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 |--------|-------------|---------|
 | `pinecone-version` | Pinecone release version (required) | — |
 | `nexus-version` | Nexus release version | — |
+| `nexus-count-answers` | Count billable Nexus answers; set `false` on trial and internal cells | `true` |
 | `region` | AWS region | `us-east-1` |
 | `availability_zones` | AZs for high availability (3 recommended — FDB zone fault domains) | first 3 available AZs, e.g. `["us-east-1a", "us-east-1b", "us-east-1c"]` |
 | `vpc_cidr` | VPC IP range (/16–/20, RFC 1918) | `10.0.0.0/20` |
@@ -352,6 +353,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 |--------|-------------|---------|
 | `pinecone-version` | Pinecone release version (required) | — |
 | `nexus-version` | Nexus release version | — |
+| `nexus-count-answers` | Count billable Nexus answers; set `false` on trial and internal cells | `true` |
 | `gcp_project` | GCP project ID (required) | — |
 | `region` | GCP region | `us-central1` |
 | `availability_zones` | Zones for high availability (3 recommended — FDB zone fault domains) | first 3 available zones, e.g. `["us-central1-a", "us-central1-b", "us-central1-c"]` |
@@ -366,6 +368,7 @@ The setup wizard creates a Pulumi stack with these configurable options:
 |--------|-------------|---------|
 | `pinecone-version` | Pinecone release version (required) | — |
 | `nexus-version` | Nexus release version | — |
+| `nexus-count-answers` | Count billable Nexus answers; set `false` on trial and internal cells | `true` |
 | `subscription-id` | Azure subscription ID (required) | — |
 | `region` | Azure region | `eastus` |
 | `availability_zones` | Zones for high availability (3 recommended — FDB zone fault domains) | first 3 available zones, e.g. `["1", "2", "3"]` |

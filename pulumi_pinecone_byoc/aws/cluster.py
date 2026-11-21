@@ -628,6 +628,7 @@ class PineconeAWSCluster(pulumi.ComponentResource):
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
                 fdb_mode=nx.fdb_mode,
+                count_answers=nx.count_answers,
                 inference_proxy_service_account_annotations=proxy_sa_annotations,
                 opts=pulumi.ResourceOptions(
                     parent=self,

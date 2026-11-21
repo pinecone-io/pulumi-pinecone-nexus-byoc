@@ -188,6 +188,8 @@ class NexusConfig:
     inference_models_toml: str | None = None
     provider_keys: pulumi.Input[dict] | None = None
     fdb_mode: Literal["single", "external"] = "single"
+    # False on trial and internal cells so they report no billable answers.
+    count_answers: bool = True
 
     def __post_init__(self):
         # Literal isn't runtime-enforced; a bad value would silently deploy single-node FDB.
@@ -232,6 +234,7 @@ class Nexus(pulumi.ComponentResource):
         inference_models_toml: str | None = None,
         fdb_mode: Literal["single", "external"] = "single",
         inference_proxy_service_account_annotations: pulumi.Input[dict] | None = None,
+        count_answers: bool = True,
         opts: pulumi.ResourceOptions | None = None,
     ):
         """Install the Nexus stack into the BYOC cluster.
@@ -284,6 +287,8 @@ class Nexus(pulumi.ComponentResource):
             fdb_mode: ``"single"`` (default) runs the baseline one-pod FDB;
                 ``"external"`` consumes the shared FDB data-plane cluster and runs no
                 FDB of its own (BYOC-FDB backend). See ``NexusConfig.fdb_mode``.
+            count_answers: False switches off Nexus's billable-answer counting, so
+                the cell reports no answers. True leaves it to Nexus, which counts.
         """
         super().__init__("pinecone:byoc:Nexus", name, None, opts)
 
@@ -365,6 +370,9 @@ class Nexus(pulumi.ComponentResource):
 
         if fdb_mode == "external":
             app_values["foundationdb"] = {"source": "external"}
+
+        if not count_answers:
+            app_values["config"]["countAnswers"] = False
 
         # KSA annotations for Workload Identity (GKE: gcp-service-account=<email>).
         if service_account_annotations is not None:
