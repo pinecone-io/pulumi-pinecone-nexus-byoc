@@ -2496,6 +2496,7 @@ cluster = PineconeAWSCluster(
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
             fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
+            count_answers=config.get_bool("nexus-count-answers") is not False,
         ) if _nexus_enabled else None,
     ),
 )
@@ -3377,6 +3378,7 @@ cluster = PineconeGCPCluster(
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
             fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
+            count_answers=config.get_bool("nexus-count-answers") is not False,
         ) if _nexus_enabled else None,
     ),
 )
@@ -4339,6 +4341,7 @@ cluster = PineconeAzureCluster(
             inference_models_toml=_nexus_models_toml,
             provider_keys=config.get_secret_object("nexus-provider-keys"),
             fdb_mode=config.get("nexus-fdb-mode") or _default_fdb_mode,
+            count_answers=config.get_bool("nexus-count-answers") is not False,
         ) if _nexus_enabled else None,
     ),
 )

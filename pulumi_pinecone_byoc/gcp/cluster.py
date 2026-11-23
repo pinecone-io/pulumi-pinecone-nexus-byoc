@@ -486,6 +486,7 @@ class PineconeGCPCluster(pulumi.ComponentResource):
                 cpgw_api_url=f"{args.api_url}/internal/cpgw",
                 inference_models_toml=nx.inference_models_toml,
                 fdb_mode=nx.fdb_mode,
+                count_answers=nx.count_answers,
                 opts=pulumi.ResourceOptions(
                     parent=self,
                     depends_on=[
